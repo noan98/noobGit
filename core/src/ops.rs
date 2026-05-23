@@ -160,9 +160,8 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
 /// 既存ブランチへ切り替える。未コミット変更と衝突する場合は安全のため失敗する。
 pub fn switch_branch(repo: &Repository, name: &str) -> Result<()> {
     let name = name.trim();
-    repo.find_branch(name, BranchType::Local).map_err(|_| {
-        CoreError::InvalidInput(format!("ブランチ「{name}」が見つかりません。"))
-    })?;
+    repo.find_branch(name, BranchType::Local)
+        .map_err(|_| CoreError::InvalidInput(format!("ブランチ「{name}」が見つかりません。")))?;
 
     let refname = format!("refs/heads/{name}");
     let obj = repo.revparse_single(&refname)?;
@@ -215,11 +214,9 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
 
 /// 指定地点までハードリセットする。破壊的操作。直後にコミット位置を Undo で戻せる。
 pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
-    let prev = repo
-        .head()
-        .ok()
-        .and_then(|h| h.target())
-        .ok_or_else(|| CoreError::Blocked("まだコミットが無いためリセットできません。".to_string()))?;
+    let prev = repo.head().ok().and_then(|h| h.target()).ok_or_else(|| {
+        CoreError::Blocked("まだコミットが無いためリセットできません。".to_string())
+    })?;
 
     let obj = repo.revparse_single(revspec)?;
     let commit = obj
@@ -337,7 +334,10 @@ mod tests {
         let repo = fx.open();
         create_branch(&repo, "feature").unwrap();
         switch_branch(&repo, "feature").unwrap();
-        assert_eq!(crate::repo::current_branch(&repo).as_deref(), Some("feature"));
+        assert_eq!(
+            crate::repo::current_branch(&repo).as_deref(),
+            Some("feature")
+        );
 
         // feature にいる間は feature を削除できない。
         assert!(matches!(

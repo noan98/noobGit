@@ -226,6 +226,8 @@ mod tests {
         };
         apply(&repo, &delete).unwrap();
         apply(&repo, &delete).unwrap();
-        assert!(repo.find_branch("feature", git2::BranchType::Local).is_err());
+        assert!(repo
+            .find_branch("feature", git2::BranchType::Local)
+            .is_err());
     }
 }

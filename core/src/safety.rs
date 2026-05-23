@@ -86,10 +86,18 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
         .unwrap_or(false);
 
     match op {
-        OperationKind::Stage => RiskAssessment::safe("変更をコミット対象に加えるだけで、ファイルの中身は変わりません。"),
-        OperationKind::Unstage => RiskAssessment::safe("コミット対象から外すだけで、ファイルの中身は変わりません。"),
-        OperationKind::Commit => RiskAssessment::safe("変更の記録を1つ作るだけで、あとから取り消せます。"),
-        OperationKind::CreateBranch => RiskAssessment::safe("新しいブランチを作るだけで、既存の内容は変わりません。"),
+        OperationKind::Stage => {
+            RiskAssessment::safe("変更をコミット対象に加えるだけで、ファイルの中身は変わりません。")
+        }
+        OperationKind::Unstage => {
+            RiskAssessment::safe("コミット対象から外すだけで、ファイルの中身は変わりません。")
+        }
+        OperationKind::Commit => {
+            RiskAssessment::safe("変更の記録を1つ作るだけで、あとから取り消せます。")
+        }
+        OperationKind::CreateBranch => {
+            RiskAssessment::safe("新しいブランチを作るだけで、既存の内容は変わりません。")
+        }
 
         OperationKind::SwitchBranch => {
             if ctx.working_dir_dirty {
@@ -110,13 +118,23 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
         }
 
         OperationKind::DeleteBranch => RiskAssessment {
-            level: if protected { RiskLevel::Destructive } else { RiskLevel::Caution },
+            level: if protected {
+                RiskLevel::Destructive
+            } else {
+                RiskLevel::Caution
+            },
             reasons: {
                 let mut r = vec!["ブランチを削除します。".to_string()];
                 if protected {
-                    r.push("これは保護ブランチ（main/master等）です。削除は通常行いません。".to_string());
+                    r.push(
+                        "これは保護ブランチ（main/master等）です。削除は通常行いません。"
+                            .to_string(),
+                    );
                 }
-                r.push("マージされていないコミットがある場合、それらが見つけにくくなります。".to_string());
+                r.push(
+                    "マージされていないコミットがある場合、それらが見つけにくくなります。"
+                        .to_string(),
+                );
                 r
             },
             reversible: true,
@@ -170,7 +188,9 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             } else {
                 RiskAssessment {
                     level: RiskLevel::Safe,
-                    reasons: vec!["自分のコミットをリモートへ送ります。通常は安全です。".to_string()],
+                    reasons: vec![
+                        "自分のコミットをリモートへ送ります。通常は安全です。".to_string()
+                    ],
                     reversible: false,
                     permanent_data_loss: false,
                     recommended_alternative: None,
@@ -193,14 +213,16 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reversible: false,
             permanent_data_loss: true,
             recommended_alternative: Some(
-                "本当に必要か、チームに確認してください。多くの場合 force push は不要です。".to_string(),
+                "本当に必要か、チームに確認してください。多くの場合 force push は不要です。"
+                    .to_string(),
             ),
         },
 
         OperationKind::Merge => RiskAssessment {
             level: RiskLevel::Caution,
             reasons: vec![
-                "別のブランチの内容を取り込みます。コンフリクトが起きることがあります。".to_string(),
+                "別のブランチの内容を取り込みます。コンフリクトが起きることがあります。"
+                    .to_string(),
             ],
             reversible: true,
             permanent_data_loss: false,
@@ -244,8 +266,14 @@ mod tests {
     #[test]
     fn reset_hard_is_destructive_and_flags_data_loss_when_dirty() {
         let clean = SafetyContext::default();
-        let dirty = SafetyContext { working_dir_dirty: true, ..Default::default() };
-        assert_eq!(assess(OperationKind::ResetHard, &clean).level, RiskLevel::Destructive);
+        let dirty = SafetyContext {
+            working_dir_dirty: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            assess(OperationKind::ResetHard, &clean).level,
+            RiskLevel::Destructive
+        );
         assert!(!assess(OperationKind::ResetHard, &clean).permanent_data_loss);
         assert!(assess(OperationKind::ResetHard, &dirty).permanent_data_loss);
     }
@@ -260,21 +288,39 @@ mod tests {
 
     #[test]
     fn push_to_protected_is_caution() {
-        let ctx = SafetyContext { target_branch: Some("main".to_string()), ..Default::default() };
+        let ctx = SafetyContext {
+            target_branch: Some("main".to_string()),
+            ..Default::default()
+        };
         assert_eq!(assess(OperationKind::Push, &ctx).level, RiskLevel::Caution);
-        let ctx2 = SafetyContext { target_branch: Some("feature/x".to_string()), ..Default::default() };
+        let ctx2 = SafetyContext {
+            target_branch: Some("feature/x".to_string()),
+            ..Default::default()
+        };
         assert_eq!(assess(OperationKind::Push, &ctx2).level, RiskLevel::Safe);
     }
 
     #[test]
     fn switch_with_dirty_tree_is_caution() {
-        let dirty = SafetyContext { working_dir_dirty: true, ..Default::default() };
-        assert_eq!(assess(OperationKind::SwitchBranch, &dirty).level, RiskLevel::Caution);
+        let dirty = SafetyContext {
+            working_dir_dirty: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            assess(OperationKind::SwitchBranch, &dirty).level,
+            RiskLevel::Caution
+        );
     }
 
     #[test]
     fn delete_protected_branch_is_destructive() {
-        let ctx = SafetyContext { target_branch: Some("main".to_string()), ..Default::default() };
-        assert_eq!(assess(OperationKind::DeleteBranch, &ctx).level, RiskLevel::Destructive);
+        let ctx = SafetyContext {
+            target_branch: Some("main".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            assess(OperationKind::DeleteBranch, &ctx).level,
+            RiskLevel::Destructive
+        );
     }
 }
