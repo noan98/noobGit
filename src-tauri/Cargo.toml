@@ -1,0 +1,21 @@
+[package]
+name = "noobgit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ジュニアエンジニアが安心して使えるGitツール noobGit"
+
+[lib]
+name = "noobgit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+git2 = { workspace = true }
+noobgit-core = { path = "../core" }

@@ -1,0 +1,411 @@
+:root {
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #0969da;
+  --safe: #1a7f37;
+  --caution: #9a6700;
+  --destructive: #cf222e;
+  font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI",
+    Meiryo, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* ---- welcome ---- */
+.welcome {
+  max-width: 640px;
+  margin: 12vh auto;
+  text-align: center;
+  padding: 24px;
+}
+.welcome h1 {
+  font-size: 40px;
+  margin-bottom: 4px;
+}
+.tagline {
+  color: var(--muted);
+  margin-bottom: 32px;
+}
+.open-box {
+  display: flex;
+  gap: 8px;
+}
+.open-box input {
+  flex: 1;
+}
+
+/* ---- inputs ---- */
+input,
+textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+}
+textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+}
+
+/* ---- buttons ---- */
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.btn:hover {
+  background: #f3f4f6;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-small {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+.btn-undo {
+  background: #fff8e6;
+  border-color: #d4a72c;
+}
+.link {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 6px;
+  font-size: 13px;
+}
+.link.danger {
+  color: var(--destructive);
+}
+
+/* ---- layout ---- */
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.repo-info {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.current-branch {
+  color: var(--muted);
+}
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.banner {
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.banner.error {
+  background: #ffebe9;
+  color: var(--destructive);
+  border-bottom: 1px solid #ffcecb;
+}
+.banner.notice {
+  background: #dafbe1;
+  color: var(--safe);
+  border-bottom: 1px solid #aceebb;
+}
+
+.columns {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ---- panel ---- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.panel h2 {
+  font-size: 15px;
+  margin: 0;
+}
+.panel h3 {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 12px 0 6px;
+}
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+.panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.panel li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- change tags ---- */
+.tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.tag-added,
+.tag-untracked {
+  background: #dafbe1;
+  color: var(--safe);
+}
+.tag-modified,
+.tag-type_change {
+  background: #fff1cc;
+  color: var(--caution);
+}
+.tag-deleted {
+  background: #ffebe9;
+  color: var(--destructive);
+}
+.tag-renamed {
+  background: #ddf4ff;
+  color: var(--accent);
+}
+.tag-conflicted {
+  background: #ffd8d3;
+  color: var(--destructive);
+}
+
+/* ---- commits ---- */
+.commits .sha {
+  color: var(--accent);
+  font-size: 12px;
+}
+.commit-body {
+  display: flex;
+  flex-direction: column;
+}
+.summary {
+  font-weight: 500;
+}
+.meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---- branches ---- */
+.branch-create {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.branch-create input {
+  flex: 1;
+}
+.branches li {
+  justify-content: space-between;
+}
+.branches .current {
+  font-weight: 600;
+}
+.head-mark {
+  color: var(--safe);
+  margin-right: 4px;
+}
+.protected {
+  font-size: 10px;
+  background: #fff1cc;
+  color: var(--caution);
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 6px;
+}
+.branch-name.remote {
+  color: var(--muted);
+}
+
+.commit-box textarea {
+  margin-bottom: 8px;
+}
+
+/* ---- confirm dialog ---- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.dialog {
+  background: #fff;
+  width: 520px;
+  max-width: 92vw;
+  border-radius: 10px;
+  padding: 20px;
+  border-top: 6px solid var(--border);
+}
+.dialog.risk-caution {
+  border-top-color: var(--caution);
+}
+.dialog.risk-destructive {
+  border-top-color: var(--destructive);
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.dialog-head h2 {
+  font-size: 17px;
+  margin: 0;
+}
+.risk-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  color: #fff;
+}
+.risk-badge.risk-safe {
+  background: var(--safe);
+}
+.risk-badge.risk-caution {
+  background: var(--caution);
+}
+.risk-badge.risk-destructive {
+  background: var(--destructive);
+}
+.explain {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.explain p {
+  margin: 4px 0;
+}
+.explain-why {
+  color: var(--muted);
+  font-size: 13px;
+}
+.reasons ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.reasons li {
+  display: list-item;
+  padding: 2px 0;
+}
+.flags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.flag-ok,
+.flag-warn,
+.flag-danger {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.flag-ok {
+  background: #dafbe1;
+  color: var(--safe);
+}
+.flag-warn {
+  background: #fff1cc;
+  color: var(--caution);
+}
+.flag-danger {
+  background: #ffebe9;
+  color: var(--destructive);
+  font-weight: 600;
+}
+.alt {
+  background: #ddf4ff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.trouble {
+  color: var(--muted);
+  font-size: 13px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+.btn-confirm {
+  color: #fff;
+  border: none;
+}
+.btn-confirm.risk-caution {
+  background: var(--caution);
+}
+.btn-confirm.risk-destructive {
+  background: var(--destructive);
+}
+.btn-confirm.risk-safe {
+  background: var(--safe);
+}
