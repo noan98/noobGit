@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit 設定。
+# request_changes_workflow を有効にすると、CodeRabbit は指摘がある間は
+# 「変更要求(changes requested)」でブロックし、全コメントが解決されると
+# 自動的に approve する。これにより「対応完了 → マージ可能」の運用になる。
+language: ja-JP
+reviews:
+  request_changes_workflow: true
