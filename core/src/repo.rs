@@ -19,7 +19,7 @@ pub fn current_branch(repo: &Repository) -> Option<String> {
         Err(_) => repo
             .find_reference("HEAD")
             .ok()
-            .and_then(|r| r.symbolic_target().map(|t| strip_branch_prefix(t))),
+            .and_then(|r| r.symbolic_target().map(strip_branch_prefix)),
     }
 }
 
@@ -65,10 +65,16 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
         }
 
         if let Some(kind) = staged_kind(s) {
-            staged.push(FileChange { path: path.clone(), kind });
+            staged.push(FileChange {
+                path: path.clone(),
+                kind,
+            });
         }
         if let Some(kind) = unstaged_kind(s) {
-            unstaged.push(FileChange { path: path.clone(), kind });
+            unstaged.push(FileChange {
+                path: path.clone(),
+                kind,
+            });
         }
     }
 

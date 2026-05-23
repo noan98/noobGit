@@ -1,0 +1,46 @@
+# Dependabot: 依存関係の更新PRを自動で作成する。
+# 対象は Cargo(Rust) / npm(フロントエンド) / GitHub Actions の3つ。
+# cooldown で公開直後の不安定なバージョンを避け、minor/patch はグループ化する。
+# Cargo ワークスペースはリポジトリ直下なので、cargo の directory は "/"
+#（core と src-tauri の両方を含む）。
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 5

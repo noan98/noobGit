@@ -140,11 +140,96 @@ explicitly rather than claiming the UI works.
 - **Keep layers honest:** no Git logic in `src-tauri` or `src/`; no UI/Tauri
   concerns in `core`.
 
+## CI/CD & dependencies
+
+GitHub Actions workflows live in `.github/`. Actions are pinned to commit SHAs
+(the trailing `# vX.Y.Z` comment is the human-readable tag), and Rust
+formatting is split into its own fast job.
+
+- **`workflows/ci.yml`** — runs on PRs targeting `main` (docs-only changes are
+  skipped via `paths-ignore`). Three jobs on `ubuntu-latest`:
+  - **frontend** — `npm ci` then `npm run build` (`tsc && vite build`, so the
+    type check is included).
+  - **rust (fmt)** — `cargo fmt --all -- --check`. No build, so it fails fast.
+  - **rust (check + clippy + test)** — installs Tauri 2 Linux system deps (via
+    the cached-apt action), builds the frontend first (the `src-tauri`
+    `generate_context!` macro needs `../dist`), then `cargo clippy --workspace
+    --all-targets --locked -- -D warnings` and `cargo nextest run --workspace
+    --locked --all-targets`. Clippy warnings fail the build — keep the tree
+    warning-free. `--locked` means `Cargo.lock` must be committed and current.
+- **`workflows/release.yml`** — runs on `v*` tags (or manual dispatch). Builds
+  the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
+  publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
+  tag; review the draft, then publish.
+- **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
+  workspace), `npm` (frontend), and `github-actions` (keeps the pinned action
+  SHAs current). Minor/patch bumps are grouped per ecosystem, and a `cooldown`
+  delays PRs after a release to avoid churn on freshly-published versions.
+
+Because the Cargo workspace is at the repo root (not under `src-tauri/`), cargo
+runs from the root with `--workspace`.
+
+When you add a new CI step or change the build/test commands, update this
+section and the matching workflow together so the docs stay accurate.
+
 ## Code review
 
 `.coderabbit.yaml` enables CodeRabbit reviews in Japanese with
 `request_changes_workflow: true` — the PR stays blocked until review comments
 are resolved, then auto-approves.
+
+## Language policy
+
+- **Always write pull requests in Japanese.** Every part of a PR — title,
+  body, summary, test plan — must be in Japanese. This applies without
+  exception to every PR created in this repository, matching the repo's
+  Japanese-first convention (error messages, explanations, comments).
+- English closing keywords (`Closes #123` etc.) inside an otherwise-Japanese
+  PR body are fine — GitHub only parses the English form (see below).
+
+## Issue labeling policy
+
+When you **create** an issue, always make the cost and benefit explicit with
+labels — they drive triage (what to pick up vs. defer), so don't open an issue
+missing either axis. When updating an existing issue that lacks them, add them.
+Labels are auto-created if absent; follow the exact names below — drift breaks
+downstream filtering/aggregation.
+
+- **Cost (implementation effort) — 3 levels:** judge by scope, blast radius,
+  and verification needed.
+  - `cost:low` — a few hours to half a day. A flag, a small UI tweak; limited
+    blast radius.
+  - `cost:medium` — one to a few days. One new module, or extending an
+    existing pattern.
+  - `cost:high` — a week or more. New cross-layer changes, a new safety
+    mechanism, or anything needing design work and broad verification.
+- **Benefit (value delivered) — 5 levels:** judge by user impact, how many
+  users, and contribution to accident-prevention / day-to-day DX.
+  - `benefit:1` — only a few users benefit, or a cosmetic tweak.
+  - `benefit:2` — a convenience improvement for some users.
+  - `benefit:3` — a QoL win many users feel daily, or high value in a specific
+    use case.
+  - `benefit:4` — substantially improves a primary workflow, or a key item
+    from the README roadmap.
+  - `benefit:5` — a core capability that raises the product's positioning or
+    safety (stronger destructive-operation guards, new undo coverage,
+    misuse-prevention UX — noobGit's reason for being).
+- If unsure, leave a one-line rationale at the end of the issue body, e.g.
+  「コスト: medium (理由: …) / メリット: 4 (理由: …)」.
+
+## Linking issues and PRs
+
+- **A PR that addresses an issue must include a closing keyword in its body.**
+  GitHub only auto-closes the issue on merge when the PR body (or a commit
+  message landing on the base branch) contains `Closes #123` / `Fixes #123` /
+  `Resolves #123`. A `(#123)` in the title or a bare `#123` only links — it
+  does not close.
+- For a PR resolving several issues, give each its own keyword, e.g.
+  `Closes #77` then `Closes #73` on separate lines (or `Closes #77, closes #73`
+  on one line).
+- Keep the keyword on its own line at the top or bottom of the body; inside a
+  code block or a `>` quote it won't be parsed. Editing the body *after* merge
+  won't close anything — close such issues manually.
 
 ## Git / PR workflow for this environment
 

@@ -48,37 +48,47 @@ pub fn explain(op: OperationKind) -> Explanation {
             title: "ブランチ切り替え".into(),
             what: "作業するブランチを変えます。ファイルがそのブランチの状態になります。".into(),
             why: "未コミットの変更があると切り替えに失敗することがあります。".into(),
-            on_trouble: "失敗した場合は、変更をコミットか stash してから再度切り替えてください。".into(),
+            on_trouble: "失敗した場合は、変更をコミットか stash してから再度切り替えてください。"
+                .into(),
         },
         OperationKind::DeleteBranch => Explanation {
             title: "ブランチ削除".into(),
             what: "指定したブランチの「枝」を消します。".into(),
-            why: "マージ前のコミットは見つけにくくなります。保護ブランチの削除は通常しません。".into(),
+            why: "マージ前のコミットは見つけにくくなります。保護ブランチの削除は通常しません。"
+                .into(),
             on_trouble: "直後なら Undo で復元できます。".into(),
         },
         OperationKind::ResetHard => Explanation {
             title: "ハードリセット（強制巻き戻し）".into(),
             what: "指定地点まで履歴と作業ファイルを強制的に戻します。".into(),
-            why: "未コミットの変更は完全に消え、元に戻せません。とても強力で危険な操作です。".into(),
-            on_trouble: "巻き戻し先の移動自体は reflog から戻せますが、未コミット変更は復元できません。".into(),
+            why: "未コミットの変更は完全に消え、元に戻せません。とても強力で危険な操作です。"
+                .into(),
+            on_trouble:
+                "巻き戻し先の移動自体は reflog から戻せますが、未コミット変更は復元できません。"
+                    .into(),
         },
         OperationKind::Pull => Explanation {
             title: "プル（取り込み）".into(),
             what: "リモートの最新の変更を自分の手元に取り込みます。".into(),
             why: "他の人の変更と重なるとコンフリクト（衝突）が起きることがあります。".into(),
-            on_trouble: "コンフリクトが出たら、対象ファイルを直して解決します。慌てなくて大丈夫です。".into(),
+            on_trouble:
+                "コンフリクトが出たら、対象ファイルを直して解決します。慌てなくて大丈夫です。"
+                    .into(),
         },
         OperationKind::Push => Explanation {
             title: "プッシュ（送信）".into(),
             what: "自分のコミットをリモート（共有の場所）へ送ります。".into(),
-            why: "通常は安全です。ただし共有ブランチへ直接送る前にチームの運用を確認しましょう。".into(),
+            why: "通常は安全です。ただし共有ブランチへ直接送る前にチームの運用を確認しましょう。"
+                .into(),
             on_trouble: "拒否された場合は、先にpullして取り込んでから再度pushします。".into(),
         },
         OperationKind::ForcePush => Explanation {
             title: "強制プッシュ（force push）".into(),
             what: "リモートの履歴を自分のもので上書きします。".into(),
-            why: "他人のコミットを消す恐れがある、非常に危険な操作です。基本的に使いません。".into(),
-            on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。".into(),
+            why: "他人のコミットを消す恐れがある、非常に危険な操作です。基本的に使いません。"
+                .into(),
+            on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
+                .into(),
         },
         OperationKind::Merge => Explanation {
             title: "マージ（統合）".into(),
