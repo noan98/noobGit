@@ -39,7 +39,16 @@ impl TestRepo {
     }
 
     pub fn write_file(&self, rel: &str, contents: &str) {
-        let full = self.path.join(rel);
+        let rel_path = Path::new(rel);
+        // テストヘルパでも一時リポジトリ外への書き込みを防ぐ。
+        assert!(rel_path.is_relative(), "rel must be a relative path: {rel}");
+        assert!(
+            !rel_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "rel must not contain '..': {rel}"
+        );
+        let full = self.path.join(rel_path);
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
