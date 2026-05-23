@@ -128,10 +128,13 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
 
         OperationKind::ResetHard => RiskAssessment {
             level: RiskLevel::Destructive,
-            reasons: vec![
-                "指定地点まで強制的に巻き戻します。".to_string(),
-                "未コミットの変更はすべて消え、元に戻せません。".to_string(),
-            ],
+            reasons: {
+                let mut r = vec!["指定地点まで強制的に巻き戻します。".to_string()];
+                if ctx.working_dir_dirty {
+                    r.push("未コミットの変更はすべて消え、元に戻せません。".to_string());
+                }
+                r
+            },
             // コミット位置自体はreflogで戻せるが、未コミット変更は失われる。
             reversible: true,
             permanent_data_loss: ctx.working_dir_dirty,

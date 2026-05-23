@@ -35,8 +35,8 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
-  const refresh = useCallback(async () => {
-    if (!repoPath) return;
+  const refresh = useCallback(async (): Promise<boolean> => {
+    if (!repoPath) return false;
     try {
       const [st, br, lg, undo] = await Promise.all([
         api.getStatus(repoPath),
@@ -49,8 +49,10 @@ export default function App() {
       setCommits(lg);
       setUndoInfo(undo);
       setError(null);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     }
   }, [repoPath]);
 
@@ -60,9 +62,9 @@ export default function App() {
 
   async function openRepo() {
     if (!repoPath.trim()) return;
-    setOpened(true);
     setNotice(null);
-    await refresh();
+    const ok = await refresh();
+    if (ok) setOpened(true);
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
@@ -74,6 +76,7 @@ export default function App() {
         if (successMsg) setNotice(successMsg);
         await refresh();
       } catch (e) {
+        setNotice(null);
         setError(String(e));
       }
     },

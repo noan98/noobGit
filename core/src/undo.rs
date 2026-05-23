@@ -39,11 +39,19 @@ fn journal_path(repo: &Repository) -> PathBuf {
     repo.path().join("noobgit_undo.json")
 }
 
-fn load(repo: &Repository) -> Vec<UndoEntry> {
+fn load(repo: &Repository) -> Result<Vec<UndoEntry>> {
     let path = journal_path(repo);
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::Git(format!(
+                "取り消し履歴を読み取れませんでした（ファイルが壊れている可能性があります）: {e}"
+            ))
+        }),
+        // ファイルが無いのは「履歴なし」。それ以外の読み取りエラーは握りつぶさず返す。
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(CoreError::Git(format!(
+            "取り消し履歴の読み取りに失敗しました: {e}"
+        ))),
     }
 }
 
@@ -51,31 +59,36 @@ fn save(repo: &Repository, entries: &[UndoEntry]) -> Result<()> {
     let path = journal_path(repo);
     let bytes = serde_json::to_vec_pretty(entries)
         .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
-    fs::write(&path, bytes)
+    // 一時ファイルへ書いてから rename することで、書き込み途中の中断で
+    // ジャーナルが壊れる（＝Undoが消える）のを防ぐ。
+    let tmp = path.with_file_name("noobgit_undo.json.tmp");
+    fs::write(&tmp, bytes)
+        .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
+    fs::rename(&tmp, &path)
         .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
     Ok(())
 }
 
 /// 取り消しエントリを履歴の末尾に追加する。
 pub fn push(repo: &Repository, entry: UndoEntry) -> Result<()> {
-    let mut entries = load(repo);
+    let mut entries = load(repo)?;
     entries.push(entry);
     save(repo, &entries)
 }
 
 /// 次に取り消される操作の説明を覗き見る（実行はしない）。
-pub fn peek(repo: &Repository) -> Option<UndoEntry> {
-    load(repo).pop()
+pub fn peek(repo: &Repository) -> Result<Option<UndoEntry>> {
+    Ok(load(repo)?.pop())
 }
 
 /// 取り消せる操作があるか。
-pub fn can_undo(repo: &Repository) -> bool {
-    !load(repo).is_empty()
+pub fn can_undo(repo: &Repository) -> Result<bool> {
+    Ok(!load(repo)?.is_empty())
 }
 
 /// 直前の操作を取り消す。取り消した操作の説明を返す。
 pub fn undo_last(repo: &Repository) -> Result<String> {
-    let mut entries = load(repo);
+    let mut entries = load(repo)?;
     let entry = entries
         .pop()
         .ok_or_else(|| CoreError::NothingToUndo("取り消せる操作がありません。".to_string()))?;
@@ -125,7 +138,18 @@ mod tests {
     fn nothing_to_undo_on_fresh_repo() {
         let fx = TestRepo::new();
         let repo = fx.open();
-        assert!(!can_undo(&repo));
+        assert!(!can_undo(&repo).unwrap());
+        assert!(undo_last(&repo).is_err());
+    }
+
+    #[test]
+    fn corrupt_journal_is_surfaced_not_swallowed() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        std::fs::write(repo.path().join("noobgit_undo.json"), b"{ broken json").unwrap();
+        // 壊れた履歴を「履歴なし」と誤認せず、エラーとして返す。
+        assert!(can_undo(&repo).is_err());
+        assert!(peek(&repo).is_err());
         assert!(undo_last(&repo).is_err());
     }
 
@@ -160,10 +184,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(peek(&repo).is_some());
+        assert!(peek(&repo).unwrap().is_some());
         let desc = undo_last(&repo).unwrap();
         assert!(desc.contains("temp"));
         assert!(repo.find_branch("temp", git2::BranchType::Local).is_ok());
-        assert!(!can_undo(&repo));
+        assert!(!can_undo(&repo).unwrap());
     }
 }

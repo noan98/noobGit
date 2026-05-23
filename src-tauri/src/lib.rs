@@ -106,13 +106,13 @@ fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
 #[tauri::command]
 fn can_undo(repo_path: String) -> Result<bool, String> {
     let r = open(&repo_path)?;
-    Ok(undo::can_undo(&r))
+    undo::can_undo(&r).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
-    Ok(undo::peek(&r))
+    undo::peek(&r).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
