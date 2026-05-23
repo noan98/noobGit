@@ -103,16 +103,18 @@ fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
     ops::reset_hard(&r, &revspec).map_err(|e| e.to_string())
 }
 
+// Undoは補助機能なので、履歴の読み取りに失敗しても画面全体の取得を巻き添えにしない。
+// （リポジトリを開けない等の致命的エラーは引き続き伝播する。）
 #[tauri::command]
 fn can_undo(repo_path: String) -> Result<bool, String> {
     let r = open(&repo_path)?;
-    undo::can_undo(&r).map_err(|e| e.to_string())
+    Ok(undo::can_undo(&r).unwrap_or(false))
 }
 
 #[tauri::command]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
-    undo::peek(&r).map_err(|e| e.to_string())
+    Ok(undo::peek(&r).ok().flatten())
 }
 
 #[tauri::command]

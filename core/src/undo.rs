@@ -78,7 +78,7 @@ pub fn push(repo: &Repository, entry: UndoEntry) -> Result<()> {
 
 /// 次に取り消される操作の説明を覗き見る（実行はしない）。
 pub fn peek(repo: &Repository) -> Result<Option<UndoEntry>> {
-    Ok(load(repo)?.pop())
+    Ok(load(repo)?.last().cloned())
 }
 
 /// 取り消せる操作があるか。
