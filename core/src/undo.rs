@@ -98,8 +98,12 @@ pub fn undo_last(repo: &Repository) -> Result<String> {
     Ok(entry.description)
 }
 
+// apply は冪等に保つ。undo_last は apply 後に save するため、apply 成功・save 失敗の後で
+// 同じUndoを再実行しても「branch already exists」「reference not found」等で壊れないようにする。
+// （ベストエフォート方針に沿い、進行中マーカー等の重い二段階更新は採らない。）
 fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
     match action {
+        // 固定oidへのリセットは何度実行しても同じ結果になる（冪等）。
         UndoAction::SoftResetTo { previous } => {
             let oid = git2::Oid::from_str(previous)?;
             let obj = repo.find_object(oid, None)?;
@@ -111,13 +115,18 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             repo.reset(&obj, ResetType::Hard, None)?;
         }
         UndoAction::RecreateBranch { name, target } => {
-            let oid = git2::Oid::from_str(target)?;
-            let commit = repo.find_commit(oid)?;
-            repo.branch(name, &commit, false)?;
+            // 既に復元済みなら何もしない。
+            if repo.find_branch(name, git2::BranchType::Local).is_err() {
+                let oid = git2::Oid::from_str(target)?;
+                let commit = repo.find_commit(oid)?;
+                repo.branch(name, &commit, false)?;
+            }
         }
         UndoAction::DeleteBranch { name } => {
-            let mut branch = repo.find_branch(name, git2::BranchType::Local)?;
-            branch.delete()?;
+            // 既に削除済みなら何もしない。
+            if let Ok(mut branch) = repo.find_branch(name, git2::BranchType::Local) {
+                branch.delete()?;
+            }
         }
         UndoAction::UncommitInitial { branch } => {
             let refname = format!("refs/heads/{branch}");
@@ -189,5 +198,34 @@ mod tests {
         assert!(desc.contains("temp"));
         assert!(repo.find_branch("temp", git2::BranchType::Local).is_ok());
         assert!(!can_undo(&repo).unwrap());
+    }
+
+    // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。
+    #[test]
+    fn apply_is_idempotent_for_branch_actions() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+
+        // RecreateBranch: 2回適用してもエラーにならず、ブランチが存在する。
+        let recreate = UndoAction::RecreateBranch {
+            name: "feature".into(),
+            target: target.clone(),
+        };
+        apply(&repo, &recreate).unwrap();
+        apply(&repo, &recreate).unwrap();
+        assert!(repo.find_branch("feature", git2::BranchType::Local).is_ok());
+
+        // DeleteBranch: 2回適用してもエラーにならず、ブランチが消えている。
+        let delete = UndoAction::DeleteBranch {
+            name: "feature".into(),
+        };
+        apply(&repo, &delete).unwrap();
+        apply(&repo, &delete).unwrap();
+        assert!(repo.find_branch("feature", git2::BranchType::Local).is_err());
     }
 }
