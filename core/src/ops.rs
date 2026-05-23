@@ -107,14 +107,14 @@ pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
         },
         None => UndoAction::UncommitInitial { branch },
     };
-    undo::push(
+    record_undo(
         repo,
         UndoEntry {
             op: OperationKind::Commit,
             description: format!("コミット「{}」を取り消す", first_line(message)),
             action,
         },
-    )?;
+    );
 
     let commit = repo.find_commit(oid)?;
     let author = commit.author();
@@ -144,7 +144,7 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
     })?;
 
     repo.branch(name, &head_commit, false)?;
-    undo::push(
+    record_undo(
         repo,
         UndoEntry {
             op: OperationKind::CreateBranch,
@@ -153,7 +153,7 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
                 name: name.to_string(),
             },
         },
-    )?;
+    );
     Ok(())
 }
 
@@ -199,7 +199,7 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
         .ok_or_else(|| CoreError::Git("ブランチの参照先を取得できませんでした。".to_string()))?;
 
     branch.delete()?;
-    undo::push(
+    record_undo(
         repo,
         UndoEntry {
             op: OperationKind::DeleteBranch,
@@ -209,7 +209,7 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
                 target: target.to_string(),
             },
         },
-    )?;
+    );
     Ok(())
 }
 
@@ -227,7 +227,7 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
         .map_err(|_| CoreError::InvalidInput(format!("コミットを特定できません: {revspec}")))?;
 
     repo.reset(commit.as_object(), ResetType::Hard, None)?;
-    undo::push(
+    record_undo(
         repo,
         UndoEntry {
             op: OperationKind::ResetHard,
@@ -236,12 +236,22 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
                 previous: prev.to_string(),
             },
         },
-    )?;
+    );
     Ok(())
 }
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("").trim()
+}
+
+/// Undo履歴への記録はベストエフォートで行う。
+///
+/// 呼び出し時点でGit操作自体は既に成功している。履歴ファイル(.git内)の書き込みが
+/// ディスク満杯やファイルロック（Windowsの同期/アンチウイルス等）で失敗しても、
+/// 操作を「失敗」扱いにはしない（再実行による二次事故を避けるため）。
+/// この場合、その操作のワンクリックUndoだけが使えなくなる。
+fn record_undo(repo: &Repository, entry: UndoEntry) {
+    let _ = undo::push(repo, entry);
 }
 
 #[cfg(test)]
