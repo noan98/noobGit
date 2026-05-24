@@ -1,16 +1,121 @@
+/*
+ * デザイントークン。
+ * すべての色はここで定義した CSS 変数を経由する。ライトを既定とし、
+ * ダークは `[data-theme="dark"]` で上書きする（「システム」は JS が
+ * prefers-color-scheme を解決して data-theme に light/dark を流し込む）。
+ * 個別の hex 値をルールに直書きしないこと — テーマ追従が壊れる。
+ */
 :root {
+  color-scheme: light;
+
+  /* 面（背景・パネル・浮いた面・くぼんだ面） */
   --bg: #f6f8fa;
   --panel: #ffffff;
+  --surface: #ffffff;
+  --surface-muted: #f6f8fa;
+
+  /* 罫線・文字 */
   --border: #d0d7de;
+  --border-muted: #e6e9ec;
   --text: #1f2328;
   --muted: #656d76;
+
+  /* アクセント */
   --accent: #0969da;
+  --accent-hover: #0860c9;
+
+  /* 意味色（文字・罫線として使う濃い色） */
   --safe: #1a7f37;
   --caution: #9a6700;
   --destructive: #cf222e;
 
+  /* 意味色の薄い面（バナー・タグ・フラグ・diff の地） */
+  --safe-bg: #dafbe1;
+  --safe-border: #aceebb;
+  --caution-bg: #fff1cc;
+  --caution-border: #f0d58a;
+  --destructive-bg: #ffebe9;
+  --destructive-border: #ffcecb;
+  --accent-bg: #ddf4ff;
+  --accent-border: #b6e3ff;
+
+  /* 意味色の塗り（白文字を載せるソリッドなバッジ／ボタン用） */
+  --safe-emphasis: #1a7f37;
+  --caution-emphasis: #9a6700;
+  --destructive-emphasis: #cf222e;
+  --on-emphasis: #ffffff;
+
+  /* diff の行 */
+  --diff-add-bg: #e6ffec;
+  --diff-del-bg: #ffebe9;
+  --diff-hunk-bg: #ddf4ff;
+
+  /* ボタン */
+  --btn-bg: #ffffff;
+  --btn-hover: #f3f4f6;
+  --btn-active: #ebecf0;
+
+  /* 効果（オーバーレイ・影・フォーカスリング） */
+  --overlay: rgba(27, 31, 36, 0.5);
+  --shadow: 0 1px 3px rgba(27, 31, 36, 0.08), 0 1px 2px rgba(27, 31, 36, 0.06);
+  --shadow-lg: 0 12px 32px rgba(27, 31, 36, 0.2);
+  --focus-ring: rgba(9, 105, 218, 0.4);
+
+  /* 形 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
   font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI",
     Meiryo, sans-serif;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0d1117;
+  --panel: #161b22;
+  --surface: #1c2128;
+  --surface-muted: #0d1117;
+
+  --border: #30363d;
+  --border-muted: #21262d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+
+  --safe: #3fb950;
+  --caution: #d29922;
+  --destructive: #f85149;
+
+  --safe-bg: rgba(46, 160, 67, 0.16);
+  --safe-border: rgba(46, 160, 67, 0.4);
+  --caution-bg: rgba(187, 128, 9, 0.16);
+  --caution-border: rgba(187, 128, 9, 0.4);
+  --destructive-bg: rgba(248, 81, 73, 0.16);
+  --destructive-border: rgba(248, 81, 73, 0.4);
+  --accent-bg: rgba(56, 139, 253, 0.16);
+  --accent-border: rgba(56, 139, 253, 0.4);
+
+  --safe-emphasis: #238636;
+  --caution-emphasis: #9e6a03;
+  --destructive-emphasis: #da3633;
+  --on-emphasis: #ffffff;
+
+  --diff-add-bg: rgba(46, 160, 67, 0.18);
+  --diff-del-bg: rgba(248, 81, 73, 0.18);
+  --diff-hunk-bg: rgba(56, 139, 253, 0.18);
+
+  --btn-bg: #21262d;
+  --btn-hover: #30363d;
+  --btn-active: #282e36;
+
+  --overlay: rgba(1, 4, 9, 0.7);
+  --shadow: 0 1px 3px rgba(1, 4, 9, 0.5);
+  --shadow-lg: 0 16px 40px rgba(1, 4, 9, 0.7);
+  --focus-ring: rgba(56, 139, 253, 0.5);
 }
 
 * {
@@ -28,6 +133,18 @@ button {
   font-family: inherit;
 }
 
+/* キーボード操作時のフォーカスを明確にする（アクセシビリティ） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ---- welcome ---- */
 .welcome {
   max-width: 640px;
@@ -38,6 +155,7 @@ button {
 .welcome h1 {
   font-size: 40px;
   margin-bottom: 4px;
+  letter-spacing: -0.02em;
 }
 .tagline {
   color: var(--muted);
@@ -50,15 +168,30 @@ button {
 .open-box input {
   flex: 1;
 }
+.welcome .error {
+  color: var(--destructive);
+  margin-top: 16px;
+}
 
 /* ---- inputs ---- */
 input,
 textarea {
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: inherit;
+  background: var(--panel);
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
 }
 textarea {
   width: 100%;
@@ -70,12 +203,18 @@ textarea {
 .btn {
   padding: 8px 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: #fff;
+  border-radius: var(--radius-sm);
+  background: var(--btn-bg);
+  color: var(--text);
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
 }
 .btn:hover {
-  background: #f3f4f6;
+  background: var(--btn-hover);
+}
+.btn:active {
+  background: var(--btn-active);
 }
 .btn:disabled {
   opacity: 0.5;
@@ -86,8 +225,12 @@ textarea {
   font-size: 13px;
 }
 .btn-undo {
-  background: #fff8e6;
-  border-color: #d4a72c;
+  background: var(--caution-bg);
+  border-color: var(--caution-border);
+  color: var(--text);
+}
+.btn-undo:hover {
+  background: var(--caution-border);
 }
 .link {
   border: none;
@@ -96,6 +239,9 @@ textarea {
   cursor: pointer;
   padding: 0 6px;
   font-size: 13px;
+}
+.link:hover {
+  color: var(--accent-hover);
 }
 .link.danger {
   color: var(--destructive);
@@ -120,6 +266,9 @@ textarea {
   align-items: baseline;
   gap: 12px;
 }
+.repo-info strong {
+  letter-spacing: -0.01em;
+}
 .current-branch {
   color: var(--muted);
 }
@@ -134,14 +283,14 @@ textarea {
   cursor: pointer;
 }
 .banner.error {
-  background: #ffebe9;
+  background: var(--destructive-bg);
   color: var(--destructive);
-  border-bottom: 1px solid #ffcecb;
+  border-bottom: 1px solid var(--destructive-border);
 }
 .banner.notice {
-  background: #dafbe1;
+  background: var(--safe-bg);
   color: var(--safe);
-  border-bottom: 1px solid #aceebb;
+  border-bottom: 1px solid var(--safe-border);
 }
 .banner.setup {
   display: flex;
@@ -149,9 +298,9 @@ textarea {
   justify-content: space-between;
   gap: 12px;
   cursor: default;
-  background: #fff8e6;
+  background: var(--caution-bg);
   color: var(--caution);
-  border-bottom: 1px solid #f0d58a;
+  border-bottom: 1px solid var(--caution-border);
 }
 
 .columns {
@@ -173,8 +322,9 @@ textarea {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 12px;
+  box-shadow: var(--shadow);
 }
 .panel-head {
   display: flex;
@@ -222,24 +372,24 @@ textarea {
 }
 .tag-added,
 .tag-untracked {
-  background: #dafbe1;
+  background: var(--safe-bg);
   color: var(--safe);
 }
 .tag-modified,
 .tag-type_change {
-  background: #fff1cc;
+  background: var(--caution-bg);
   color: var(--caution);
 }
 .tag-deleted {
-  background: #ffebe9;
+  background: var(--destructive-bg);
   color: var(--destructive);
 }
 .tag-renamed {
-  background: #ddf4ff;
+  background: var(--accent-bg);
   color: var(--accent);
 }
 .tag-conflicted {
-  background: #ffd8d3;
+  background: var(--destructive-bg);
   color: var(--destructive);
 }
 
@@ -279,7 +429,7 @@ textarea {
   max-height: 360px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .diff-table {
   border-collapse: collapse;
@@ -309,41 +459,41 @@ textarea {
   width: 100%;
 }
 .diff-addition {
-  background: #e6ffec;
+  background: var(--diff-add-bg);
 }
 .diff-addition .diff-sign {
   color: var(--safe);
 }
 .diff-deletion {
-  background: #ffebe9;
+  background: var(--diff-del-bg);
 }
 .diff-deletion .diff-sign {
   color: var(--destructive);
 }
 .diff-hunk {
-  background: #ddf4ff;
+  background: var(--diff-hunk-bg);
 }
 .diff-hunk .diff-content {
   color: var(--accent);
 }
 .diff-conflict-marker {
-  background: #fff1cc;
+  background: var(--caution-bg);
   font-weight: 600;
 }
 .diff-conflict-marker .diff-content {
   color: var(--caution);
 }
 .diff-conflict-note {
-  background: #fff8e6;
-  border: 1px solid #d4a72c;
-  border-radius: 6px;
+  background: var(--caution-bg);
+  border: 1px solid var(--caution-border);
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
   margin: 0 0 8px;
   font-size: 13px;
   line-height: 1.6;
 }
 .diff-conflict-note code {
-  background: #fff1cc;
+  background: var(--caution-border);
   border-radius: 3px;
   padding: 0 4px;
   font-size: 12px;
@@ -402,7 +552,7 @@ textarea {
 }
 .protected {
   font-size: 10px;
-  background: #fff1cc;
+  background: var(--caution-bg);
   color: var(--caution);
   padding: 1px 5px;
   border-radius: 4px;
@@ -415,11 +565,11 @@ textarea {
   margin-left: 6px;
 }
 .badge.merged {
-  background: #dafbe1;
+  background: var(--safe-bg);
   color: var(--safe);
 }
 .badge.unmerged {
-  background: #ffebe9;
+  background: var(--destructive-bg);
   color: var(--destructive);
 }
 .branch-relation {
@@ -449,19 +599,21 @@ textarea {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
 }
 .dialog {
-  background: #fff;
+  background: var(--surface);
+  color: var(--text);
   width: 520px;
   max-width: 92vw;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 20px;
   border-top: 6px solid var(--border);
+  box-shadow: var(--shadow-lg);
 }
 .dialog.risk-caution {
   border-top-color: var(--caution);
@@ -483,20 +635,21 @@ textarea {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 12px;
-  color: #fff;
+  color: var(--on-emphasis);
 }
 .risk-badge.risk-safe {
-  background: var(--safe);
+  background: var(--safe-emphasis);
 }
 .risk-badge.risk-caution {
-  background: var(--caution);
+  background: var(--caution-emphasis);
 }
 .risk-badge.risk-destructive {
-  background: var(--destructive);
+  background: var(--destructive-emphasis);
 }
 .explain {
-  background: #f6f8fa;
-  border-radius: 6px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   margin-bottom: 12px;
 }
@@ -529,22 +682,23 @@ textarea {
   border-radius: 4px;
 }
 .flag-ok {
-  background: #dafbe1;
+  background: var(--safe-bg);
   color: var(--safe);
 }
 .flag-warn {
-  background: #fff1cc;
+  background: var(--caution-bg);
   color: var(--caution);
 }
 .flag-danger {
-  background: #ffebe9;
+  background: var(--destructive-bg);
   color: var(--destructive);
   font-weight: 600;
 }
 .alt {
-  background: #ddf4ff;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
 }
 .trouble {
@@ -567,7 +721,7 @@ textarea {
 }
 .scope {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   margin: 0 0 4px;
 }
@@ -596,15 +750,15 @@ textarea {
   margin-top: 16px;
 }
 .btn-confirm {
-  color: #fff;
+  color: var(--on-emphasis);
   border: none;
 }
 .btn-confirm.risk-caution {
-  background: var(--caution);
+  background: var(--caution-emphasis);
 }
 .btn-confirm.risk-destructive {
-  background: var(--destructive);
+  background: var(--destructive-emphasis);
 }
 .btn-confirm.risk-safe {
-  background: var(--safe);
+  background: var(--safe-emphasis);
 }

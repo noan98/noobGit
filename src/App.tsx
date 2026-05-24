@@ -27,6 +27,36 @@ import { IdentityDialog } from "./components/IdentityDialog";
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
 
+// 表示テーマ。"system" は OS の設定（prefers-color-scheme）に追従する。
+type ThemeChoice = "light" | "dark" | "system";
+const THEME_KEY = "noobgit-theme";
+const THEME_CYCLE: ThemeChoice[] = ["light", "dark", "system"];
+const THEME_META: Record<ThemeChoice, { icon: string; label: string }> = {
+  light: { icon: "☀️", label: "ライト" },
+  dark: { icon: "🌙", label: "ダーク" },
+  system: { icon: "🖥️", label: "システム" },
+};
+
+function readThemeChoice(): ThemeChoice {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v === "light" || v === "dark") return v;
+  } catch {
+    /* localStorage 不可は既定（system）に倒す */
+  }
+  return "system";
+}
+
+// 選択（light/dark/system）を実際に適用する light/dark へ解決する。
+function resolveTheme(choice: ThemeChoice): "light" | "dark" {
+  if (choice === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  return choice;
+}
+
 // 再取得する範囲。操作の性質に応じて必要な部分だけを真にして冗長な I/O を避ける。
 interface RefreshParts {
   status?: boolean;
@@ -78,6 +108,29 @@ interface Guard {
 export default function App() {
   const [repoPath, setRepoPath] = useState("");
   const [opened, setOpened] = useState(false);
+
+  // 表示テーマ。選択を localStorage に保存し、data-theme へ解決値を反映する。
+  const [theme, setTheme] = useState<ThemeChoice>(readThemeChoice);
+  useEffect(() => {
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* 保存できなくても表示は続行する */
+    }
+    const apply = () =>
+      document.documentElement.setAttribute("data-theme", resolveTheme(theme));
+    apply();
+    // "system" のときだけ OS 設定の変化に追従する。
+    if (theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, [theme]);
+  const cycleTheme = useCallback(() => {
+    setTheme(
+      (cur) => THEME_CYCLE[(THEME_CYCLE.indexOf(cur) + 1) % THEME_CYCLE.length],
+    );
+  }, []);
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -363,6 +416,14 @@ export default function App() {
             title="コミット作者の名前とメールアドレスを設定します"
           >
             👤 名前/メール
+          </button>
+          <button
+            className="btn btn-small"
+            onClick={cycleTheme}
+            title="表示テーマを切り替えます（ライト → ダーク → システム）"
+            aria-label={`表示テーマ: ${THEME_META[theme].label}`}
+          >
+            {THEME_META[theme].icon} {THEME_META[theme].label}
           </button>
           <button className="btn btn-small" onClick={() => void refresh()}>
             更新
