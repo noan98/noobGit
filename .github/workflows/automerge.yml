@@ -32,6 +32,9 @@ on:
 # 「Read and write permissions」にしておく必要がある。read-only のままだと
 # GITHUB_TOKEN が contents: write を得られず、`gh pr merge` がマージコミットを
 # 作れずに失敗/スキップし、ボットによる自動マージが一切成立しない。
+# さらに注意: main のブランチ保護(ルールセット)で「Restrict updates(更新の制限)」を
+# 有効にすると、bypass 対象者しか main を更新(=マージ)できず github-actions[bot] が
+# 弾かれる。bot に自動マージさせるには、この制限を外すか bot を bypass 対象に含める。
 permissions:
   contents: write
   pull-requests: write
