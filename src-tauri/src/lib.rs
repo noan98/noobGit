@@ -6,10 +6,11 @@
 use git2::Repository;
 
 use noobgit_core::explain::{explain as explain_op, Explanation};
+use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{BranchInfo, CommitInfo, RepoStatus};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
-use noobgit_core::{ops, repo, undo};
+use noobgit_core::{identity, ops, repo, undo};
 
 fn open(repo_path: &str) -> Result<Repository, String> {
     repo::open(repo_path).map_err(|e| e.to_string())
@@ -79,6 +80,25 @@ fn commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     ops::commit(&r, &message).map_err(|e| e.to_string())
 }
 
+/// 現在の identity（user.name / user.email）を取得する。初回セットアップ案内に使う。
+#[tauri::command]
+fn get_identity(repo_path: String) -> Result<Identity, String> {
+    let r = open(&repo_path)?;
+    identity::get_identity(&r).map_err(|e| e.to_string())
+}
+
+/// identity を保存する。`scope` で保存先（ローカル/グローバル）を選ぶ。
+#[tauri::command]
+fn set_identity(
+    repo_path: String,
+    name: String,
+    email: String,
+    scope: IdentityScope,
+) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    identity::set_identity(&r, &name, &email, scope).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     let r = open(&repo_path)?;
@@ -136,6 +156,8 @@ pub fn run() {
             stage_path,
             unstage,
             commit,
+            get_identity,
+            set_identity,
             create_branch,
             switch_branch,
             delete_branch,

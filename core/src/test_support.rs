@@ -14,18 +14,25 @@ pub struct TestRepo {
 impl TestRepo {
     /// 初期ブランチ `main`・ユーザー設定済みの空リポジトリを作る。
     pub fn new() -> Self {
+        let fx = Self::new_without_identity();
+        {
+            let repo = fx.open();
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Test User").unwrap();
+            cfg.set_str("user.email", "test@example.com").unwrap();
+        }
+        fx
+    }
+
+    /// identity（user.name / user.email）を設定していない空リポジトリを作る。
+    /// 初回セットアップのテスト用。
+    pub fn new_without_identity() -> Self {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_path_buf();
 
         let mut opts = RepositoryInitOptions::new();
         opts.initial_head("main");
-        let repo = Repository::init_opts(&path, &opts).unwrap();
-
-        {
-            let mut cfg = repo.config().unwrap();
-            cfg.set_str("user.name", "Test User").unwrap();
-            cfg.set_str("user.email", "test@example.com").unwrap();
-        }
+        Repository::init_opts(&path, &opts).unwrap();
 
         TestRepo { _dir: dir, path }
     }
