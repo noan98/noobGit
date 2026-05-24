@@ -5,6 +5,8 @@ import {
   type BranchInfo,
   type CommitInfo,
   type Explanation,
+  type Identity,
+  type IdentityScope,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -14,6 +16,7 @@ import { StatusPanel } from "./components/StatusPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { IdentityDialog } from "./components/IdentityDialog";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -90,6 +93,11 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [showIdentity, setShowIdentity] = useState(false);
+  const identityComplete = !!(identity && identity.name && identity.email);
+
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
       if (!repoPath) return false;
@@ -122,15 +130,48 @@ export default function App() {
     [repoPath],
   );
 
+  // identity の取得は補助的なので、失敗しても画面表示は止めない（バナーで案内に倒す）。
+  const loadIdentity = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      setIdentity(await api.getIdentity(repoPath));
+    } catch {
+      setIdentity(null);
+    }
+  }, [repoPath]);
+
   useEffect(() => {
-    if (opened) void refresh();
-  }, [opened, refresh]);
+    if (opened) {
+      void refresh();
+      void loadIdentity();
+    }
+  }, [opened, refresh, loadIdentity]);
 
   async function openRepo() {
     if (!repoPath.trim()) return;
     setNotice(null);
     const ok = await refresh();
     if (ok) setOpened(true);
+  }
+
+  async function saveIdentity(
+    name: string,
+    email: string,
+    scope: IdentityScope,
+  ) {
+    try {
+      await api.setIdentity(repoPath, name, email, scope);
+      setIdentity(await api.getIdentity(repoPath));
+      setShowIdentity(false);
+      setError(null);
+      setNotice(
+        scope === "global"
+          ? "名前とメールを設定しました（このPC全体）。"
+          : "名前とメールを設定しました（このリポジトリ）。",
+      );
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
@@ -186,6 +227,13 @@ export default function App() {
   function doCommit() {
     const msg = commitMsg.trim();
     if (!msg) return;
+    // 名前・メール未設定のままコミットすると失敗するので、先にセットアップへ案内する。
+    if (!identityComplete) {
+      setError(null);
+      setNotice("コミットの前に、名前とメールアドレスを設定しましょう。");
+      setShowIdentity(true);
+      return;
+    }
     void exec(
       async () => {
         await api.commit(repoPath, msg);
@@ -256,6 +304,13 @@ export default function App() {
               ↩ 取り消す: {undoInfo.description}
             </button>
           )}
+          <button
+            className="btn btn-small"
+            onClick={() => setShowIdentity(true)}
+            title="コミット作者の名前とメールアドレスを設定します"
+          >
+            👤 名前/メール
+          </button>
           <button className="btn btn-small" onClick={() => void refresh()}>
             更新
           </button>
@@ -264,6 +319,7 @@ export default function App() {
             onClick={() => {
               setOpened(false);
               setStatus(null);
+              setIdentity(null);
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
@@ -282,6 +338,19 @@ export default function App() {
       {notice && (
         <div className="banner notice" onClick={() => setNotice(null)}>
           {notice}
+        </div>
+      )}
+      {!identityComplete && (
+        <div className="banner setup">
+          <span>
+            👋 コミットには「名前」と「メールアドレス」の設定が必要です。
+          </span>
+          <button
+            className="btn btn-small"
+            onClick={() => setShowIdentity(true)}
+          >
+            設定する
+          </button>
         </div>
       )}
 
@@ -377,6 +446,16 @@ export default function App() {
           explanation={guard.explanation}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {showIdentity && (
+        <IdentityDialog
+          current={identity}
+          onSave={(name, email, scope) =>
+            void saveIdentity(name, email, scope)
+          }
+          onCancel={() => setShowIdentity(false)}
         />
       )}
     </div>

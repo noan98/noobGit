@@ -98,6 +98,14 @@ export interface UndoEntry {
   description: string;
 }
 
+// identity の保存先。"local" は今のリポジトリだけ、"global" はこのPC全体。
+export type IdentityScope = "local" | "global";
+
+export interface Identity {
+  name: string | null;
+  email: string | null;
+}
+
 // --- ラベル -----------------------------------------------------------------
 
 export const changeKindLabel: Record<ChangeKind, string> = {
@@ -138,6 +146,15 @@ export const api = {
     invoke<void>("unstage", { repoPath, path }),
   commit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("commit", { repoPath, message }),
+
+  getIdentity: (repoPath: string) =>
+    invoke<Identity>("get_identity", { repoPath }),
+  setIdentity: (
+    repoPath: string,
+    name: string,
+    email: string,
+    scope: IdentityScope,
+  ) => invoke<void>("set_identity", { repoPath, name, email, scope }),
 
   createBranch: (repoPath: string, name: string) =>
     invoke<void>("create_branch", { repoPath, name }),

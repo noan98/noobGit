@@ -3,6 +3,7 @@
 //! 「ジュニアエンジニアが安心して使えるGitツール」のために、Git操作を
 //! - 状態の可視化（[`repo`]）
 //! - 安全な書き込み操作（[`ops`]）
+//! - 初回セットアップ（identity の確認・設定）（[`identity`]）
 //! - 操作のリスク判定（[`safety`]）
 //! - 平易な日本語説明（[`explain`]）
 //! - 取り消し / Undo（[`undo`]）
@@ -11,6 +12,7 @@
 
 pub mod error;
 pub mod explain;
+pub mod identity;
 pub mod model;
 pub mod ops;
 pub mod repo;
@@ -22,6 +24,7 @@ mod test_support;
 
 pub use error::{CoreError, ErrorKind, Result};
 pub use explain::{explain, Explanation};
+pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{BranchInfo, ChangeKind, CommitInfo, FileChange, RepoStatus};
 pub use safety::{assess, OperationKind, RiskAssessment, RiskLevel, SafetyContext};
 pub use undo::{can_undo, peek, undo_last, UndoAction, UndoEntry};
