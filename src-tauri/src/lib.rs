@@ -28,9 +28,9 @@ fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
 }
 
 #[tauri::command]
-fn get_log(repo_path: String, max: usize) -> Result<Vec<CommitInfo>, String> {
+fn get_log(repo_path: String, skip: usize, max: usize) -> Result<Vec<CommitInfo>, String> {
     let r = open(&repo_path)?;
-    repo::log(&r, max).map_err(|e| e.to_string())
+    repo::log_paged(&r, skip, max).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

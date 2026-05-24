@@ -96,8 +96,8 @@ export const api = {
     invoke<RepoStatus>("get_status", { repoPath }),
   getBranches: (repoPath: string) =>
     invoke<BranchInfo[]>("get_branches", { repoPath }),
-  getLog: (repoPath: string, max: number) =>
-    invoke<CommitInfo[]>("get_log", { repoPath, max }),
+  getLog: (repoPath: string, skip: number, max: number) =>
+    invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
 
   explain: (op: OperationKind) =>
     invoke<Explanation>("explain_operation", { op }),
