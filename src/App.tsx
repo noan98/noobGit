@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   type BranchInfo,
@@ -13,6 +13,9 @@ import { StatusPanel } from "./components/StatusPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+
+// 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
+const LOG_PAGE_SIZE = 30;
 
 // 再取得する範囲。操作の性質に応じて必要な部分だけを真にして冗長な I/O を避ける。
 interface RefreshParts {
@@ -68,7 +71,16 @@ export default function App() {
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
+  const [hasMoreCommits, setHasMoreCommits] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
+
+  // 現在読み込み済みのコミット件数。再取得時に「もっと見る」で広げた範囲を保つため、
+  // クロージャの陳腐化を避けて常に最新値を参照できるよう ref で持つ。
+  const loadedCount = useRef(0);
+  useEffect(() => {
+    loadedCount.current = commits.length;
+  }, [commits]);
 
   const [commitMsg, setCommitMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +95,16 @@ export default function App() {
         if (parts.status) tasks.push(api.getStatus(repoPath).then(setStatus));
         if (parts.branches)
           tasks.push(api.getBranches(repoPath).then(setBranches));
-        if (parts.log) tasks.push(api.getLog(repoPath, 50).then(setCommits));
+        if (parts.log) {
+          // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
+          const want = Math.max(LOG_PAGE_SIZE, loadedCount.current);
+          tasks.push(
+            api.getLog(repoPath, 0, want).then((cs) => {
+              setCommits(cs);
+              setHasMoreCommits(cs.length === want);
+            }),
+          );
+        }
         if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
         await Promise.all(tasks);
         setError(null);
@@ -169,6 +190,24 @@ export default function App() {
     );
   }
 
+  // 「もっと見る」: 末尾から次のページを読み、現在の一覧に追記する。
+  function loadMore() {
+    if (loadingMore || !repoPath) return;
+    setLoadingMore(true);
+    void (async () => {
+      try {
+        const more = await api.getLog(repoPath, commits.length, LOG_PAGE_SIZE);
+        setCommits((prev) => [...prev, ...more]);
+        setHasMoreCommits(more.length === LOG_PAGE_SIZE);
+        setError(null);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoadingMore(false);
+      }
+    })();
+  }
+
   function doUndo() {
     void exec(async () => {
       const desc = await api.undoLast(repoPath);
@@ -220,6 +259,9 @@ export default function App() {
             onClick={() => {
               setOpened(false);
               setStatus(null);
+              // 次に開くリポジトリは初期件数から軽く表示し直す。
+              setCommits([]);
+              setHasMoreCommits(false);
             }}
           >
             別のリポジトリ
@@ -281,6 +323,9 @@ export default function App() {
         <section className="col">
           <HistoryPanel
             commits={commits}
+            hasMore={hasMoreCommits}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
             onReset={(c) =>
               void guarded(
                 `「${c.short_id}」までハードリセット`,

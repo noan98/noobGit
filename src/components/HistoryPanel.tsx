@@ -3,6 +3,9 @@ import type { CommitInfo } from "../api";
 interface Props {
   commits: CommitInfo[];
   onReset: (commit: CommitInfo) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }
 
 function formatTime(unixSeconds: number): string {
@@ -16,7 +19,13 @@ function formatTime(unixSeconds: number): string {
   });
 }
 
-export function HistoryPanel({ commits, onReset }: Props) {
+export function HistoryPanel({
+  commits,
+  onReset,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+}: Props) {
   return (
     <div className="panel">
       <div className="panel-head">
@@ -26,26 +35,39 @@ export function HistoryPanel({ commits, onReset }: Props) {
       {commits.length === 0 ? (
         <p className="empty">まだコミットがありません。最初のコミットをしてみましょう。</p>
       ) : (
-        <ul className="commits">
-          {commits.map((c) => (
-            <li key={c.id}>
-              <code className="sha">{c.short_id}</code>
-              <div className="commit-body">
-                <span className="summary">{c.summary || "(メッセージなし)"}</span>
-                <span className="meta">
-                  {c.author_name} ・ {formatTime(c.time)}
-                </span>
-              </div>
+        <>
+          <ul className="commits">
+            {commits.map((c) => (
+              <li key={c.id}>
+                <code className="sha">{c.short_id}</code>
+                <div className="commit-body">
+                  <span className="summary">{c.summary || "(メッセージなし)"}</span>
+                  <span className="meta">
+                    {c.author_name} ・ {formatTime(c.time)}
+                  </span>
+                </div>
+                <button
+                  className="link danger"
+                  title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                  onClick={() => onReset(c)}
+                >
+                  ここまで戻す
+                </button>
+              </li>
+            ))}
+          </ul>
+          {hasMore && (
+            <div className="load-more">
               <button
-                className="link danger"
-                title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
-                onClick={() => onReset(c)}
+                className="btn btn-small"
+                onClick={onLoadMore}
+                disabled={loadingMore}
               >
-                ここまで戻す
+                {loadingMore ? "読み込み中…" : "もっと見る"}
               </button>
-            </li>
-          ))}
-        </ul>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

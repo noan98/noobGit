@@ -156,6 +156,14 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
 
 /// 直近 `max` 件のコミット履歴を新しい順に返す。
 pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
+    log_paged(repo, 0, max)
+}
+
+/// `skip` 件読み飛ばした位置から `max` 件のコミット履歴を新しい順に返す。
+///
+/// 履歴パネルの「もっと見る」のような追記読み込み（ページング）に使う。
+/// `skip` がコミット総数を超える場合は空のベクタを返す。
+pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<CommitInfo>> {
     if repo.head().is_err() {
         // コミットが1件も無いリポジトリ。
         return Ok(Vec::new());
@@ -166,7 +174,7 @@ pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
     revwalk.set_sorting(git2::Sort::TIME)?;
 
     let mut out = Vec::new();
-    for oid in revwalk.take(max) {
+    for oid in revwalk.skip(skip).take(max) {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
         let author = commit.author();
@@ -232,6 +240,43 @@ mod tests {
         let log = log(&repo, 10).unwrap();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].summary, "最初のコミット");
+    }
+
+    #[test]
+    fn log_paged_skips_and_takes() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        // 全件をひとまとめに取得した並びを基準にする。テストではコミット時刻が同秒に
+        // なりうるため、特定の並び順を仮定せず「ページは全件の連続したスライスである」
+        // という性質を検証する。
+        let all = log_paged(&repo, 0, 100).unwrap();
+        let all_ids: Vec<&str> = all.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(all.len(), 5);
+
+        let page_ids = |skip, max| -> Vec<String> {
+            log_paged(&repo, skip, max)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.id)
+                .collect()
+        };
+
+        // 先頭ページ。
+        assert_eq!(page_ids(0, 2), all_ids[0..2]);
+        // 次のページは前ページの続きから始まる（重複も欠落もない）。
+        assert_eq!(page_ids(2, 2), all_ids[2..4]);
+        // 残りは1件だけ（max より少なくても正しく返る）。
+        assert_eq!(page_ids(4, 10), all_ids[4..5]);
+
+        // skip がコミット総数以上なら空。
+        assert!(log_paged(&repo, 5, 10).unwrap().is_empty());
+        assert!(log_paged(&repo, 99, 10).unwrap().is_empty());
     }
 
     #[test]

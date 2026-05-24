@@ -251,6 +251,11 @@ textarea {
   color: var(--muted);
   font-size: 12px;
 }
+.load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
 
 /* ---- branches ---- */
 .branch-create {
