@@ -1,294 +1,293 @@
 # CLAUDE.md
 
-Guidance for AI assistants working in this repository.
+このリポジトリで作業する AI アシスタント向けのガイドです。
 
-## What this is
+## これは何か
 
-**noobGit** is a desktop Git GUI aimed at junior engineers. Its goal is to
-prevent "oops" Git accidents and explain, in plain Japanese, what each
-operation does, whether it is reversible, and what safer alternatives exist.
+**noobGit** は、ジュニアエンジニア向けのデスクトップ Git GUI です。Git の
+「うっかり」事故を防ぎ、各操作が何をするのか・取り消せるのか・より安全な
+代替手段は何かを、平易な日本語で説明することを目的としています。
 
-- **Stack:** Rust + [Tauri 2](https://v2.tauri.app/) backend, React 18 +
-  TypeScript + Vite frontend.
-- **Git engine:** libgit2 via the `git2` crate. The `git` binary is **not**
-  required and is never shelled out to — all Git work goes through `git2`.
-- **Target platform:** Windows (NSIS + MSI installers). Builds are not
-  expected to produce installers on Linux/macOS, but `cargo test` and the
-  frontend typecheck/build run anywhere.
+- **スタック:** Rust + [Tauri 2](https://v2.tauri.app/) バックエンド、React 18 +
+  TypeScript + Vite フロントエンド。
+- **Git エンジン:** `git2` クレート経由の libgit2。`git` バイナリは**不要**で、
+  シェルから呼び出すことも一切ありません。すべての Git 処理は `git2` を通します。
+- **対象プラットフォーム:** Windows（NSIS + MSI インストーラ）。Linux/macOS では
+  インストーラの生成は想定していませんが、`cargo test` とフロントエンドの
+  typecheck/build はどこでも実行できます。
 
-## Architecture
+## アーキテクチャ
 
-Three layers, strictly separated. The golden rule: **all Git logic and
-safety rules live in `core/`; the Tauri layer is a thin translation shell;
-the frontend never contains Git logic.**
+3 つのレイヤーを厳密に分離します。鉄則: **すべての Git ロジックと安全規則は
+`core/` に置く。Tauri レイヤーは薄い変換シェルにすぎない。フロントエンドには
+Git ロジックを一切含めない。**
 
 ```
 noobGit/
-├─ core/         # noobgit-core: pure, testable Rust. Git ops, safety, explanations, undo.
-├─ src-tauri/    # Tauri 2 app: thin #[tauri::command] wrappers that call core.
-└─ src/          # React + TypeScript frontend (UI only).
+├─ core/         # noobgit-core: 純粋でテスト可能な Rust。Git 操作・安全性・説明・undo。
+├─ src-tauri/    # Tauri 2 アプリ: core を呼ぶ薄い #[tauri::command] ラッパー。
+└─ src/          # React + TypeScript フロントエンド（UI のみ）。
 ```
 
-This is a Cargo workspace (`Cargo.toml` at root) with members `core` and
-`src-tauri`. Shared dependency versions (`serde`, `serde_json`, `git2`,
-`thiserror`) are pinned in `[workspace.dependencies]`.
+これはルートに `Cargo.toml` を置く Cargo ワークスペースで、メンバーは `core` と
+`src-tauri` です。共有する依存バージョン（`serde`, `serde_json`, `git2`,
+`thiserror`）は `[workspace.dependencies]` にピン留めしています。
 
-### `core/` (crate `noobgit-core`)
+### `core/`（クレート `noobgit-core`）
 
-| Module | Responsibility |
+| モジュール | 責務 |
 |---|---|
-| `model.rs` | Serde data types: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`. |
-| `repo.rs` | Read-only state: `open` (discovers `.git` upward), `status`, `branches`, `log`, `current_branch`, `is_dirty`. |
-| `ops.rs` | Write operations: `stage_all`, `stage_path`, `unstage`, `commit`, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`. Each write records an undo entry (best-effort). |
-| `safety.rs` | Risk classification: `assess(op, ctx) -> RiskAssessment` with `RiskLevel::{Safe, Caution, Destructive}`. Defines protected branches (`main`/`master`). |
-| `explain.rs` | Plain-Japanese explanations per `OperationKind` (`what` / `why` / `on_trouble`). Single source of truth for operation copy. |
-| `undo.rs` | One-click undo. Journal stored at `.git/noobgit_undo.json`; `UndoAction` variants describe how to reverse each op. |
-| `error.rs` | `CoreError` (Japanese messages), `ErrorKind` (serializable), `Result<T>`. |
-| `test_support.rs` | `#[cfg(test)]` only — `TestRepo` helper that builds a real temp repo. |
+| `model.rs` | Serde データ型: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`。 |
+| `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log`, `current_branch`, `is_dirty`。 |
+| `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `unstage`, `commit`, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`。各書き込みは undo エントリを記録する（ベストエフォート）。 |
+| `safety.rs` | リスク分類: `assess(op, ctx) -> RiskAssessment`（`RiskLevel::{Safe, Caution, Destructive}`）。保護ブランチ（`main`/`master`）を定義する。 |
+| `explain.rs` | `OperationKind` ごとの平易な日本語の説明（`what` / `why` / `on_trouble`）。操作文言の唯一の出典。 |
+| `undo.rs` | ワンクリック undo。ジャーナルは `.git/noobgit_undo.json` に保存。`UndoAction` の各バリアントが、各操作をどう巻き戻すかを記述する。 |
+| `error.rs` | `CoreError`（日本語メッセージ）, `ErrorKind`（シリアライズ可能）, `Result<T>`。 |
+| `test_support.rs` | `#[cfg(test)]` 専用 — 実際の一時リポジトリを構築する `TestRepo` ヘルパー。 |
 
 ### `src-tauri/`
 
-- `src/lib.rs` — every `#[tauri::command]` lives here. They follow one shape:
-  open the repo from `repo_path`, call the matching `core` function, map
-  errors with `.map_err(|e| e.to_string())` so the frontend receives the
-  Japanese message directly. Keep these wrappers thin — no business logic.
-- New commands must be added to the `tauri::generate_handler![...]` list in
-  `run()`, or they won't be callable.
-- `src/main.rs` — tiny entry point that calls `noobgit_lib::run()`.
-- `capabilities/default.json` — window permissions (custom commands need no
-  explicit entry here).
-- `tauri.conf.json` — app config, CSP, bundle targets, window settings.
+- `src/lib.rs` — すべての `#[tauri::command]` がここにある。どれも同じ形をとる:
+  `repo_path` からリポジトリを開き、対応する `core` の関数を呼び、
+  `.map_err(|e| e.to_string())` でエラーを変換して、フロントエンドが日本語
+  メッセージを直接受け取れるようにする。これらのラッパーは薄く保つこと —
+  ビジネスロジックを置かない。
+- 新しいコマンドは `run()` 内の `tauri::generate_handler![...]` リストに追加
+  しなければならない。さもないと呼び出せない。
+- `src/main.rs` — `noobgit_lib::run()` を呼ぶだけの小さなエントリポイント。
+- `capabilities/default.json` — ウィンドウ権限（カスタムコマンドはここに明示的な
+  エントリを必要としない）。
+- `tauri.conf.json` — アプリ設定、CSP、バンドルターゲット、ウィンドウ設定。
 
-### `src/` (frontend)
+### `src/`（フロントエンド）
 
-- `api.ts` — TypeScript mirror of the `core` serde types **and** the typed
-  `invoke` wrappers (the `api` object). This file is the contract boundary;
-  see "Cross-boundary type contract" below.
-- `App.tsx` — top-level state and the operation flow. Safe ops run directly
-  via `exec()`; risky ops route through `guarded()`, which calls
-  `assess` + `explain` and shows `ConfirmDialog` when the level is not `safe`.
+- `api.ts` — `core` の serde 型の TypeScript ミラー**と**、型付きの `invoke`
+  ラッパー（`api` オブジェクト）。このファイルが契約境界。下記の
+  「境界をまたぐ型契約」を参照。
+- `App.tsx` — トップレベルの状態と操作フロー。安全な操作は `exec()` で直接
+  実行し、リスクのある操作は `guarded()` を通す。`guarded()` は `assess` +
+  `explain` を呼び、レベルが `safe` でないときに `ConfirmDialog` を表示する。
 - `components/` — `StatusPanel`, `HistoryPanel`, `BranchPanel`,
-  `ConfirmDialog`. Presentational; they call callbacks passed from `App.tsx`.
+  `ConfirmDialog`。表示専用で、`App.tsx` から渡されたコールバックを呼ぶ。
 
-## Cross-boundary type contract
+## 境界をまたぐ型契約
 
-Rust types are serialized with serde and consumed by TypeScript. **When you
-change a `core` type or add/modify a command, update `src/api.ts` to match.**
+Rust の型は serde でシリアライズされ、TypeScript で消費される。**`core` の型を
+変更したり、コマンドを追加・変更したら、合わせて `src/api.ts` を更新すること。**
 
-- Rust enums use `#[serde(rename_all = "snake_case")]`. So `OperationKind`,
-  `ChangeKind`, `RiskLevel` etc. appear as snake_case string literals in
-  TS (e.g. `"reset_hard"`, `"type_change"`).
-- Struct fields keep their Rust snake_case names in JSON (`is_clean`,
-  `short_id`, `permanent_data_loss`) — the TS interfaces use the same names.
-- Tauri maps camelCase JS arguments to snake_case Rust parameters
-  automatically: `invoke("get_log", { repoPath, max })` reaches
-  `fn get_log(repo_path: String, max: usize)`.
+- Rust の enum は `#[serde(rename_all = "snake_case")]` を使う。そのため
+  `OperationKind`, `ChangeKind`, `RiskLevel` などは TS では snake_case の文字列
+  リテラルとして現れる（例: `"reset_hard"`, `"type_change"`）。
+- 構造体のフィールドは JSON でも Rust の snake_case 名を保つ（`is_clean`,
+  `short_id`, `permanent_data_loss`）。TS のインターフェイスも同じ名前を使う。
+- Tauri は camelCase の JS 引数を snake_case の Rust 引数へ自動でマッピングする:
+  `invoke("get_log", { repoPath, max })` は `fn get_log(repo_path: String, max:
+  usize)` に届く。
 
-## Development workflow
+## 開発ワークフロー
 
 ```bash
-npm install              # install frontend deps (also resolves Cargo on first dev/build)
+npm install              # フロントエンド依存をインストール（初回の dev/build 時に Cargo も解決）
 
-npm run tauri dev        # run the desktop app with hot reload
-npm run tauri build      # produce Windows installers (.exe / .msi)
-npm run tauri icon path/to/icon.png   # regenerate app icons from a square PNG
+npm run tauri dev        # ホットリロード付きでデスクトップアプリを実行
+npm run tauri build      # Windows インストーラ（.exe / .msi）を生成
+npm run tauri icon path/to/icon.png   # 正方形 PNG からアプリアイコンを再生成
 ```
 
-Frontend-only:
+フロントエンドのみ:
 
 ```bash
-npm run dev              # vite dev server (port 1420, strictPort)
+npm run dev              # vite 開発サーバ（ポート 1420, strictPort）
 npm run build            # tsc + vite build
 npm run typecheck        # tsc --noEmit
 ```
 
-## Testing & checks
+## テストとチェック
 
-All Git logic is verified by tests inside `core` (integration tests use
-real temp repos via `TestRepo`). **Add or update `#[test]`s in the relevant
-`core` module when you change behavior there.**
+すべての Git ロジックは `core` 内のテストで検証する（統合テストは `TestRepo`
+で実際の一時リポジトリを使う）。**`core` のモジュールで挙動を変えたら、該当
+モジュールの `#[test]` を追加・更新すること。**
 
 ```bash
-cargo test -p noobgit-core    # run core tests
-cargo fmt                     # format Rust
-cargo clippy                  # lint Rust
-npm run typecheck             # TS type check (strict, noUnusedLocals/Parameters)
-npm run build                 # ensure frontend compiles
+cargo test -p noobgit-core    # core のテストを実行
+cargo fmt                     # Rust を整形
+cargo clippy                  # Rust を lint
+npm run typecheck             # TS の型チェック（strict, noUnusedLocals/Parameters）
+npm run build                 # フロントエンドがコンパイルできることを確認
 ```
 
-Before reporting Rust changes done, run `cargo test -p noobgit-core`. Before
-reporting frontend changes done, run `npm run typecheck`. UI/feature
-correctness can't be verified headlessly here (Windows desktop app) — say so
-explicitly rather than claiming the UI works.
+Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実行すること。
+フロントエンドの変更を完了と報告する前に `npm run typecheck` を実行すること。
+UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
+ので、UI が動くと主張するのではなく、その旨を明示すること。
 
-## Conventions
+## 規約
 
-- **Language:** All user-facing strings, error messages, doc comments, and
-  code comments are in **Japanese**. Match this when editing — new error
-  messages and explanations should be plain Japanese understandable by a
-  beginner. Identifiers/symbols stay in English.
-- **Safety is the product.** Don't weaken or bypass the guard flow. Any new
-  destructive operation needs: a `safety.rs` assessment, an `explain.rs`
-  entry, and (where reversible) an `undo.rs` action.
-- **Undo is best-effort.** Recording undo (`ops::record_undo`) must never
-  fail the underlying Git operation — the op already succeeded. `undo::apply`
-  is kept idempotent so a re-run after a save failure won't corrupt state.
-  Preserve both properties.
-- **Errors:** return `CoreError` from `core`; convert to `String` at the
-  Tauri boundary. The atomic journal write (tmp file + rename) in `undo.rs`
-  exists to survive interrupted writes — keep it.
-- **Keep layers honest:** no Git logic in `src-tauri` or `src/`; no UI/Tauri
-  concerns in `core`.
+- **言語:** ユーザー向けの文字列、エラーメッセージ、ドキュメントコメント、コード
+  コメントはすべて**日本語**。編集時もこれに合わせること — 新しいエラー
+  メッセージや説明は、初心者が理解できる平易な日本語にする。識別子・シンボルは
+  英語のまま。
+- **安全性こそが製品。** ガードフローを弱めたり迂回したりしないこと。新しい破壊的
+  操作には必ず次が必要: `safety.rs` の評価、`explain.rs` のエントリ、そして
+  （取り消し可能なら）`undo.rs` のアクション。
+- **Undo はベストエフォート。** undo の記録（`ops::record_undo`）は、根底の Git
+  操作を絶対に失敗させてはならない — 操作はすでに成功している。`undo::apply` は
+  冪等に保ち、保存失敗後に再実行しても状態が壊れないようにする。この 2 つの性質を
+  維持すること。
+- **エラー:** `core` からは `CoreError` を返し、Tauri 境界で `String` に変換する。
+  `undo.rs` のアトミックなジャーナル書き込み（tmp ファイル + rename）は、中断
+  された書き込みに耐えるために存在する — これを維持すること。
+- **レイヤーを正直に保つ:** `src-tauri` や `src/` に Git ロジックを置かない。
+  `core` に UI/Tauri の関心事を持ち込まない。
 
-## CI/CD & dependencies
+## CI/CD と依存関係
 
-GitHub Actions workflows live in `.github/`. Actions are pinned to commit SHAs
-(the trailing `# vX.Y.Z` comment is the human-readable tag), and Rust
-formatting is split into its own fast job.
+GitHub Actions のワークフローは `.github/` にある。アクションはコミット SHA に
+ピン留めされ（末尾の `# vX.Y.Z` コメントが人間可読のタグ）、Rust の整形は専用の
+高速ジョブに分離されている。
 
-- **`workflows/ci.yml`** — runs on PRs targeting `main` (docs-only changes are
-  skipped via `paths-ignore`). Four jobs on `ubuntu-latest`:
-  - **changes (変更パス判定)** — a fast gate job using `dorny/paths-filter` (no
-    checkout; it reads the PR's changed files from the API). It outputs
-    `frontend` / `rust` booleans, and the two heavy jobs run only when their
-    paths changed (`needs: changes` + `if`). A change to `ci.yml` itself sets
-    **both** so the new CI config is fully exercised. This is why a PR touching
-    only automation config (e.g. `automerge.yml`) skips the build jobs yet
-    still produces a ci.yml run: skipped jobs don't fail the run, so its
-    conclusion is **`success`** and automerge (which gates on "ci.yml concluded
-    success for the head SHA") can still auto-merge it. Docs-only PRs differ:
-    `paths-ignore` skips the **whole** workflow, so no run exists and they stay
-    manual-merge.
-  - **frontend** (`if frontend`) — `npm ci` then `npm run build` (`tsc && vite
-    build`, so the type check is included). Path triggers: `src/**`,
-    `index.html`, `package*.json`, `tsconfig*.json`, `vite.config.*`.
-  - **rust (fmt)** (`if rust`) — `cargo fmt --all -- --check`. No build, so it
-    fails fast.
-  - **rust (check + clippy + test)** (`if rust`) — installs Tauri 2 Linux system
-    deps (via the cached-apt action), builds the frontend first (the `src-tauri`
-    `generate_context!` macro needs `../dist`), then `cargo clippy --workspace
-    --all-targets --locked -- -D warnings` and `cargo nextest run --workspace
-    --locked --all-targets`. Clippy warnings fail the build — keep the tree
-    warning-free. `--locked` means `Cargo.lock` must be committed and current.
-    Rust path triggers: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`.
-    Frontend-only changes do **not** run the Rust jobs (Rust sources/tests are
-    unaffected; the frontend job already validates the build).
-- **`workflows/release.yml`** — runs on `v*` tags (or manual dispatch). Builds
-  the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
-  publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
-  tag; review the draft, then publish.
-- **`workflows/automerge.yml`** — auto-merges a PR once CI is green and there
-  are no unresolved review threads, so no manual Merge click is needed.
-  Triggers on `pull_request_review` (submitted) and `workflow_run` (ci.yml
-  completed), so conditions are re-evaluated whenever CI finishes or a review
-  lands. It does **not** check out the PR — it judges purely from `gh`/API
-  queries, so fork PRs are safe and no `pull_request_target` is used.
-  Permissions are minimal (`contents: write`, `pull-requests: write`). Because
-  `main`'s branch protection has required status checks **OFF**, every
-  condition is re-checked in the workflow before merging (暴発防止): PR open &
-  non-draft, base `main`, `mergeable`, the **ci.yml run for the head SHA
-  concluded `success`**, and **no unresolved review threads** (matches Require
-  conversation resolution). A CodeRabbit **approval is intentionally NOT
-  required**, and there is **no `CHANGES_REQUESTED` gate** — both were dropped
-  to avoid stalling on CodeRabbit rate limits. CodeRabbit's concerns are honored
-  solely through the author-controllable "resolve all threads" gate, so a merge
-  never overrides an unresolved thread but also never waits for CodeRabbit to
-  re-approve. Since CodeRabbit auto-review is **off by default** (see Code
-  review), an ordinary (unlabeled) PR has no review threads and **merges on CI
-  alone**; only a `coderabbit-review`-labeled PR gets review threads that gate
-  the merge. Any PR not meeting these is left for manual merge (e.g. docs-only
-  PRs where `paths-ignore` skips CI, so no run exists). Dependabot PRs are not
-  special-cased. Merge method is **merge commit** (`gh pr merge --merge`) to
-  match the existing `Merge pull request #..` history; switch the final
-  `--merge` flag to change it. The final merge step **polls `mergeStateStatus`
-  with exponential backoff** (up to 5 tries) before/while merging: GitHub
-  recomputes mergeability asynchronously, so right after CI concludes it can
-  briefly report `BLOCKED`/`UNKNOWN` and a one-shot `gh pr merge` would fail
-  with "not mergeable" and drop the PR to manual. The loop merges once the
-  state is `CLEAN`/`UNSTABLE`/`HAS_HOOKS`, keeps waiting through transient
-  `BLOCKED`/`UNKNOWN`, and treats terminal `DIRTY`/`BEHIND` as a skip. If the
-  state never settles within the retries, it skips (leaves to manual) rather
-  than forcing the merge.
-- **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
-  workspace), `npm` (frontend), and `github-actions` (keeps the pinned action
-  SHAs current). Minor/patch bumps are grouped per ecosystem, and a `cooldown`
-  delays PRs after a release to avoid churn on freshly-published versions.
+- **`workflows/ci.yml`** — `main` をターゲットにする PR で実行（ドキュメントのみの
+  変更は `paths-ignore` でスキップ）。`ubuntu-latest` 上の 4 ジョブ:
+  - **changes（変更パス判定）** — `dorny/paths-filter` を使う高速なゲートジョブ
+    （checkout なし。PR の変更ファイルを API から読む）。`frontend` / `rust` の
+    ブール値を出力し、2 つの重いジョブはそれぞれのパスが変わったときだけ実行
+    される（`needs: changes` + `if`）。`ci.yml` 自体への変更は**両方**を立て、
+    新しい CI 設定が完全に実行されるようにする。これが、自動化設定のみ（例:
+    `automerge.yml`）に触れる PR がビルドジョブをスキップしても ci.yml の実行を
+    生み出す理由: スキップされたジョブは実行を失敗させないので、その結論は
+    **`success`** になり、automerge（「head SHA に対する ci.yml が success で
+    終わった」ことをゲートにする）は引き続き自動マージできる。ドキュメントのみの
+    PR は異なる: `paths-ignore` が**ワークフロー全体**をスキップするので実行が
+    存在せず、手動マージのままになる。
+  - **frontend**（`if frontend`）— `npm ci` のあと `npm run build`（`tsc && vite
+    build` なので型チェックも含まれる）。パストリガー: `src/**`, `index.html`,
+    `package*.json`, `tsconfig*.json`, `vite.config.*`。
+  - **rust (fmt)**（`if rust`）— `cargo fmt --all -- --check`。ビルドしないので
+    速く失敗する。
+  - **rust (check + clippy + test)**（`if rust`）— Tauri 2 の Linux システム依存を
+    （cached-apt アクションで）インストールし、先にフロントエンドをビルドし
+    （`src-tauri` の `generate_context!` マクロが `../dist` を必要とする）、その後
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` と
+    `cargo nextest run --workspace --locked --all-targets` を実行する。Clippy の
+    警告はビルドを失敗させる — ツリーを警告ゼロに保つこと。`--locked` は
+    `Cargo.lock` がコミット済みかつ最新であることを意味する。Rust のパス
+    トリガー: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`。
+    フロントエンドのみの変更では Rust ジョブは**実行されない**（Rust のソース/
+    テストは影響を受けず、frontend ジョブがすでにビルドを検証している）。
+- **`workflows/release.yml`** — `v*` タグ（または手動ディスパッチ）で実行。
+  `windows-latest` 上で `tauri-apps/tauri-action` により Windows インストーラを
+  ビルドし、**ドラフト**の GitHub Release を公開する。リリースを切る = `vX.Y.Z`
+  タグを push する。ドラフトをレビューしてから publish する。
+- **`workflows/automerge.yml`** — CI がグリーンで未解決のレビュースレッドが
+  なくなった時点で PR を自動マージし、手動の Merge クリックを不要にする。
+  `pull_request_review`（submitted）と `workflow_run`（ci.yml completed）で
+  トリガーされるので、CI が終わるかレビューが入るたびに条件が再評価される。
+  PR を checkout は**しない** — 純粋に `gh`/API クエリで判断するので、fork の PR
+  も安全で、`pull_request_target` は使わない。権限は最小限（`contents: write`,
+  `pull-requests: write`）。`main` のブランチ保護は必須ステータスチェックが
+  **OFF** なので、マージ前にすべての条件をワークフロー内で再チェックする
+  （暴発防止）: PR が open かつ非ドラフト、base が `main`、`mergeable`、
+  **head SHA に対する ci.yml の実行が `success` で終わっている**こと、そして
+  **未解決のレビュースレッドがない**こと（Require conversation resolution に対応）。
+  CodeRabbit の**承認は意図的に必須としない**し、**`CHANGES_REQUESTED` ゲートも
+  ない** — どちらも CodeRabbit のレート制限で止まらないように外した。CodeRabbit の
+  懸念は、作者が制御できる「全スレッドを解決する」ゲートだけで尊重されるので、
+  マージが未解決スレッドを無視することはなく、かといって CodeRabbit の再承認を
+  待つこともない。CodeRabbit の自動レビューは**デフォルトで OFF**（Code review
+  を参照）なので、通常の（ラベルなし）PR にはレビュースレッドがなく **CI だけで
+  マージ**される。`coderabbit-review` ラベル付きの PR だけが、マージをゲートする
+  レビュースレッドを得る。これらを満たさない PR は手動マージに委ねる（例: 
+  `paths-ignore` で CI がスキップされ実行が存在しないドキュメントのみの PR）。
+  Dependabot の PR は特別扱いしない。マージ方式は**マージコミット**
+  （`gh pr merge --merge`）で、既存の `Merge pull request #..` 履歴に合わせる。
+  変えたいなら最後の `--merge` フラグを切り替える。最終マージステップは
+  マージ前/マージ中に **`mergeStateStatus` を指数バックオフでポーリングする**
+  （最大 5 回）: GitHub はマージ可能性を非同期に再計算するので、CI 終了直後は
+  一時的に `BLOCKED`/`UNKNOWN` を報告することがあり、一発の `gh pr merge` は
+  「not mergeable」で失敗して PR を手動マージに落としてしまう。ループは状態が
+  `CLEAN`/`UNSTABLE`/`HAS_HOOKS` になったらマージし、一時的な
+  `BLOCKED`/`UNKNOWN` の間は待ち続け、終端の `DIRTY`/`BEHIND` はスキップとして
+  扱う。リトライ内で状態が落ち着かなければ、マージを強行せずスキップする
+  （手動に委ねる）。
+- **`dependabot.yml`** — 3 つのエコシステムに対する週次の更新 PR: `cargo`
+  （ルートワークスペース）、`npm`（フロントエンド）、`github-actions`（ピン留め
+  したアクション SHA を最新に保つ）。マイナー/パッチの更新はエコシステムごとに
+  グループ化し、`cooldown` でリリース直後の PR を遅らせて、公開されたばかりの
+  バージョンへのチャーンを避ける。
 
-Because the Cargo workspace is at the repo root (not under `src-tauri/`), cargo
-runs from the root with `--workspace`.
+Cargo ワークスペースが（`src-tauri/` の下ではなく）リポジトリのルートにあるため、
+cargo はルートから `--workspace` で実行する。
 
-When you add a new CI step or change the build/test commands, update this
-section and the matching workflow together so the docs stay accurate.
+新しい CI ステップを追加したりビルド/テストコマンドを変えたときは、このセクションと
+対応するワークフローを一緒に更新して、ドキュメントを正確に保つこと。
 
-## Code review
+## コードレビュー
 
-`.coderabbit.yaml` configures CodeRabbit (Japanese; `request_changes_workflow:
-true` — a reviewed PR stays blocked until its review comments are resolved, then
-CodeRabbit auto-approves). **Auto-review is off by default**
-(`reviews.auto_review.enabled: false`) so CodeRabbit's rate limits don't stall
-the auto-merge flow; ordinary PRs get no review and merge on CI alone. To have
-CodeRabbit review a high-impact change (large refactor, important new feature),
-add the **`coderabbit-review`** label to the PR — `reviews.auto_review.labels`
-opts a labeled PR in even though global auto-review is disabled. (Rename the
-label in both `.coderabbit.yaml` and this section together if you change it.)
+`.coderabbit.yaml` が CodeRabbit を設定する（日本語。`request_changes_workflow:
+true` — レビュー済みの PR は、そのレビューコメントが解決されるまでブロックされ
+続け、解決されると CodeRabbit が自動承認する）。**自動レビューはデフォルトで
+OFF**（`reviews.auto_review.enabled: false`）なので、CodeRabbit のレート制限が
+自動マージフローを止めない。通常の PR はレビューを受けず CI だけでマージされる。
+影響の大きい変更（大規模リファクタ、重要な新機能）を CodeRabbit にレビューさせ
+たいときは、PR に **`coderabbit-review`** ラベルを付ける —
+`reviews.auto_review.labels` が、グローバルな自動レビューが無効でもラベル付きの
+PR をオプトインさせる。（ラベル名を変えるなら、`.coderabbit.yaml` とこの
+セクションを一緒に書き換えること。）
 
-## Language policy
+## 言語ポリシー
 
-- **Always write pull requests in Japanese.** Every part of a PR — title,
-  body, summary, test plan — must be in Japanese. This applies without
-  exception to every PR created in this repository, matching the repo's
-  Japanese-first convention (error messages, explanations, comments).
-- English closing keywords (`Closes #123` etc.) inside an otherwise-Japanese
-  PR body are fine — GitHub only parses the English form (see below).
+- **プルリクエストは常に日本語で書く。** PR のあらゆる部分 — タイトル、本文、
+  サマリ、テスト計画 — は日本語でなければならない。これはこのリポジトリで作成
+  される全 PR に例外なく適用され、リポジトリの日本語ファースト規約（エラー
+  メッセージ、説明、コメント）に合わせる。
+- 日本語の PR 本文中に英語のクローズキーワード（`Closes #123` など）を入れるのは
+  問題ない — GitHub は英語の形式のみを解釈する（下記参照）。
 
-## Issue labeling policy
+## Issue ラベル付けポリシー
 
-When you **create** an issue, always make the cost and benefit explicit with
-labels — they drive triage (what to pick up vs. defer), so don't open an issue
-missing either axis. When updating an existing issue that lacks them, add them.
-Labels are auto-created if absent; follow the exact names below — drift breaks
-downstream filtering/aggregation.
+Issue を**作成**するときは、必ずコストとメリットをラベルで明示すること — これらは
+トリアージ（着手するか後回しにするか）を駆動するので、どちらの軸も欠けた Issue を
+開かないこと。これらを欠く既存の Issue を更新するときは追加すること。ラベルは
+なければ自動作成される。下記の正確な名前に従うこと — 表記ゆれは下流の
+フィルタリング/集計を壊す。
 
-- **Cost (implementation effort) — 3 levels:** judge by scope, blast radius,
-  and verification needed.
-  - `cost:low` — a few hours to half a day. A flag, a small UI tweak; limited
-    blast radius.
-  - `cost:medium` — one to a few days. One new module, or extending an
-    existing pattern.
-  - `cost:high` — a week or more. New cross-layer changes, a new safety
-    mechanism, or anything needing design work and broad verification.
-- **Benefit (value delivered) — 5 levels:** judge by user impact, how many
-  users, and contribution to accident-prevention / day-to-day DX.
-  - `benefit:1` — only a few users benefit, or a cosmetic tweak.
-  - `benefit:2` — a convenience improvement for some users.
-  - `benefit:3` — a QoL win many users feel daily, or high value in a specific
-    use case.
-  - `benefit:4` — substantially improves a primary workflow, or a key item
-    from the README roadmap.
-  - `benefit:5` — a core capability that raises the product's positioning or
-    safety (stronger destructive-operation guards, new undo coverage,
-    misuse-prevention UX — noobGit's reason for being).
-- If unsure, leave a one-line rationale at the end of the issue body, e.g.
-  「コスト: medium (理由: …) / メリット: 4 (理由: …)」.
+- **コスト（実装の労力）— 3 段階:** スコープ、影響範囲、必要な検証で判断する。
+  - `cost:low` — 数時間〜半日。フラグ、小さな UI 調整。影響範囲は限定的。
+  - `cost:medium` — 1 日〜数日。新しいモジュール 1 つ、または既存パターンの拡張。
+  - `cost:high` — 1 週間以上。レイヤーをまたぐ新規変更、新しい安全機構、または
+    設計作業と広範な検証を要するもの。
+- **メリット（提供する価値）— 5 段階:** ユーザーへの影響、対象ユーザー数、事故
+  防止/日々の DX への貢献で判断する。
+  - `benefit:1` — 少数のユーザーだけが恩恵を受ける、または見た目の調整。
+  - `benefit:2` — 一部のユーザーにとっての利便性向上。
+  - `benefit:3` — 多くのユーザーが日々感じる QoL の向上、または特定の用途での
+    高い価値。
+  - `benefit:4` — 主要ワークフローを大幅に改善する、または README ロードマップの
+    主要項目。
+  - `benefit:5` — 製品のポジショニングや安全性を高めるコア機能（より強力な破壊的
+    操作のガード、新しい undo のカバレッジ、誤用防止 UX — noobGit の存在理由）。
+- 迷う場合は、Issue 本文の末尾に 1 行で根拠を残すこと。例:
+  「コスト: medium (理由: …) / メリット: 4 (理由: …)」。
 
-## Linking issues and PRs
+## Issue と PR のリンク
 
-- **A PR that addresses an issue must include a closing keyword in its body.**
-  GitHub only auto-closes the issue on merge when the PR body (or a commit
-  message landing on the base branch) contains `Closes #123` / `Fixes #123` /
-  `Resolves #123`. A `(#123)` in the title or a bare `#123` only links — it
-  does not close.
-- For a PR resolving several issues, give each its own keyword, e.g.
-  `Closes #77` then `Closes #73` on separate lines (or `Closes #77, closes #73`
-  on one line).
-- Keep the keyword on its own line at the top or bottom of the body; inside a
-  code block or a `>` quote it won't be parsed. Editing the body *after* merge
-  won't close anything — close such issues manually.
+- **Issue に対応する PR は、本文にクローズキーワードを含めなければならない。**
+  GitHub はマージ時、PR 本文（または base ブランチに着地するコミットメッセージ）に
+  `Closes #123` / `Fixes #123` / `Resolves #123` が含まれるときだけ Issue を自動
+  クローズする。タイトルの `(#123)` や裸の `#123` はリンクするだけで、クローズ
+  しない。
+- 複数の Issue を解決する PR では、それぞれにキーワードを与えること。例:
+  `Closes #77` と `Closes #73` を別々の行に（または 1 行で `Closes #77, closes
+  #73`）。
+- キーワードは本文の先頭か末尾の独立した行に置くこと。コードブロックや `>` の
+  引用の中では解釈されない。マージ*後*に本文を編集してもクローズはされない —
+  そのような Issue は手動でクローズすること。
 
-## Git / PR workflow for this environment
+## この環境向けの Git / PR ワークフロー
 
-- Develop on the designated feature branch; commit with clear messages.
-- Push with `git push -u origin <branch>`; after pushing, open a PR (ready for
-  review, not draft) if one doesn't exist.
-- Use the GitHub MCP tools (`mcp__github__*`) for all GitHub interaction —
-  the `gh` CLI is not available here.
+- 指定されたフィーチャーブランチで開発し、明確なメッセージでコミットする。
+- `git push -u origin <branch>` で push し、push 後に PR がなければ開く
+  （ドラフトではなくレビュー可能な状態で）。
+- すべての GitHub 操作には GitHub MCP ツール（`mcp__github__*`）を使う —
+  ここでは `gh` CLI は使えない。
