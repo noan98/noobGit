@@ -15,6 +15,9 @@
 #    ここで head_sha に対して明示的に確認する。
 #  - マージ方式は履歴に合わせて merge commit (--merge)。squash/rebase に
 #    寄せる場合は最終ステップの --merge を差し替える。
+#  - マージ後に PR 本文のクローズキーワード(Closes #NN 等)を解析し、参照 Issue を
+#    自前でクローズする。bot(GITHUB_TOKEN)によるマージでは GitHub のキーワード
+#    自動クローズが発火しないことがあるための保険。
 name: automerge
 
 on:
@@ -27,6 +30,8 @@ on:
     types: [completed]
 
 # 自動マージには書き込み権限が要る。これ以外は付与しない（最小権限）。
+# issues: write は、マージ後に PR 本文のクローズキーワードが指す Issue を
+# 明示的にクローズするために必要（下記ステップ 7 を参照）。
 # 注意: この permissions ブロックに加えて、リポジトリ設定
 # Settings → Actions → General → Workflow permissions を
 # 「Read and write permissions」にしておく必要がある。read-only のままだと
@@ -38,6 +43,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 # 同一コミット(PRのhead SHA)に対する重複実行を直列化する。イベント種別が
 # 違っても同じ head SHA なら同一グループにして二重マージを防ぐ。
@@ -186,3 +192,31 @@ jobs:
           [ "$merged" = "true" ] \
             || skip "再試行後も merge-state が確定せずマージ保留 (最終=$mss)"
           echo "PR #$PR をマージしました。"
+
+          # 7. マージ後に、PR 本文のクローズキーワードが指す Issue を明示的に閉じる。
+          #    GitHub のキーワード自動クローズは GITHUB_TOKEN(github-actions[bot]) に
+          #    よるマージでは発火しないことがあり、`Closes #NN` を本文に書いていても
+          #    参照 Issue が open のまま残ってしまう。そこで本文を解析し、対象の
+          #    open な Issue を自分でクローズする。PR 番号や既にクローズ済みの
+          #    Issue は対象外。merge 自体は成功済みなので、ここでの失敗は
+          #    ワークフローを失敗させない（ベストエフォート）。
+          body=$(gh pr view "$PR" --json body --jq '.body // ""')
+          # close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved + #<番号>
+          issues=$( { printf '%s' "$body" \
+            | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' \
+            | grep -oE '[0-9]+' | sort -un; } || true )
+          for n in $issues; do
+            # .pull_request を持つ番号は PR なので除外。open な Issue だけ閉じる。
+            kind=$(gh api "repos/$GH_REPO/issues/$n" \
+              --jq 'if has("pull_request") then "pr" else .state end' 2>/dev/null || echo "")
+            if [ "$kind" = "open" ]; then
+              if gh issue close "$n" --reason completed \
+                   --comment "PR #$PR のマージにより解決したため自動クローズしました。"; then
+                echo "Issue #$n を閉じました。"
+              else
+                echo "Issue #$n のクローズに失敗しました（merge は成功済みのため続行）。"
+              fi
+            else
+              echo "Issue #$n はクローズ対象外（kind/state=${kind:-unknown}）。"
+            fi
+          done
