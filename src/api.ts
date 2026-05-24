@@ -205,6 +205,12 @@ export const api = {
     invoke<PullOutcome>("pull", { repoPath, remote, branch }),
   resetHard: (repoPath: string, revspec: string) =>
     invoke<void>("reset_hard", { repoPath, revspec }),
+  push: (
+    repoPath: string,
+    remote: string,
+    refspec: string,
+    force: boolean,
+  ) => invoke<void>("push", { repoPath, remote, refspec, force }),
 
   canUndo: (repoPath: string) => invoke<boolean>("can_undo", { repoPath }),
   peekUndo: (repoPath: string) =>

@@ -37,6 +37,20 @@ impl TestRepo {
         TestRepo { _dir: dir, path }
     }
 
+    /// ベア（作業ツリーなし）リポジトリを一時ディレクトリに作る。push 先の検証に使う。
+    pub fn new_bare() -> Self {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        Repository::init_bare(&path).unwrap();
+        TestRepo { _dir: dir, path }
+    }
+
+    /// リモートを追加する。URL にはローカルのベアリポジトリのパスを渡せる。
+    pub fn add_remote(&self, name: &str, url: &str) {
+        let repo = self.open();
+        repo.remote(name, url).unwrap();
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

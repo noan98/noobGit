@@ -7,6 +7,8 @@ interface Props {
   onCreate: (name: string) => void;
   onSwitch: (name: string) => void;
   onDelete: (name: string) => void;
+  onPush: (name: string) => void;
+  onForcePush: (name: string) => void;
 }
 
 export function BranchPanel({
@@ -15,6 +17,8 @@ export function BranchPanel({
   onCreate,
   onSwitch,
   onDelete,
+  onPush,
+  onForcePush,
 }: Props) {
   const [newName, setNewName] = useState("");
   const local = branches.filter((b) => !b.is_remote);
@@ -84,6 +88,13 @@ export function BranchPanel({
                   )}
                 </span>
                 <span className="branch-actions">
+                  <button
+                    className="link"
+                    onClick={() => onPush(b.name)}
+                    title="このブランチのコミットをリモート（origin）へ送信します"
+                  >
+                    送信
+                  </button>
                   {!b.is_head && (
                     <button className="link" onClick={() => onSwitch(b.name)}>
                       切り替え
@@ -97,6 +108,13 @@ export function BranchPanel({
                       削除
                     </button>
                   )}
+                  <button
+                    className="link danger"
+                    onClick={() => onForcePush(b.name)}
+                    title="リモートの履歴を上書きします（強制push）。とても危険です。"
+                  >
+                    強制送信
+                  </button>
                 </span>
               </div>
 
