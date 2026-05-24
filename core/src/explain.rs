@@ -67,12 +67,23 @@ pub fn explain(op: OperationKind) -> Explanation {
                 "巻き戻し先の移動自体は reflog から戻せますが、未コミット変更は復元できません。"
                     .into(),
         },
+        OperationKind::Fetch => Explanation {
+            title: "フェッチ（取得）".into(),
+            what: "リモートの最新の状態を取得します。まだ自分のファイルには反映しません。".into(),
+            why: "作業ツリーを変えない安全な操作です。取り込む前に「何が来ているか」を確認できます。"
+                .into(),
+            on_trouble:
+                "ネットワークや認証で失敗することがあります。接続状況やアクセス権を確認してください。"
+                    .into(),
+        },
         OperationKind::Pull => Explanation {
             title: "プル（取り込み）".into(),
-            what: "リモートの最新の変更を自分の手元に取り込みます。".into(),
-            why: "他の人の変更と重なるとコンフリクト（衝突）が起きることがあります。".into(),
+            what: "リモートの最新の変更を取得し、安全に進められるとき（fast-forward）だけ手元に取り込みます。"
+                .into(),
+            why: "分岐していて一直線に取り込めないときは、事故を避けるため何も変えずに中断します。"
+                .into(),
             on_trouble:
-                "コンフリクトが出たら、対象ファイルを直して解決します。慌てなくて大丈夫です。"
+                "「取り込めません」と出たら、分岐しているサインです。慌てず、まず「取得」で差分を確認しましょう。"
                     .into(),
         },
         OperationKind::Push => Explanation {
@@ -113,6 +124,7 @@ mod tests {
             OperationKind::SwitchBranch,
             OperationKind::DeleteBranch,
             OperationKind::ResetHard,
+            OperationKind::Fetch,
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
