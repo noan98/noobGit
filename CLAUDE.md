@@ -184,7 +184,15 @@ formatting is split into its own fast job.
   PRs where `paths-ignore` skips CI, so no run exists). Dependabot PRs are not
   special-cased. Merge method is **merge commit** (`gh pr merge --merge`) to
   match the existing `Merge pull request #..` history; switch the final
-  `--merge` flag to change it.
+  `--merge` flag to change it. The final merge step **polls `mergeStateStatus`
+  with exponential backoff** (up to 5 tries) before/while merging: GitHub
+  recomputes mergeability asynchronously, so right after CI concludes it can
+  briefly report `BLOCKED`/`UNKNOWN` and a one-shot `gh pr merge` would fail
+  with "not mergeable" and drop the PR to manual. The loop merges once the
+  state is `CLEAN`/`UNSTABLE`/`HAS_HOOKS`, keeps waiting through transient
+  `BLOCKED`/`UNKNOWN`, and treats terminal `DIRTY`/`BEHIND` as a skip. If the
+  state never settles within the retries, it skips (leaves to manual) rather
+  than forcing the merge.
 - **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
   workspace), `npm` (frontend), and `github-actions` (keeps the pinned action
   SHAs current). Minor/patch bumps are grouped per ecosystem, and a `cooldown`
