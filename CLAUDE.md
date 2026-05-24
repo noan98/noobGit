@@ -161,8 +161,8 @@ formatting is split into its own fast job.
   the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
   publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
   tag; review the draft, then publish.
-- **`workflows/automerge.yml`** — auto-merges a PR once CI is green and there's
-  no outstanding CodeRabbit objection, so no manual Merge click is needed.
+- **`workflows/automerge.yml`** — auto-merges a PR once CI is green and there
+  are no unresolved review threads, so no manual Merge click is needed.
   Triggers on `pull_request_review` (submitted) and `workflow_run` (ci.yml
   completed), so conditions are re-evaluated whenever CI finishes or a review
   lands. It does **not** check out the PR — it judges purely from `gh`/API
@@ -171,20 +171,20 @@ formatting is split into its own fast job.
   `main`'s branch protection has required status checks **OFF**, every
   condition is re-checked in the workflow before merging (暴発防止): PR open &
   non-draft, base `main`, `mergeable`, the **ci.yml run for the head SHA
-  concluded `success`**, **no unresolved review threads** (matches Require
-  conversation resolution), and CodeRabbit is **not** requesting changes on the
-  head SHA (`CHANGES_REQUESTED`). A CodeRabbit **approval is intentionally NOT
-  required** — waiting on it was dropped to avoid stalling on CodeRabbit rate
-  limits. CodeRabbit's concerns are instead honored by the author-controllable
-  "resolve all threads" gate plus the head-SHA `CHANGES_REQUESTED` block, so a
-  merge never overrides an active objection but also never waits for CodeRabbit
-  to re-approve. Consequently an **un-reviewed PR merges on CI alone**. Any PR
-  not meeting these is left for manual merge (e.g. docs-only PRs where
-  `paths-ignore` skips CI, so no run exists). Dependabot PRs are not
+  concluded `success`**, and **no unresolved review threads** (matches Require
+  conversation resolution). A CodeRabbit **approval is intentionally NOT
+  required**, and there is **no `CHANGES_REQUESTED` gate** — both were dropped
+  to avoid stalling on CodeRabbit rate limits. CodeRabbit's concerns are honored
+  solely through the author-controllable "resolve all threads" gate, so a merge
+  never overrides an unresolved thread but also never waits for CodeRabbit to
+  re-approve. Since CodeRabbit auto-review is **off by default** (see Code
+  review), an ordinary (unlabeled) PR has no review threads and **merges on CI
+  alone**; only a `coderabbit-review`-labeled PR gets review threads that gate
+  the merge. Any PR not meeting these is left for manual merge (e.g. docs-only
+  PRs where `paths-ignore` skips CI, so no run exists). Dependabot PRs are not
   special-cased. Merge method is **merge commit** (`gh pr merge --merge`) to
   match the existing `Merge pull request #..` history; switch the final
-  `--merge` flag to change it. The CodeRabbit bot login is matched exactly
-  (`coderabbitai[bot]`).
+  `--merge` flag to change it.
 - **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
   workspace), `npm` (frontend), and `github-actions` (keeps the pinned action
   SHAs current). Minor/patch bumps are grouped per ecosystem, and a `cooldown`
@@ -198,9 +198,15 @@ section and the matching workflow together so the docs stay accurate.
 
 ## Code review
 
-`.coderabbit.yaml` enables CodeRabbit reviews in Japanese with
-`request_changes_workflow: true` — the PR stays blocked until review comments
-are resolved, then auto-approves.
+`.coderabbit.yaml` configures CodeRabbit (Japanese; `request_changes_workflow:
+true` — a reviewed PR stays blocked until its review comments are resolved, then
+CodeRabbit auto-approves). **Auto-review is off by default**
+(`reviews.auto_review.enabled: false`) so CodeRabbit's rate limits don't stall
+the auto-merge flow; ordinary PRs get no review and merge on CI alone. To have
+CodeRabbit review a high-impact change (large refactor, important new feature),
+add the **`coderabbit-review`** label to the PR — `reviews.auto_review.labels`
+opts a labeled PR in even though global auto-review is disabled. (Rename the
+label in both `.coderabbit.yaml` and this section together if you change it.)
 
 ## Language policy
 
