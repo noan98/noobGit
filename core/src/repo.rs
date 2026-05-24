@@ -1,8 +1,14 @@
-use git2::{BranchType, Repository, Status, StatusOptions};
+use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::error::{CoreError, Result};
-use crate::model::{BranchInfo, ChangeKind, CommitInfo, FileChange, RepoStatus};
+use crate::model::{
+    BranchInfo, ChangeKind, CommitInfo, DiffLine, DiffLineKind, FileChange, FileDiff, RepoStatus,
+};
 use crate::safety::is_protected;
+
+/// 差分として保持する最大行数。これを超えた分は打ち切り、`truncated` を立てる。
+/// 巨大な差分で UI と通信が重くなるのを防ぐための保護。
+const MAX_DIFF_LINES: usize = 2000;
 
 /// 指定パス（またはその親）からGitリポジトリを開く。
 ///
@@ -191,6 +197,134 @@ pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<Commi
     Ok(out)
 }
 
+/// 未ステージの変更（インデックス↔作業ツリー）のうち、指定パスの差分を返す。
+///
+/// 未追跡（新規）ファイルも対象に含め、その中身を「追加行」として表示する。
+pub fn diff_unstaged(repo: &Repository, path: &str) -> Result<FileDiff> {
+    let mut opts = DiffOptions::new();
+    opts.pathspec(path)
+        .context_lines(3)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let index = repo.index()?;
+    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
+    build_file_diff(path, &diff)
+}
+
+/// ステージ済みの変更（HEAD↔インデックス）のうち、指定パスの差分を返す。
+///
+/// まだコミットが1件も無い場合は、インデックスの内容すべてを「追加」として表示する。
+pub fn diff_staged(repo: &Repository, path: &str) -> Result<FileDiff> {
+    let mut opts = DiffOptions::new();
+    opts.pathspec(path).context_lines(3);
+    let index = repo.index()?;
+    let head_tree = match repo.head() {
+        Ok(h) => Some(h.peel_to_tree()?),
+        Err(_) => None,
+    };
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))?;
+    build_file_diff(path, &diff)
+}
+
+#[derive(Default)]
+struct DiffBuild {
+    is_binary: bool,
+    truncated: bool,
+    lines: Vec<DiffLine>,
+}
+
+/// `git2::Diff` を走査し、serde 可能な [`FileDiff`] に組み立てる。
+///
+/// バイナリファイルは行を出さず `is_binary` を立てる。行数が [`MAX_DIFF_LINES`] を
+/// 超えたら以降を捨てて `truncated` を立てる（打ち切っても走査自体は最後まで回す）。
+fn build_file_diff(path: &str, diff: &git2::Diff) -> Result<FileDiff> {
+    use std::cell::RefCell;
+
+    let state = RefCell::new(DiffBuild::default());
+
+    let mut file_cb = |_delta: git2::DiffDelta, _progress: f32| -> bool { true };
+
+    let mut binary_cb = |_delta: git2::DiffDelta, _binary: git2::DiffBinary| -> bool {
+        state.borrow_mut().is_binary = true;
+        true
+    };
+
+    let mut hunk_cb = |_delta: git2::DiffDelta, hunk: git2::DiffHunk| -> bool {
+        let mut s = state.borrow_mut();
+        if s.lines.len() >= MAX_DIFF_LINES {
+            s.truncated = true;
+            return true;
+        }
+        let header = String::from_utf8_lossy(hunk.header());
+        s.lines.push(DiffLine {
+            kind: DiffLineKind::Hunk,
+            old_lineno: None,
+            new_lineno: None,
+            content: header.trim_end().to_string(),
+        });
+        true
+    };
+
+    let mut line_cb = |_delta: git2::DiffDelta,
+                       _hunk: Option<git2::DiffHunk>,
+                       line: git2::DiffLine|
+     -> bool {
+        let mut s = state.borrow_mut();
+        if s.lines.len() >= MAX_DIFF_LINES {
+            s.truncated = true;
+            return true;
+        }
+        let kind = match line.origin_value() {
+            git2::DiffLineType::Addition | git2::DiffLineType::AddEOFNL => DiffLineKind::Addition,
+            git2::DiffLineType::Deletion | git2::DiffLineType::DeleteEOFNL => {
+                DiffLineKind::Deletion
+            }
+            _ => DiffLineKind::Context,
+        };
+        let raw = String::from_utf8_lossy(line.content());
+        let content = raw
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
+        s.lines.push(DiffLine {
+            kind,
+            old_lineno: line.old_lineno(),
+            new_lineno: line.new_lineno(),
+            content,
+        });
+        true
+    };
+
+    diff.foreach(
+        &mut file_cb,
+        Some(&mut binary_cb),
+        Some(&mut hunk_cb),
+        Some(&mut line_cb),
+    )?;
+
+    let mut build = state.into_inner();
+    // バイナリ判定の取りこぼし対策: 走査後はデルタにフラグが立つので念のため確認する。
+    if !build.is_binary
+        && diff
+            .deltas()
+            .any(|d| d.flags().contains(git2::DiffFlags::BINARY))
+    {
+        build.is_binary = true;
+    }
+
+    Ok(FileDiff {
+        path: path.to_string(),
+        is_binary: build.is_binary,
+        truncated: build.truncated,
+        lines: if build.is_binary {
+            Vec::new()
+        } else {
+            build.lines
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +440,140 @@ mod tests {
         // 既定ブランチ名(main)は保護対象。
         assert!(head.is_protected);
         assert!(!head.is_remote);
+    }
+
+    #[test]
+    fn diff_unstaged_shows_added_and_removed_lines() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "line1\nline2\nline3\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "line1\nCHANGED\nline3\n");
+        let repo = fx.open();
+        let diff = diff_unstaged(&repo, "a.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        assert!(!diff.truncated);
+        assert!(diff
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Deletion && l.content == "line2"));
+        assert!(diff
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "CHANGED"));
+        assert!(diff
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Context && l.content == "line1"));
+        // 行番号が付与される（追加行には新側、削除行には旧側）。
+        let added = diff
+            .lines
+            .iter()
+            .find(|l| l.kind == DiffLineKind::Addition)
+            .unwrap();
+        assert!(added.new_lineno.is_some());
+    }
+
+    #[test]
+    fn diff_staged_shows_new_file_as_additions() {
+        let fx = TestRepo::new();
+        fx.write_file("new.txt", "hello\nworld\n");
+        fx.stage_all();
+
+        let repo = fx.open();
+        let diff = diff_staged(&repo, "new.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        let adds: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Addition)
+            .collect();
+        assert_eq!(adds.len(), 2);
+        assert_eq!(adds[0].content, "hello");
+        assert_eq!(adds[1].content, "world");
+        // ハンク見出しが含まれる。
+        assert!(diff.lines.iter().any(|l| l.kind == DiffLineKind::Hunk));
+    }
+
+    #[test]
+    fn diff_unstaged_untracked_file_shows_content() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // まだ追跡されていない新規ファイル。
+        fx.write_file("untracked.txt", "fresh\nlines\n");
+        let repo = fx.open();
+        let diff = diff_unstaged(&repo, "untracked.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        assert!(diff
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "fresh"));
+    }
+
+    #[test]
+    fn diff_deleted_file_shows_deletions() {
+        let fx = TestRepo::new();
+        fx.write_file("gone.txt", "a\nb\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        std::fs::remove_file(fx.path().join("gone.txt")).unwrap();
+        let repo = fx.open();
+        let diff = diff_unstaged(&repo, "gone.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        assert!(diff.lines.iter().any(|l| l.kind == DiffLineKind::Deletion));
+    }
+
+    #[test]
+    fn diff_binary_file_is_marked_without_lines() {
+        let fx = TestRepo::new();
+        // NUL を含む内容は libgit2 がバイナリと判定する。
+        fx.write_file("data.bin", "\0\0\0binary\0content\0");
+        fx.stage_all();
+
+        let repo = fx.open();
+        let diff = diff_staged(&repo, "data.bin").unwrap();
+
+        assert!(diff.is_binary);
+        assert!(diff.lines.is_empty());
+    }
+
+    #[test]
+    fn diff_clean_file_has_no_lines() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "stable\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        let diff = diff_unstaged(&repo, "a.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        assert!(!diff.truncated);
+        assert!(diff.lines.is_empty());
+    }
+
+    #[test]
+    fn diff_large_file_is_truncated() {
+        let fx = TestRepo::new();
+        let big: String = (0..MAX_DIFF_LINES + 500)
+            .map(|i| format!("line{i}\n"))
+            .collect();
+        fx.write_file("big.txt", &big);
+        fx.stage_all();
+
+        let repo = fx.open();
+        let diff = diff_staged(&repo, "big.txt").unwrap();
+
+        assert!(diff.truncated);
+        assert!(diff.lines.len() <= MAX_DIFF_LINES);
     }
 }

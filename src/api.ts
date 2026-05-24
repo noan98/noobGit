@@ -42,6 +42,22 @@ export interface CommitInfo {
   time: number;
 }
 
+export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  old_lineno: number | null;
+  new_lineno: number | null;
+  content: string;
+}
+
+export interface FileDiff {
+  path: string;
+  is_binary: boolean;
+  truncated: boolean;
+  lines: DiffLine[];
+}
+
 export type OperationKind =
   | "stage"
   | "unstage"
@@ -98,6 +114,10 @@ export const api = {
     invoke<BranchInfo[]>("get_branches", { repoPath }),
   getLog: (repoPath: string, skip: number, max: number) =>
     invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  getDiffUnstaged: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
+  getDiffStaged: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_staged", { repoPath, path }),
 
   explain: (op: OperationKind) =>
     invoke<Explanation>("explain_operation", { op }),

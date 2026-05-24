@@ -4,6 +4,7 @@ import {
   type BranchInfo,
   type CommitInfo,
   type Explanation,
+  type FileDiff,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -13,6 +14,7 @@ import { StatusPanel } from "./components/StatusPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { DiffPanel, type DiffSelection } from "./components/DiffPanel";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -87,6 +89,11 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // 差分プレビュー: 選択中ファイルと、その差分。
+  const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
       if (!repoPath) return false;
@@ -120,6 +127,44 @@ export default function App() {
   useEffect(() => {
     if (opened) void refresh();
   }, [opened, refresh]);
+
+  // 選択中ファイルの差分を取得する。ステージ済みかどうかで参照元が変わる。
+  const loadDiff = useCallback(
+    async (sel: DiffSelection | null) => {
+      if (!repoPath || !sel) {
+        setDiff(null);
+        return;
+      }
+      setDiffLoading(true);
+      try {
+        const d = sel.staged
+          ? await api.getDiffStaged(repoPath, sel.path)
+          : await api.getDiffUnstaged(repoPath, sel.path);
+        setDiff(d);
+        setError(null);
+      } catch (e) {
+        setDiff(null);
+        setError(String(e));
+      } finally {
+        setDiffLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  // 選択が変わったとき、または status の再取得で変更内容が変わったときに差分を取り直す。
+  useEffect(() => {
+    void loadDiff(selectedFile);
+  }, [selectedFile, status, loadDiff]);
+
+  // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
+  const selectFile = useCallback((path: string, staged: boolean) => {
+    setSelectedFile((cur) =>
+      cur && cur.path === path && cur.staged === staged
+        ? null
+        : { path, staged },
+    );
+  }, []);
 
   async function openRepo() {
     if (!repoPath.trim()) return;
@@ -262,6 +307,8 @@ export default function App() {
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
+              setSelectedFile(null);
+              setDiff(null);
             }}
           >
             別のリポジトリ
@@ -285,6 +332,8 @@ export default function App() {
           {status && (
             <StatusPanel
               status={status}
+              selected={selectedFile}
+              onSelect={selectFile}
               onStageAll={() =>
                 void exec(() => api.stageAll(repoPath), {
                   refresh: REFRESH_BY_OP.stage,
@@ -302,6 +351,12 @@ export default function App() {
               }
             />
           )}
+
+          <DiffPanel
+            selection={selectedFile}
+            diff={diff}
+            loading={diffLoading}
+          />
 
           <div className="panel commit-box">
             <h2>コミット</h2>
