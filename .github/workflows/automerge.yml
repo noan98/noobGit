@@ -1,0 +1,137 @@
+# Auto-merge: CI が全 green で、未解決のレビュースレッドが無い PR を、追加の
+# 手動操作なしでマージする。CodeRabbit のレビューは既定で走らない設定（影響度の
+# 大きい変更のみ "coderabbit-review" ラベルでオプトイン。.coderabbit.yaml 参照）
+# のため、通常の PR はレビュー無しで CI green だけでマージされる。CodeRabbit が
+# レビューした PR では、未解決スレッドが残る限りマージされず、作者がスレッドを
+# 解決した時点でマージされる（CodeRabbit の再承認は待たない＝レートリミットで
+# 詰まらせない）。mainへの自動マージは blast radius が大きいため、条件はすべて
+# ワークフロー側で厳格に再確認してから merge する（暴発防止が最重要）。
+#
+# 設計上のポイント:
+#  - チェックアウトしない: PRコード(信頼できない可能性)を一切実行せず、
+#    gh / GitHub API の問い合わせだけで判定するため fork PR でも安全。
+#    そのため pull_request_target は使わない。
+#  - mainのブランチ保護は必須ステータスチェックOFFのため、CIのgreenは
+#    ここで head_sha に対して明示的に確認する。
+#  - マージ方式は履歴に合わせて merge commit (--merge)。squash/rebase に
+#    寄せる場合は最終ステップの --merge を差し替える。
+name: automerge
+
+on:
+  # レビュー提出のたびに再評価する（ラベル付きPRのCodeRabbitレビューや人手レビュー）。
+  pull_request_review:
+    types: [submitted]
+  # ci.yml の完了のたびに再評価する（CIがgreenになった瞬間を拾う）。
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+# 自動マージには書き込み権限が要る。これ以外は付与しない（最小権限）。
+permissions:
+  contents: write
+  pull-requests: write
+
+# 同一コミット(PRのhead SHA)に対する重複実行を直列化する。イベント種別が
+# 違っても同じ head SHA なら同一グループにして二重マージを防ぐ。
+concurrency:
+  group: automerge-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: 条件を満たすPRを自動マージ
+    runs-on: ubuntu-latest
+    # CI成功時、またはレビュー提出時に起動する（条件本体は下のスクリプトで
+    # 厳格に再確認する）。承認は必須でないため review.state では絞らない。
+    if: >
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'pull_request_review')
+    steps:
+      - name: 条件を確認して自動マージ
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh のデフォルトリポジトリ。チェックアウトしないため必須。
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          # 注入対策として外部由来値はすべて env 経由で受ける（直接 ${{ }}
+          # をスクリプトに埋め込まない）。値は数値/SHA/enum なので安全。
+          REVIEW_PR: ${{ github.event.pull_request.number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          owner="${GH_REPO%/*}"
+          repo="${GH_REPO#*/}"
+
+          # マージ条件を満たさないときは（失敗ではなく）スキップして正常終了する。
+          skip() { echo "マージ条件を満たさないためスキップ: $1"; exit 0; }
+
+          # 1. 対象PR番号を解決する。
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            PR="$REVIEW_PR"
+          else
+            # workflow_run はPR番号を直接持たない（forkではpull_requestsが空に
+            # なりうる）ので head_sha から関連する open PR を引く。
+            PR=$(gh api "repos/$GH_REPO/commits/$RUN_SHA/pulls" \
+              --jq '[.[] | select(.state == "open")][0].number // empty')
+          fi
+          if [ -z "${PR:-}" ]; then
+            skip "対象PRを特定できない"
+          fi
+          echo "対象PR: #$PR"
+
+          # 2. PR情報を取得する。mergeable は非同期計算のため UNKNOWN のことが
+          #    あり、その場合は数回リトライする（GitHubに計算を促す）。
+          pr_json=''
+          mergeable='UNKNOWN'
+          for _ in 1 2 3 4 5; do
+            pr_json=$(gh pr view "$PR" \
+              --json state,isDraft,baseRefName,headRefOid,mergeable)
+            mergeable=$(jq -r '.mergeable' <<<"$pr_json")
+            [ "$mergeable" != "UNKNOWN" ] && break
+            sleep 3
+          done
+
+          state=$(jq -r '.state' <<<"$pr_json")
+          is_draft=$(jq -r '.isDraft' <<<"$pr_json")
+          base=$(jq -r '.baseRefName' <<<"$pr_json")
+          head_sha=$(jq -r '.headRefOid' <<<"$pr_json")
+
+          # 3. open / not draft / base=main / マージ可能 を確認する。
+          [ "$state" = "OPEN" ]      || skip "PRがopenでない (state=$state)"
+          [ "$is_draft" = "false" ]  || skip "draft PR"
+          [ "$base" = "main" ]       || skip "baseがmainでない (base=$base)"
+          [ "$mergeable" = "MERGEABLE" ] || skip "マージ不可 (mergeable=$mergeable)"
+
+          # 4. CI(ci.yml)が最新コミット(head_sha)に対して success か確認する。
+          #    ブランチ保護で必須化していないため必ずここで確認する。
+          #    runsは新しい順なので[0]が最新。docs-only等でCIがskipされた場合は
+          #    runが存在せず success にならない→自動マージしない（手動運用に委ねる）。
+          ci_conclusion=$(gh api \
+            "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$head_sha&event=pull_request" \
+            --jq '.workflow_runs[0].conclusion // empty')
+          [ "$ci_conclusion" = "success" ] \
+            || skip "CIがsuccessでない (conclusion=${ci_conclusion:-none})"
+
+          # 5. 未解決のレビュースレッドが無いことを確認する
+          #    （Require conversation resolution と整合）。これが CodeRabbit の
+          #    指摘を尊重する唯一の軸。レビューされた PR は未解決スレッドが残る限り
+          #    マージされず、作者がスレッドを解決すれば CodeRabbit の再承認を
+          #    待たずにマージできる。レビューが走っていない PR はスレッドが無いので
+          #    この条件を自動的に満たす（＝CI green だけで通る）。
+          #    first:100 の取得上限を超える場合、101件目以降の未解決を見落として
+          #    しまうため、totalCount が100を超えるときは安全側で自動マージしない。
+          threads_json=$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){totalCount nodes{isResolved}}}}}' \
+            -F owner="$owner" -F repo="$repo" -F pr="$PR")
+          total_threads=$(jq -r '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$threads_json")
+          [ "$total_threads" -le 100 ] \
+            || skip "レビュースレッドが100件超のため安全側で自動マージしない (total=$total_threads)"
+          unresolved=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' <<<"$threads_json")
+          [ "$unresolved" = "0" ] || skip "未解決のレビュースレッドが ${unresolved} 件ある"
+
+          # 6. 全条件を満たしたのでマージする（履歴に合わせて merge commit）。
+          echo "全条件を満たしたため PR #$PR をマージします。"
+          gh pr merge "$PR" --merge

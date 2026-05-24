@@ -3,6 +3,17 @@
 # request_changes_workflow を有効にすると、CodeRabbit は指摘がある間は
 # 「変更要求(changes requested)」でブロックし、全コメントが解決されると
 # 自動的に approve する。これにより「対応完了 → マージ可能」の運用になる。
+#
+# レビューは既定では走らせない（auto_review.enabled: false）。CodeRabbit の
+# レートリミットで自動マージ(automerge.yml)が詰まるのを避けるため、通常の PR は
+# レビュー無しで CI のみで通す運用とする。大規模な修正・重要な機能追加など
+# 影響度の大きい変更に限り、PR に "coderabbit-review" ラベルを貼ると CodeRabbit が
+# レビューする（auto_review.labels はグローバル無効でもラベル付きPRをオプトイン
+# させる）。レビューされた PR は未解決スレッドが残る限り automerge されない。
 language: ja-JP
 reviews:
   request_changes_workflow: true
+  auto_review:
+    enabled: false
+    labels:
+      - "coderabbit-review"
