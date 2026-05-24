@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  type BranchGraph,
   type BranchInfo,
   type CommitInfo,
   type Explanation,
   type FileDiff,
+  type Identity,
+  type IdentityScope,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -19,6 +22,7 @@ import {
   type DiffSelection,
   type DiffSource,
 } from "./components/DiffPanel";
+import { IdentityDialog } from "./components/IdentityDialog";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -45,16 +49,17 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // ステージ系は作業ツリーの状態だけが変わる。
   stage: { status: true, undo: true },
   unstage: { status: true, undo: true },
-  // コミットは status（ステージ消化）と log（新コミット）に効く。ブランチ一覧は不変。
-  commit: { status: true, log: true, undo: true },
+  // コミットは status（ステージ消化）と log（新コミット）に効く。HEAD が動くので
+  // ブランチ関係（取り込み済み判定・ahead/behind）も変わるため branches も更新する。
+  commit: { status: true, branches: true, log: true, undo: true },
   // 作成はブランチ一覧だけ。HEAD も作業ツリーも動かさない。
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
   switch_branch: FULL_REFRESH,
   // 削除はブランチ一覧だけ。
   delete_branch: { branches: true, undo: true },
-  // ハードリセットは HEAD が動くので status と log が変わる。
-  reset_hard: { status: true, log: true, undo: true },
+  // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
+  reset_hard: { status: true, branches: true, log: true, undo: true },
   // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
   pull: FULL_REFRESH,
   push: FULL_REFRESH,
@@ -76,6 +81,7 @@ export default function App() {
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [branchGraph, setBranchGraph] = useState<BranchGraph | null>(null);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -98,14 +104,21 @@ export default function App() {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
+  // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [showIdentity, setShowIdentity] = useState(false);
+  const identityComplete = !!(identity && identity.name && identity.email);
+
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
       if (!repoPath) return false;
       try {
         const tasks: Promise<unknown>[] = [];
         if (parts.status) tasks.push(api.getStatus(repoPath).then(setStatus));
-        if (parts.branches)
+        if (parts.branches) {
           tasks.push(api.getBranches(repoPath).then(setBranches));
+          tasks.push(api.getBranchGraph(repoPath).then(setBranchGraph));
+        }
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
           const want = Math.max(LOG_PAGE_SIZE, loadedCount.current);
@@ -128,9 +141,22 @@ export default function App() {
     [repoPath],
   );
 
+  // identity の取得は補助的なので、失敗しても画面表示は止めない（バナーで案内に倒す）。
+  const loadIdentity = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      setIdentity(await api.getIdentity(repoPath));
+    } catch {
+      setIdentity(null);
+    }
+  }, [repoPath]);
+
   useEffect(() => {
-    if (opened) void refresh();
-  }, [opened, refresh]);
+    if (opened) {
+      void refresh();
+      void loadIdentity();
+    }
+  }, [opened, refresh, loadIdentity]);
 
   // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
   // コンフリクト）で呼ぶコマンドが変わる。
@@ -179,6 +205,26 @@ export default function App() {
     setNotice(null);
     const ok = await refresh();
     if (ok) setOpened(true);
+  }
+
+  async function saveIdentity(
+    name: string,
+    email: string,
+    scope: IdentityScope,
+  ) {
+    try {
+      await api.setIdentity(repoPath, name, email, scope);
+      setIdentity(await api.getIdentity(repoPath));
+      setShowIdentity(false);
+      setError(null);
+      setNotice(
+        scope === "global"
+          ? "名前とメールを設定しました（このPC全体）。"
+          : "名前とメールを設定しました（このリポジトリ）。",
+      );
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
@@ -234,6 +280,13 @@ export default function App() {
   function doCommit() {
     const msg = commitMsg.trim();
     if (!msg) return;
+    // 名前・メール未設定のままコミットすると失敗するので、先にセットアップへ案内する。
+    if (!identityComplete) {
+      setError(null);
+      setNotice("コミットの前に、名前とメールアドレスを設定しましょう。");
+      setShowIdentity(true);
+      return;
+    }
     void exec(
       async () => {
         await api.commit(repoPath, msg);
@@ -304,6 +357,13 @@ export default function App() {
               ↩ 取り消す: {undoInfo.description}
             </button>
           )}
+          <button
+            className="btn btn-small"
+            onClick={() => setShowIdentity(true)}
+            title="コミット作者の名前とメールアドレスを設定します"
+          >
+            👤 名前/メール
+          </button>
           <button className="btn btn-small" onClick={() => void refresh()}>
             更新
           </button>
@@ -312,6 +372,7 @@ export default function App() {
             onClick={() => {
               setOpened(false);
               setStatus(null);
+              setIdentity(null);
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
@@ -332,6 +393,19 @@ export default function App() {
       {notice && (
         <div className="banner notice" onClick={() => setNotice(null)}>
           {notice}
+        </div>
+      )}
+      {!identityComplete && (
+        <div className="banner setup">
+          <span>
+            👋 コミットには「名前」と「メールアドレス」の設定が必要です。
+          </span>
+          <button
+            className="btn btn-small"
+            onClick={() => setShowIdentity(true)}
+          >
+            設定する
+          </button>
         </div>
       )}
 
@@ -402,6 +476,7 @@ export default function App() {
         <section className="col">
           <BranchPanel
             branches={branches}
+            graph={branchGraph}
             onCreate={(name) =>
               void guarded("ブランチを作成", "create_branch", () =>
                 api.createBranch(repoPath, name),
@@ -434,6 +509,16 @@ export default function App() {
           explanation={guard.explanation}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {showIdentity && (
+        <IdentityDialog
+          current={identity}
+          onSave={(name, email, scope) =>
+            void saveIdentity(name, email, scope)
+          }
+          onCancel={() => setShowIdentity(false)}
         />
       )}
     </div>

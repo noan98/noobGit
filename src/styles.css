@@ -143,6 +143,16 @@ textarea {
   color: var(--safe);
   border-bottom: 1px solid #aceebb;
 }
+.banner.setup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: default;
+  background: #fff8e6;
+  color: var(--caution);
+  border-bottom: 1px solid #f0d58a;
+}
 
 .columns {
   flex: 1;
@@ -373,7 +383,15 @@ textarea {
   flex: 1;
 }
 .branches li {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.branch-row {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 .branches .current {
   font-weight: 600;
@@ -389,6 +407,35 @@ textarea {
   padding: 1px 5px;
   border-radius: 4px;
   margin-left: 6px;
+}
+.badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 6px;
+}
+.badge.merged {
+  background: #dafbe1;
+  color: var(--safe);
+}
+.badge.unmerged {
+  background: #ffebe9;
+  color: var(--destructive);
+}
+.branch-relation {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 14px;
+}
+.branch-relation strong {
+  color: var(--text);
+}
+.branch-relation .ambiguous {
+  color: var(--caution);
+  margin-left: 2px;
+}
+.ahead-behind {
+  color: var(--muted);
 }
 .branch-name.remote {
   color: var(--muted);
@@ -504,6 +551,44 @@ textarea {
   color: var(--muted);
   font-size: 13px;
 }
+/* ---- identity dialog form ---- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.field > span {
+  font-size: 13px;
+  font-weight: 500;
+}
+.field input {
+  width: 100%;
+}
+.scope {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 4px;
+}
+.scope legend {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 4px;
+}
+.scope-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.scope-opt small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
