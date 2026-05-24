@@ -27,9 +27,10 @@ permissions:
   contents: write
   pull-requests: write
 
-# 同一PR(またはCI実行のhead_sha)に対する重複実行を避ける。
+# 同一コミット(PRのhead SHA)に対する重複実行を直列化する。イベント種別が
+# 違っても同じ head SHA なら同一グループにして二重マージを防ぐ。
 concurrency:
-  group: automerge-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  group: automerge-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -114,10 +115,17 @@ jobs:
             || skip "CIがsuccessでない (conclusion=${ci_conclusion:-none})"
 
           # 5. CodeRabbit の最新レビューが「最新コミットに対して APPROVED」か確認する。
-          latest_review=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate \
-            --jq "[.[] | select(.user.login == \"$CODERABBIT_LOGIN\")] | sort_by(.submitted_at) | last")
+          #    --paginate は --jq を併用するとページ毎に適用され集計が壊れる。
+          #    --jq を付けない --paginate は全ページを1つの配列にまとめるため、
+          #    取得後に jq で一括処理する。さらに COMMENTED は承認可否に影響しない
+          #    （GitHub の review decision と同様）ので、判定対象は
+          #    APPROVED / CHANGES_REQUESTED / DISMISSED の「決定的」レビューに絞る。
+          reviews_json=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate)
+          latest_review=$(jq -c \
+            "[.[] | select(.user.login == \"$CODERABBIT_LOGIN\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or .state == \"DISMISSED\"))] | sort_by(.submitted_at) | last" \
+            <<<"$reviews_json")
           if [ -z "$latest_review" ] || [ "$latest_review" = "null" ]; then
-            skip "CodeRabbitのレビューが無い"
+            skip "CodeRabbitの決定的レビュー(承認/変更要求)が無い"
           fi
           review_state=$(jq -r '.state' <<<"$latest_review")
           review_commit=$(jq -r '.commit_id' <<<"$latest_review")
@@ -128,10 +136,15 @@ jobs:
 
           # 6. 未解決のレビュースレッドが無いことを確認する
           #    （Require conversation resolution と整合）。
-          unresolved=$(gh api graphql \
-            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved}}}}}' \
-            -F owner="$owner" -F repo="$repo" -F pr="$PR" \
-            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
+          #    first:100 の取得上限を超える場合、101件目以降の未解決を見落として
+          #    しまうため、totalCount が100を超えるときは安全側で自動マージしない。
+          threads_json=$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){totalCount nodes{isResolved}}}}}' \
+            -F owner="$owner" -F repo="$repo" -F pr="$PR")
+          total_threads=$(jq -r '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$threads_json")
+          [ "$total_threads" -le 100 ] \
+            || skip "レビュースレッドが100件超のため安全側で自動マージしない (total=$total_threads)"
+          unresolved=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' <<<"$threads_json")
           [ "$unresolved" = "0" ] || skip "未解決のレビュースレッドが ${unresolved} 件ある"
 
           # 7. 全条件を満たしたのでマージする（履歴に合わせて merge commit）。
