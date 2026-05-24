@@ -14,11 +14,51 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 
+// 再取得する範囲。操作の性質に応じて必要な部分だけを真にして冗長な I/O を避ける。
+interface RefreshParts {
+  status?: boolean;
+  branches?: boolean;
+  log?: boolean;
+  undo?: boolean;
+}
+
+// リポジトリを開いた直後や手動更新で使う全件再取得。
+const FULL_REFRESH: RefreshParts = {
+  status: true,
+  branches: true,
+  log: true,
+  undo: true,
+};
+
+// 各操作が画面のどの部分に影響するか。これに載っていない部分は再取得しない。
+// undo はどの書き込み操作でも履歴エントリが変わるため常に含める。
+const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
+  // ステージ系は作業ツリーの状態だけが変わる。
+  stage: { status: true, undo: true },
+  unstage: { status: true, undo: true },
+  // コミットは status（ステージ消化）と log（新コミット）に効く。ブランチ一覧は不変。
+  commit: { status: true, log: true, undo: true },
+  // 作成はブランチ一覧だけ。HEAD も作業ツリーも動かさない。
+  create_branch: { branches: true, undo: true },
+  // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
+  switch_branch: FULL_REFRESH,
+  // 削除はブランチ一覧だけ。
+  delete_branch: { branches: true, undo: true },
+  // ハードリセットは HEAD が動くので status と log が変わる。
+  reset_hard: { status: true, log: true, undo: true },
+  // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
+  pull: FULL_REFRESH,
+  push: FULL_REFRESH,
+  force_push: FULL_REFRESH,
+  merge: FULL_REFRESH,
+};
+
 interface Guard {
   title: string;
   assessment: RiskAssessment;
   explanation: Explanation;
   action: () => Promise<void>;
+  refresh: RefreshParts;
 }
 
 export default function App() {
@@ -35,26 +75,26 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
-  const refresh = useCallback(async (): Promise<boolean> => {
-    if (!repoPath) return false;
-    try {
-      const [st, br, lg, undo] = await Promise.all([
-        api.getStatus(repoPath),
-        api.getBranches(repoPath),
-        api.getLog(repoPath, 50),
-        api.peekUndo(repoPath),
-      ]);
-      setStatus(st);
-      setBranches(br);
-      setCommits(lg);
-      setUndoInfo(undo);
-      setError(null);
-      return true;
-    } catch (e) {
-      setError(String(e));
-      return false;
-    }
-  }, [repoPath]);
+  const refresh = useCallback(
+    async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
+      if (!repoPath) return false;
+      try {
+        const tasks: Promise<unknown>[] = [];
+        if (parts.status) tasks.push(api.getStatus(repoPath).then(setStatus));
+        if (parts.branches)
+          tasks.push(api.getBranches(repoPath).then(setBranches));
+        if (parts.log) tasks.push(api.getLog(repoPath, 50).then(setCommits));
+        if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
+        await Promise.all(tasks);
+        setError(null);
+        return true;
+      } catch (e) {
+        setError(String(e));
+        return false;
+      }
+    },
+    [repoPath],
+  );
 
   useEffect(() => {
     if (opened) void refresh();
@@ -68,13 +108,17 @@ export default function App() {
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
+  // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
   const exec = useCallback(
-    async (action: () => Promise<void>, successMsg?: string) => {
+    async (
+      action: () => Promise<void>,
+      opts: { successMsg?: string; refresh?: RefreshParts } = {},
+    ) => {
       try {
         await action();
         setError(null);
-        if (successMsg) setNotice(successMsg);
-        await refresh();
+        if (opts.successMsg) setNotice(opts.successMsg);
+        await refresh(opts.refresh ?? FULL_REFRESH);
       } catch (e) {
         setNotice(null);
         setError(String(e));
@@ -95,10 +139,11 @@ export default function App() {
         api.assess(repoPath, op, targetBranch),
         api.explain(op),
       ]);
+      const parts = REFRESH_BY_OP[op];
       if (assessment.level === "safe") {
-        await exec(action);
+        await exec(action, { refresh: parts });
       } else {
-        setGuard({ title, assessment, explanation, action });
+        setGuard({ title, assessment, explanation, action, refresh: parts });
       }
     } catch (e) {
       setError(String(e));
@@ -107,18 +152,21 @@ export default function App() {
 
   async function confirmGuard() {
     if (!guard) return;
-    const action = guard.action;
+    const { action, refresh: parts } = guard;
     setGuard(null);
-    await exec(action);
+    await exec(action, { refresh: parts });
   }
 
   function doCommit() {
     const msg = commitMsg.trim();
     if (!msg) return;
-    void exec(async () => {
-      await api.commit(repoPath, msg);
-      setCommitMsg("");
-    }, "コミットしました。");
+    void exec(
+      async () => {
+        await api.commit(repoPath, msg);
+        setCommitMsg("");
+      },
+      { successMsg: "コミットしました。", refresh: REFRESH_BY_OP.commit },
+    );
   }
 
   function doUndo() {
@@ -195,9 +243,21 @@ export default function App() {
           {status && (
             <StatusPanel
               status={status}
-              onStageAll={() => void exec(() => api.stageAll(repoPath))}
-              onStagePath={(p) => void exec(() => api.stagePath(repoPath, p))}
-              onUnstage={(p) => void exec(() => api.unstage(repoPath, p))}
+              onStageAll={() =>
+                void exec(() => api.stageAll(repoPath), {
+                  refresh: REFRESH_BY_OP.stage,
+                })
+              }
+              onStagePath={(p) =>
+                void exec(() => api.stagePath(repoPath, p), {
+                  refresh: REFRESH_BY_OP.stage,
+                })
+              }
+              onUnstage={(p) =>
+                void exec(() => api.unstage(repoPath, p), {
+                  refresh: REFRESH_BY_OP.unstage,
+                })
+              }
             />
           )}
 
