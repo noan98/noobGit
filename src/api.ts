@@ -42,6 +42,27 @@ export interface CommitInfo {
   time: number;
 }
 
+export interface BranchRelation {
+  name: string;
+  is_current: boolean;
+  merged_into_current: boolean;
+  ahead: number;
+  behind: number;
+}
+
+export interface LikelyBase {
+  name: string;
+  ambiguous: boolean;
+  ahead: number;
+  behind: number;
+}
+
+export interface BranchGraph {
+  current: string | null;
+  likely_base: LikelyBase | null;
+  relations: BranchRelation[];
+}
+
 export type OperationKind =
   | "stage"
   | "unstage"
@@ -98,6 +119,8 @@ export const api = {
     invoke<BranchInfo[]>("get_branches", { repoPath }),
   getLog: (repoPath: string, skip: number, max: number) =>
     invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  getBranchGraph: (repoPath: string) =>
+    invoke<BranchGraph>("get_branch_graph", { repoPath }),
 
   explain: (op: OperationKind) =>
     invoke<Explanation>("explain_operation", { op }),
