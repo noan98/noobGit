@@ -187,6 +187,12 @@ export const api = {
     invoke<void>("delete_branch", { repoPath, name }),
   resetHard: (repoPath: string, revspec: string) =>
     invoke<void>("reset_hard", { repoPath, revspec }),
+  push: (
+    repoPath: string,
+    remote: string,
+    refspec: string,
+    force: boolean,
+  ) => invoke<void>("push", { repoPath, remote, refspec, force }),
 
   canUndo: (repoPath: string) => invoke<boolean>("can_undo", { repoPath }),
   peekUndo: (repoPath: string) =>

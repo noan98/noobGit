@@ -150,6 +150,13 @@ fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
     ops::reset_hard(&r, &revspec).map_err(|e| e.to_string())
 }
 
+/// ローカルのコミットをリモートへ送信する。`force` が真なら強制 push。
+#[tauri::command]
+fn push(repo_path: String, remote: String, refspec: String, force: bool) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::push(&r, &remote, &refspec, force).map_err(|e| e.to_string())
+}
+
 // Undoは補助機能なので、履歴の読み取りに失敗しても画面全体の取得を巻き添えにしない。
 // （リポジトリを開けない等の致命的エラーは引き続き伝播する。）
 #[tauri::command]
@@ -193,6 +200,7 @@ pub fn run() {
             switch_branch,
             delete_branch,
             reset_hard,
+            push,
             can_undo,
             peek_undo,
             undo_last,

@@ -1,7 +1,11 @@
+use std::cell::RefCell;
 use std::path::Path;
 
 use git2::build::CheckoutBuilder;
-use git2::{BranchType, Commit, IndexAddOption, Repository, ResetType};
+use git2::{
+    BranchType, Commit, Cred, CredentialType, IndexAddOption, PushOptions, RemoteCallbacks,
+    Repository, ResetType,
+};
 
 use crate::error::{CoreError, Result};
 use crate::model::CommitInfo;
@@ -237,6 +241,104 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
     Ok(())
 }
 
+/// ローカルのコミットをリモートへ送信（push）する。
+///
+/// `remote` はリモート名（例: `origin`）、`refspec` は送信するブランチの指定
+/// （例: `refs/heads/main:refs/heads/main`）。`force` が真のときは強制 push（リモートの
+/// 履歴を上書き）を行う。push はローカルだけでは取り消せないため undo は記録しない。
+pub fn push(repo: &Repository, remote: &str, refspec: &str, force: bool) -> Result<()> {
+    let remote = remote.trim();
+    let refspec = refspec.trim();
+    if remote.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "送信先のリモート名を指定してください（例: origin）。".to_string(),
+        ));
+    }
+    if refspec.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "送信するブランチを指定してください。".to_string(),
+        ));
+    }
+
+    let mut remote_obj = repo.find_remote(remote).map_err(|_| {
+        CoreError::InvalidInput(format!(
+            "リモート「{remote}」が見つかりません。リモートの設定を確認してください。"
+        ))
+    })?;
+
+    // 強制 push のときだけ refspec の先頭に '+' を付けて、上書き（非fast-forward）を許可する。
+    let effective = if force && !refspec.starts_with('+') {
+        format!("+{refspec}")
+    } else {
+        refspec.to_string()
+    };
+
+    // リモートが個々の参照を拒否した理由（非fast-forward 等）を callback から拾う。
+    // push() 自体は成功(Ok)を返しつつ、拒否はこの callback の status で通知されることがある。
+    let rejection: RefCell<Option<String>> = RefCell::new(None);
+
+    {
+        let mut callbacks = RemoteCallbacks::new();
+        // 認証は SSH エージェント → 資格情報ヘルパ（トークン等）→ 既定 の順で試す。
+        // ローカルパスのリモートでは認証は不要で、この callback は呼ばれない。
+        callbacks.credentials(|url, username_from_url, allowed| {
+            if allowed.contains(CredentialType::SSH_KEY) {
+                return Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+            }
+            if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+                if let Ok(config) = git2::Config::open_default() {
+                    if let Ok(cred) = Cred::credential_helper(&config, url, username_from_url) {
+                        return Ok(cred);
+                    }
+                }
+            }
+            if allowed.contains(CredentialType::DEFAULT) {
+                return Cred::default();
+            }
+            Err(git2::Error::from_str(
+                "利用できる認証情報が見つかりませんでした。",
+            ))
+        });
+        // 各参照の更新結果。status が Some なら、その参照はリモートに拒否されている。
+        callbacks.push_update_reference(|refname, status| {
+            if let Some(msg) = status {
+                *rejection.borrow_mut() = Some(format!("{refname}: {msg}"));
+            }
+            Ok(())
+        });
+
+        let mut opts = PushOptions::new();
+        opts.remote_callbacks(callbacks);
+
+        remote_obj
+            .push(&[effective.as_str()], Some(&mut opts))
+            .map_err(map_push_error)?;
+    }
+
+    if let Some(reason) = rejection.into_inner() {
+        return Err(CoreError::Blocked(format!(
+            "リモートへの送信が拒否されました。リモートに自分の手元には無い変更があるかもしれません。先に取り込み（pull）をしてから、もう一度送信してください。（詳細: {reason}）"
+        )));
+    }
+
+    Ok(())
+}
+
+/// push の git2 エラーを初心者向けの日本語 [`CoreError`] に変換する。
+fn map_push_error(e: git2::Error) -> CoreError {
+    use git2::ErrorCode;
+    match e.code() {
+        ErrorCode::Auth => CoreError::Blocked(
+            "リモートの認証に失敗しました。SSH鍵やトークンの設定を確認してください。".to_string(),
+        ),
+        ErrorCode::NotFastForward => CoreError::Blocked(
+            "リモートへの送信が拒否されました（非fast-forward）。先に取り込み（pull）をしてから、もう一度送信してください。"
+                .to_string(),
+        ),
+        _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", e.message())),
+    }
+}
+
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("").trim()
 }
@@ -372,6 +474,127 @@ mod tests {
         undo_last(&repo).unwrap();
         let repo = fx.open();
         assert_eq!(log(&repo, 10).unwrap().len(), 2);
+    }
+
+    /// remote 名・refspec が空なら入力エラーになる。
+    #[test]
+    fn push_rejects_empty_arguments() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        assert!(matches!(
+            push(&repo, "  ", "refs/heads/main:refs/heads/main", false).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            push(&repo, "origin", "   ", false).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    /// 設定されていないリモートへの push は入力エラーで案内する。
+    #[test]
+    fn push_to_unknown_remote_errors() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        let err = push(&repo, "origin", "refs/heads/main:refs/heads/main", false).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
+    /// 通常 push がローカルのベアリポジトリ（remote）に反映される。
+    #[test]
+    fn push_updates_remote_ref() {
+        let bare = TestRepo::new_bare();
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let oid = fx.commit("c1");
+        fx.add_remote("origin", bare.path().to_str().unwrap());
+
+        let repo = fx.open();
+        push(&repo, "origin", "refs/heads/main:refs/heads/main", false).unwrap();
+
+        let bare_repo = bare.open();
+        assert_eq!(bare_repo.refname_to_id("refs/heads/main").unwrap(), oid);
+    }
+
+    /// 非fast-forward の push は拒否され、日本語のブロックエラーになる。
+    #[test]
+    fn non_fast_forward_push_is_rejected() {
+        let bare = TestRepo::new_bare();
+
+        // 1人目: c1 を push して remote/main = c1 にする。
+        let a = TestRepo::new();
+        a.write_file("a.txt", "1");
+        a.stage_all();
+        a.commit("c1");
+        a.add_remote("origin", bare.path().to_str().unwrap());
+        push(
+            &a.open(),
+            "origin",
+            "refs/heads/main:refs/heads/main",
+            false,
+        )
+        .unwrap();
+
+        // 2人目: remote を知らずに独自の d1 を作る → 非fast-forward。
+        let b = TestRepo::new();
+        b.write_file("b.txt", "x");
+        b.stage_all();
+        b.commit("d1");
+        b.add_remote("origin", bare.path().to_str().unwrap());
+        let err = push(
+            &b.open(),
+            "origin",
+            "refs/heads/main:refs/heads/main",
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+
+        // remote は c1 のままで上書きされていない。
+        let bare_repo = bare.open();
+        assert_eq!(
+            bare_repo.refname_to_id("refs/heads/main").unwrap(),
+            a.head_oid()
+        );
+    }
+
+    /// 強制 push はリモートの履歴を上書きできる。
+    #[test]
+    fn force_push_overwrites_remote() {
+        let bare = TestRepo::new_bare();
+
+        let a = TestRepo::new();
+        a.write_file("a.txt", "1");
+        a.stage_all();
+        a.commit("c1");
+        a.add_remote("origin", bare.path().to_str().unwrap());
+        push(
+            &a.open(),
+            "origin",
+            "refs/heads/main:refs/heads/main",
+            false,
+        )
+        .unwrap();
+
+        let b = TestRepo::new();
+        b.write_file("b.txt", "x");
+        b.stage_all();
+        let d1 = b.commit("d1");
+        b.add_remote("origin", bare.path().to_str().unwrap());
+        // force=true なら非fast-forward でも上書きできる。
+        push(&b.open(), "origin", "refs/heads/main:refs/heads/main", true).unwrap();
+
+        let bare_repo = bare.open();
+        assert_eq!(bare_repo.refname_to_id("refs/heads/main").unwrap(), d1);
     }
 
     #[test]
