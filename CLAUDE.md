@@ -161,6 +161,25 @@ formatting is split into its own fast job.
   the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
   publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
   tag; review the draft, then publish.
+- **`workflows/automerge.yml`** — auto-merges a PR once it's fully green and
+  approved, so no manual Merge click is needed. Triggers on
+  `pull_request_review` (submitted) and `workflow_run` (ci.yml completed), so
+  conditions are re-evaluated whenever CI finishes or a review lands. It does
+  **not** check out the PR — it judges purely from `gh`/API queries, so fork
+  PRs are safe and no `pull_request_target` is used. Permissions are minimal
+  (`contents: write`, `pull-requests: write`). Because `main`'s branch
+  protection has required status checks **OFF**, every condition is re-checked
+  in the workflow before merging (暴発防止): PR open & non-draft, base `main`,
+  `mergeable`, the **ci.yml run for the head SHA concluded `success`**,
+  CodeRabbit's latest review is `APPROVED` **for that head SHA**, and there are
+  **no unresolved review threads** (matches Require conversation resolution).
+  Any PR not meeting all of these is left for manual merge as before
+  (e.g. docs-only PRs where `paths-ignore` skips CI, so no run exists).
+  Dependabot PRs are not special-cased — they auto-merge only if they also get
+  CodeRabbit approval. Merge method is **merge commit** (`gh pr merge --merge`)
+  to match the existing `Merge pull request #..` history; switch the final
+  `--merge` flag to change it. The CodeRabbit bot login is matched exactly
+  (`coderabbitai[bot]`).
 - **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
   workspace), `npm` (frontend), and `github-actions` (keeps the pinned action
   SHAs current). Minor/patch bumps are grouped per ecosystem, and a `cooldown`
