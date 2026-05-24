@@ -7,7 +7,9 @@ use git2::Repository;
 
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
-use noobgit_core::model::{BranchGraph, BranchInfo, CommitInfo, FileDiff, RepoStatus};
+use noobgit_core::model::{
+    BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus,
+};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{identity, ops, repo, undo};
@@ -144,6 +146,20 @@ fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// リモートから最新を取得し、リモート追跡ブランチを更新する（作業ツリーは変えない）。
+#[tauri::command]
+fn fetch(repo_path: String, remote: String) -> Result<FetchOutcome, String> {
+    let r = open(&repo_path)?;
+    ops::fetch(&r, &remote).map_err(|e| e.to_string())
+}
+
+/// fetch 後、安全に進められるとき（fast-forward）だけ取り込む。分岐時は中断する。
+#[tauri::command]
+fn pull(repo_path: String, remote: String, branch: String) -> Result<PullOutcome, String> {
+    let r = open(&repo_path)?;
+    ops::pull(&r, &remote, &branch).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
     let r = open(&repo_path)?;
@@ -192,6 +208,8 @@ pub fn run() {
             create_branch,
             switch_branch,
             delete_branch,
+            fetch,
+            pull,
             reset_hard,
             can_undo,
             peek_undo,

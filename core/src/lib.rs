@@ -26,7 +26,8 @@ pub use error::{CoreError, ErrorKind, Result};
 pub use explain::{explain, Explanation};
 pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{
-    BranchInfo, ChangeKind, CommitInfo, DiffLine, DiffLineKind, FileChange, FileDiff, RepoStatus,
+    BranchInfo, ChangeKind, CommitInfo, DiffLine, DiffLineKind, FetchOutcome, FileChange, FileDiff,
+    PullOutcome, RepoStatus,
 };
 pub use safety::{assess, OperationKind, RiskAssessment, RiskLevel, SafetyContext};
 pub use undo::{can_undo, peek, undo_last, UndoAction, UndoEntry};

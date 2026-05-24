@@ -161,3 +161,33 @@ pub struct CommitInfo {
     /// コミット日時（Unixエポック秒）。
     pub time: i64,
 }
+
+/// fetch（リモートの取得）の結果サマリ。
+///
+/// fetch はリモート追跡ブランチ（例: `origin/main`）を最新化するだけで、作業中の
+/// ファイルや現在ブランチには一切触れない安全操作。取り込む前に「何が来ているか」を
+/// 確認するための情報を返す。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchOutcome {
+    /// 取得元のリモート名（例: `origin`）。
+    pub remote: String,
+    /// 今回の取得で更新（新規取得・前進）されたリモート追跡ブランチの数。
+    /// 0 なら、リモートにも新しい変更が無かったということ。
+    pub updated_refs: usize,
+}
+
+/// pull（取り込み）の結果。安全のため fast-forward でのみ取り込む。
+///
+/// 分岐していて fast-forward できない場合は、コンフリクトでの事故を避けるため
+/// 取り込まずに中断し、エラー（[`crate::error::CoreError::Blocked`]）として返す。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PullOutcome {
+    /// すでに最新で、取り込むものは無かった。
+    UpToDate,
+    /// fast-forward で前進した（マージコミットは作らず、履歴を一直線に保つ）。
+    FastForwarded {
+        /// 前進後の、現在ブランチの最新コミット。
+        commit: CommitInfo,
+    },
+}

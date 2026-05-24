@@ -27,6 +27,9 @@ import { IdentityDialog } from "./components/IdentityDialog";
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
 
+// 取得・取り込みの既定リモート名。多くのリポジトリはクローン元を origin と呼ぶ。
+const DEFAULT_REMOTE = "origin";
+
 // 表示テーマ。"system" は OS の設定（prefers-color-scheme）に追従する。
 type ThemeChoice = "light" | "dark" | "system";
 const THEME_KEY = "noobgit-theme";
@@ -90,8 +93,11 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   delete_branch: { branches: true, undo: true },
   // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
   reset_hard: { status: true, branches: true, log: true, undo: true },
-  // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
+  // fetch はリモート追跡ブランチを更新するだけ（作業ツリー・HEAD は不変）。
+  fetch: { branches: true },
+  // pull（FF）は作業ツリー・HEAD・ブランチ関係が動くので全件。
   pull: FULL_REFRESH,
+  // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
   push: FULL_REFRESH,
   force_push: FULL_REFRESH,
   merge: FULL_REFRESH,
@@ -374,6 +380,46 @@ export default function App() {
     });
   }
 
+  // 取得（fetch）: リモートの最新情報だけを取り込む安全操作。確認なしで実行する。
+  function doFetch() {
+    void exec(
+      async () => {
+        const outcome = await api.fetch(repoPath, DEFAULT_REMOTE);
+        setNotice(
+          outcome.updated_refs > 0
+            ? `リモート「${outcome.remote}」から最新情報を取得しました（追跡ブランチ ${outcome.updated_refs} 件を更新）。`
+            : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`,
+        );
+      },
+      { refresh: REFRESH_BY_OP.fetch },
+    );
+  }
+
+  // 取り込み（pull）: fetch 後、fast-forward できるときだけ取り込む。pull は注意操作
+  // なので guarded を通し、確認ダイアログを挟む。分岐して取り込めない場合はエラー表示。
+  function doPull() {
+    const branch = status?.branch;
+    if (!branch) {
+      setError(
+        "現在のブランチが特定できないため取り込めません（detached HEAD の可能性があります）。",
+      );
+      return;
+    }
+    void guarded(
+      "リモートから取り込む",
+      "pull",
+      async () => {
+        const outcome = await api.pull(repoPath, DEFAULT_REMOTE, branch);
+        setNotice(
+          outcome.kind === "up_to_date"
+            ? "すでに最新の状態でした。取り込むものはありません。"
+            : `リモートの変更を取り込みました（${outcome.commit.short_id} まで前進）。`,
+        );
+      },
+      branch,
+    );
+  }
+
   if (!opened) {
     return (
       <div className="welcome">
@@ -405,6 +451,20 @@ export default function App() {
           </span>
         </div>
         <div className="topbar-actions">
+          <button
+            className="btn btn-small"
+            onClick={doFetch}
+            title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
+          >
+            🔄 取得
+          </button>
+          <button
+            className="btn btn-small"
+            onClick={doPull}
+            title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
+          >
+            ⬇ 取り込む
+          </button>
           {undoInfo && (
             <button className="btn btn-undo" onClick={doUndo}>
               ↩ 取り消す: {undoInfo.description}

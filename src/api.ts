@@ -88,6 +88,7 @@ export type OperationKind =
   | "switch_branch"
   | "delete_branch"
   | "reset_hard"
+  | "fetch"
   | "pull"
   | "push"
   | "force_push"
@@ -114,6 +115,19 @@ export interface UndoEntry {
   op: OperationKind;
   description: string;
 }
+
+// fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
+export interface FetchOutcome {
+  remote: string;
+  // 今回更新（前進・新規取得）された追跡ブランチ数。0 ならリモートにも新着なし。
+  updated_refs: number;
+}
+
+// pull（取り込み）の結果。fast-forward でのみ取り込む。
+// 分岐して取り込めない場合は invoke が reject する（kind は返らない）。
+export type PullOutcome =
+  | { kind: "up_to_date" }
+  | { kind: "fast_forwarded"; commit: CommitInfo };
 
 // identity の保存先。"local" は今のリポジトリだけ、"global" はこのPC全体。
 export type IdentityScope = "local" | "global";
@@ -185,6 +199,10 @@ export const api = {
     invoke<void>("switch_branch", { repoPath, name }),
   deleteBranch: (repoPath: string, name: string) =>
     invoke<void>("delete_branch", { repoPath, name }),
+  fetch: (repoPath: string, remote: string) =>
+    invoke<FetchOutcome>("fetch", { repoPath, remote }),
+  pull: (repoPath: string, remote: string, branch: string) =>
+    invoke<PullOutcome>("pull", { repoPath, remote, branch }),
   resetHard: (repoPath: string, revspec: string) =>
     invoke<void>("reset_hard", { repoPath, revspec }),
 

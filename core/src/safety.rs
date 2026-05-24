@@ -11,6 +11,7 @@ pub enum OperationKind {
     SwitchBranch,
     DeleteBranch,
     ResetHard,
+    Fetch,
     Pull,
     Push,
     ForcePush,
@@ -161,14 +162,20 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
+        OperationKind::Fetch => RiskAssessment::safe(
+            "リモートの最新情報を取得するだけで、作業中のファイルや今のブランチは一切変わりません。",
+        ),
+
         OperationKind::Pull => RiskAssessment {
             level: RiskLevel::Caution,
             reasons: vec![
-                "リモートの最新を取り込みます。コンフリクトが起きることがあります。".to_string(),
+                "リモートの最新を取り込みます。安全に進められるとき（fast-forward）だけ取り込み、分岐していて取り込めないときは何も変えずに中断します。".to_string(),
             ],
             reversible: true,
             permanent_data_loss: false,
-            recommended_alternative: None,
+            recommended_alternative: Some(
+                "取り込む前に「取得」で何が来ているか確認すると安心です。".to_string(),
+            ),
         },
 
         OperationKind::Push => {
@@ -261,6 +268,13 @@ mod tests {
         ] {
             assert_eq!(assess(op, &ctx).level, RiskLevel::Safe);
         }
+    }
+
+    #[test]
+    fn fetch_is_safe_and_pull_is_caution() {
+        let ctx = SafetyContext::default();
+        assert_eq!(assess(OperationKind::Fetch, &ctx).level, RiskLevel::Safe);
+        assert_eq!(assess(OperationKind::Pull, &ctx).level, RiskLevel::Caution);
     }
 
     #[test]
