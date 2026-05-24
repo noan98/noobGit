@@ -316,6 +316,28 @@ textarea {
 .diff-hunk .diff-content {
   color: var(--accent);
 }
+.diff-conflict-marker {
+  background: #fff1cc;
+  font-weight: 600;
+}
+.diff-conflict-marker .diff-content {
+  color: var(--caution);
+}
+.diff-conflict-note {
+  background: #fff8e6;
+  border: 1px solid #d4a72c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.diff-conflict-note code {
+  background: #fff1cc;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+}
 
 /* ---- commits ---- */
 .commits .sha {

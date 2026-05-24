@@ -1,5 +1,5 @@
 import { changeKindLabel, type RepoStatus } from "../api";
-import type { DiffSelection } from "./DiffPanel";
+import type { DiffSelection, DiffSource } from "./DiffPanel";
 
 interface Props {
   status: RepoStatus;
@@ -7,7 +7,7 @@ interface Props {
   onStageAll: () => void;
   onStagePath: (path: string) => void;
   onUnstage: (path: string) => void;
-  onSelect: (path: string, staged: boolean) => void;
+  onSelect: (path: string, source: DiffSource) => void;
 }
 
 export function StatusPanel({
@@ -20,11 +20,11 @@ export function StatusPanel({
 }: Props) {
   const hasUnstaged = status.unstaged.length > 0 || status.untracked.length > 0;
 
-  const isSelected = (path: string, staged: boolean) =>
-    !!selected && selected.path === path && selected.staged === staged;
+  const isSelected = (path: string, source: DiffSource) =>
+    !!selected && selected.path === path && selected.source === source;
 
-  const pathClass = (path: string, staged: boolean) =>
-    `path path-btn${isSelected(path, staged) ? " selected" : ""}`;
+  const pathClass = (path: string, source: DiffSource) =>
+    `path path-btn${isSelected(path, source) ? " selected" : ""}`;
 
   return (
     <div className="panel">
@@ -53,8 +53,8 @@ export function StatusPanel({
                 </span>
                 <button
                   type="button"
-                  className={pathClass(f.path, true)}
-                  onClick={() => onSelect(f.path, true)}
+                  className={pathClass(f.path, "staged")}
+                  onClick={() => onSelect(f.path, "staged")}
                   title="クリックで差分を表示"
                 >
                   {f.path}
@@ -83,8 +83,8 @@ export function StatusPanel({
                 </span>
                 <button
                   type="button"
-                  className={pathClass(f.path, false)}
-                  onClick={() => onSelect(f.path, false)}
+                  className={pathClass(f.path, "unstaged")}
+                  onClick={() => onSelect(f.path, "unstaged")}
                   title="クリックで差分を表示"
                 >
                   {f.path}
@@ -107,8 +107,8 @@ export function StatusPanel({
                 <span className="tag tag-untracked">未追跡</span>
                 <button
                   type="button"
-                  className={pathClass(p, false)}
-                  onClick={() => onSelect(p, false)}
+                  className={pathClass(p, "unstaged")}
+                  onClick={() => onSelect(p, "unstaged")}
                   title="クリックで差分を表示"
                 >
                   {p}
@@ -131,8 +131,8 @@ export function StatusPanel({
                 <span className="tag tag-conflicted">コンフリクト</span>
                 <button
                   type="button"
-                  className={pathClass(p, false)}
-                  onClick={() => onSelect(p, false)}
+                  className={pathClass(p, "conflicted")}
+                  onClick={() => onSelect(p, "conflicted")}
                   title="クリックで差分を表示"
                 >
                   {p}

@@ -100,6 +100,8 @@ pub struct FileDiff {
     pub is_binary: bool,
     /// 行数上限を超えたため途中で打ち切った場合は true。
     pub truncated: bool,
+    /// コンフリクト中のファイルの内容（競合の目印を含む）を表示している場合は true。
+    pub is_conflicted: bool,
     /// 表示する差分行（`is_binary` のときは空）。
     pub lines: Vec<DiffLine>,
 }

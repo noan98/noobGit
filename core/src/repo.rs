@@ -317,11 +317,69 @@ fn build_file_diff(path: &str, diff: &git2::Diff) -> Result<FileDiff> {
         path: path.to_string(),
         is_binary: build.is_binary,
         truncated: build.truncated,
+        is_conflicted: false,
         lines: if build.is_binary {
             Vec::new()
         } else {
             build.lines
         },
+    })
+}
+
+/// コンフリクト中ファイルの「いまの作業ツリーの中身」を返す。
+///
+/// コンフリクト中はインデックスに stage 0 が無く、通常の差分（インデックス↔作業
+/// ツリー / HEAD↔インデックス）では何も出ない。そこで作業ツリーのファイル内容を
+/// そのまま行として返し、`<<<<<<<` などの競合の目印を初学者が確認できるようにする。
+/// 各行は文脈行として扱い、目印かどうかの色付けはフロント側で行う。
+pub fn diff_conflict(repo: &Repository, path: &str) -> Result<FileDiff> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
+    // 作業ツリー外を指す相対パスは読み取らない（安全のため）。
+    let rel = std::path::Path::new(path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
+    }
+    // ファイルが消えているコンフリクト（削除競合など）もありうるので、読めなければ空にする。
+    let bytes = std::fs::read(workdir.join(rel)).unwrap_or_default();
+
+    if bytes.contains(&0) {
+        return Ok(FileDiff {
+            path: path.to_string(),
+            is_binary: true,
+            truncated: false,
+            is_conflicted: true,
+            lines: Vec::new(),
+        });
+    }
+
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = Vec::new();
+    let mut truncated = false;
+    for (i, line) in text.lines().enumerate() {
+        if lines.len() >= MAX_DIFF_LINES {
+            truncated = true;
+            break;
+        }
+        lines.push(DiffLine {
+            kind: DiffLineKind::Context,
+            old_lineno: None,
+            new_lineno: Some((i + 1) as u32),
+            content: line.to_string(),
+        });
+    }
+
+    Ok(FileDiff {
+        path: path.to_string(),
+        is_binary: false,
+        truncated,
+        is_conflicted: true,
+        lines,
     })
 }
 
@@ -575,5 +633,79 @@ mod tests {
 
         assert!(diff.truncated);
         assert!(diff.lines.len() <= MAX_DIFF_LINES);
+    }
+
+    /// `a.txt` がコンフリクト中になった一時リポジトリを作る。
+    fn repo_with_conflict() -> TestRepo {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        let base_oid = fx.commit("base");
+
+        let repo = fx.open();
+        let base_commit = repo.find_commit(base_oid).unwrap();
+        repo.branch("other", &base_commit, false).unwrap();
+
+        // main 側の変更。
+        fx.write_file("a.txt", "main side\n");
+        fx.stage_all();
+        let main_oid = fx.commit("main change");
+
+        // other へ切り替えて別の変更。
+        let repo = fx.open();
+        let obj = repo.revparse_single("refs/heads/other").unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.force();
+        repo.checkout_tree(&obj, Some(&mut co)).unwrap();
+        repo.set_head("refs/heads/other").unwrap();
+
+        fx.write_file("a.txt", "other side\n");
+        fx.stage_all();
+        fx.commit("other change");
+
+        // main を other にマージしてコンフリクトさせる。
+        let repo = fx.open();
+        let main_commit = repo.find_commit(main_oid).unwrap();
+        let annotated = repo.find_annotated_commit(main_commit.id()).unwrap();
+        repo.merge(&[&annotated], None, None).unwrap();
+
+        fx
+    }
+
+    #[test]
+    fn conflicted_file_only_appears_in_conflicted_list() {
+        let fx = repo_with_conflict();
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert_eq!(st.conflicted, vec!["a.txt".to_string()]);
+        // 通常の差分ではコンフリクト中ファイルは何も出ない（stage 0 が無いため）。
+        assert!(diff_unstaged(&repo, "a.txt").unwrap().lines.is_empty());
+        assert!(diff_staged(&repo, "a.txt").unwrap().lines.is_empty());
+    }
+
+    #[test]
+    fn diff_conflict_shows_working_tree_with_markers() {
+        let fx = repo_with_conflict();
+        let repo = fx.open();
+        let diff = diff_conflict(&repo, "a.txt").unwrap();
+
+        assert!(diff.is_conflicted);
+        assert!(!diff.is_binary);
+        // 競合の目印と両側の内容がそのまま見える。
+        assert!(diff.lines.iter().any(|l| l.content.starts_with("<<<<<<<")));
+        assert!(diff.lines.iter().any(|l| l.content.starts_with("=======")));
+        assert!(diff.lines.iter().any(|l| l.content.starts_with(">>>>>>>")));
+        assert!(diff.lines.iter().any(|l| l.content == "other side"));
+        assert!(diff.lines.iter().any(|l| l.content == "main side"));
+        // すべて文脈行として返す。
+        assert!(diff.lines.iter().all(|l| l.kind == DiffLineKind::Context));
+    }
+
+    #[test]
+    fn diff_conflict_rejects_path_traversal() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(diff_conflict(&repo, "../secret.txt").is_err());
+        assert!(diff_conflict(&repo, "/etc/passwd").is_err());
     }
 }

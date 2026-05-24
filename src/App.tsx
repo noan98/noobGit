@@ -14,7 +14,11 @@ import { StatusPanel } from "./components/StatusPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
-import { DiffPanel, type DiffSelection } from "./components/DiffPanel";
+import {
+  DiffPanel,
+  type DiffSelection,
+  type DiffSource,
+} from "./components/DiffPanel";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -128,7 +132,8 @@ export default function App() {
     if (opened) void refresh();
   }, [opened, refresh]);
 
-  // 選択中ファイルの差分を取得する。ステージ済みかどうかで参照元が変わる。
+  // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
+  // コンフリクト）で呼ぶコマンドが変わる。
   const loadDiff = useCallback(
     async (sel: DiffSelection | null) => {
       if (!repoPath || !sel) {
@@ -137,9 +142,12 @@ export default function App() {
       }
       setDiffLoading(true);
       try {
-        const d = sel.staged
-          ? await api.getDiffStaged(repoPath, sel.path)
-          : await api.getDiffUnstaged(repoPath, sel.path);
+        const d =
+          sel.source === "staged"
+            ? await api.getDiffStaged(repoPath, sel.path)
+            : sel.source === "conflicted"
+              ? await api.getDiffConflict(repoPath, sel.path)
+              : await api.getDiffUnstaged(repoPath, sel.path);
         setDiff(d);
         setError(null);
       } catch (e) {
@@ -158,11 +166,11 @@ export default function App() {
   }, [selectedFile, status, loadDiff]);
 
   // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
-  const selectFile = useCallback((path: string, staged: boolean) => {
+  const selectFile = useCallback((path: string, source: DiffSource) => {
     setSelectedFile((cur) =>
-      cur && cur.path === path && cur.staged === staged
+      cur && cur.path === path && cur.source === source
         ? null
-        : { path, staged },
+        : { path, source },
     );
   }, []);
 

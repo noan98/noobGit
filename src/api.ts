@@ -55,6 +55,7 @@ export interface FileDiff {
   path: string;
   is_binary: boolean;
   truncated: boolean;
+  is_conflicted: boolean;
   lines: DiffLine[];
 }
 
@@ -118,6 +119,8 @@ export const api = {
     invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
   getDiffStaged: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_staged", { repoPath, path }),
+  getDiffConflict: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_conflict", { repoPath, path }),
 
   explain: (op: OperationKind) =>
     invoke<Explanation>("explain_operation", { op }),

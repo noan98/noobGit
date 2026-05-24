@@ -47,6 +47,13 @@ fn get_diff_staged(repo_path: String, path: String) -> Result<FileDiff, String> 
     repo::diff_staged(&r, &path).map_err(|e| e.to_string())
 }
 
+/// コンフリクト中ファイルの作業ツリーの内容（競合の目印を含む）を返す。
+#[tauri::command]
+fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String> {
+    let r = open(&repo_path)?;
+    repo::diff_conflict(&r, &path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn explain_operation(op: OperationKind) -> Explanation {
     explain_op(op)
@@ -146,6 +153,7 @@ pub fn run() {
             get_log,
             get_diff_unstaged,
             get_diff_staged,
+            get_diff_conflict,
             explain_operation,
             assess_operation,
             stage_all,
