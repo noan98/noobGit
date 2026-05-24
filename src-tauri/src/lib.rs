@@ -6,7 +6,7 @@
 use git2::Repository;
 
 use noobgit_core::explain::{explain as explain_op, Explanation};
-use noobgit_core::model::{BranchInfo, CommitInfo, RepoStatus};
+use noobgit_core::model::{BranchGraph, BranchInfo, CommitInfo, RepoStatus};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{ops, repo, undo};
@@ -31,6 +31,12 @@ fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
 fn get_log(repo_path: String, skip: usize, max: usize) -> Result<Vec<CommitInfo>, String> {
     let r = open(&repo_path)?;
     repo::log_paged(&r, skip, max).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_branch_graph(repo_path: String) -> Result<BranchGraph, String> {
+    let r = open(&repo_path)?;
+    repo::branch_graph(&r).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -130,6 +136,7 @@ pub fn run() {
             get_status,
             get_branches,
             get_log,
+            get_branch_graph,
             explain_operation,
             assess_operation,
             stage_all,

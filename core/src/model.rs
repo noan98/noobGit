@@ -66,6 +66,50 @@ pub struct BranchInfo {
     pub is_protected: bool,
 }
 
+/// 現在ブランチと各ローカルブランチの関係（すべて読み取り専用で算出）。
+///
+/// 「このブランチはどこから切ったのか」「もう取り込まれたのか（消して安全か）」を
+/// 初学者が把握できるようにするための情報。派生元は Git が記録しないため推定値。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchGraph {
+    /// 現在のブランチ名。detached HEAD や未誕生では None。
+    pub current: Option<String>,
+    /// 派生元（推定）。Git は派生元を保持しないため merge-base からの推定。
+    pub likely_base: Option<LikelyBase>,
+    /// 各ローカルブランチの、現在ブランチに対する関係。
+    pub relations: Vec<BranchRelation>,
+}
+
+/// 派生元ブランチの推定結果。
+///
+/// 厳密な特定は不可能なので、UI では必ず「推定」と明示すること。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LikelyBase {
+    /// 推定された派生元ブランチ名。
+    pub name: String,
+    /// 同点の候補が複数あり、推定が曖昧か。true のときは断定しない文言にする。
+    pub ambiguous: bool,
+    /// 現在ブランチが派生元より先行しているコミット数。
+    pub ahead: usize,
+    /// 現在ブランチが派生元より遅れているコミット数。
+    pub behind: usize,
+}
+
+/// あるローカルブランチの、現在ブランチに対する関係。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchRelation {
+    /// 対象のローカルブランチ名。
+    pub name: String,
+    /// 現在チェックアウト中のブランチ自身か。
+    pub is_current: bool,
+    /// 現在ブランチに取り込み済みか（このブランチの先端が現在ブランチの先祖）。
+    pub merged_into_current: bool,
+    /// このブランチが現在ブランチより先行しているコミット数。
+    pub ahead: usize,
+    /// このブランチが現在ブランチより遅れているコミット数。
+    pub behind: usize,
+}
+
 /// コミット1件の情報。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitInfo {
