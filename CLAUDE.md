@@ -147,16 +147,32 @@ GitHub Actions workflows live in `.github/`. Actions are pinned to commit SHAs
 formatting is split into its own fast job.
 
 - **`workflows/ci.yml`** — runs on PRs targeting `main` (docs-only changes are
-  skipped via `paths-ignore`). Three jobs on `ubuntu-latest`:
-  - **frontend** — `npm ci` then `npm run build` (`tsc && vite build`, so the
-    type check is included).
-  - **rust (fmt)** — `cargo fmt --all -- --check`. No build, so it fails fast.
-  - **rust (check + clippy + test)** — installs Tauri 2 Linux system deps (via
-    the cached-apt action), builds the frontend first (the `src-tauri`
+  skipped via `paths-ignore`). Four jobs on `ubuntu-latest`:
+  - **changes (変更パス判定)** — a fast gate job using `dorny/paths-filter` (no
+    checkout; it reads the PR's changed files from the API). It outputs
+    `frontend` / `rust` booleans, and the two heavy jobs run only when their
+    paths changed (`needs: changes` + `if`). A change to `ci.yml` itself sets
+    **both** so the new CI config is fully exercised. This is why a PR touching
+    only automation config (e.g. `automerge.yml`) skips the build jobs yet
+    still produces a ci.yml run: skipped jobs don't fail the run, so its
+    conclusion is **`success`** and automerge (which gates on "ci.yml concluded
+    success for the head SHA") can still auto-merge it. Docs-only PRs differ:
+    `paths-ignore` skips the **whole** workflow, so no run exists and they stay
+    manual-merge.
+  - **frontend** (`if frontend`) — `npm ci` then `npm run build` (`tsc && vite
+    build`, so the type check is included). Path triggers: `src/**`,
+    `index.html`, `package*.json`, `tsconfig*.json`, `vite.config.*`.
+  - **rust (fmt)** (`if rust`) — `cargo fmt --all -- --check`. No build, so it
+    fails fast.
+  - **rust (check + clippy + test)** (`if rust`) — installs Tauri 2 Linux system
+    deps (via the cached-apt action), builds the frontend first (the `src-tauri`
     `generate_context!` macro needs `../dist`), then `cargo clippy --workspace
     --all-targets --locked -- -D warnings` and `cargo nextest run --workspace
     --locked --all-targets`. Clippy warnings fail the build — keep the tree
     warning-free. `--locked` means `Cargo.lock` must be committed and current.
+    Rust path triggers: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`.
+    Frontend-only changes do **not** run the Rust jobs (Rust sources/tests are
+    unaffected; the frontend job already validates the build).
 - **`workflows/release.yml`** — runs on `v*` tags (or manual dispatch). Builds
   the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
   publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
