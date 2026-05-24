@@ -27,6 +27,11 @@ on:
     types: [completed]
 
 # 自動マージには書き込み権限が要る。これ以外は付与しない（最小権限）。
+# 注意: この permissions ブロックに加えて、リポジトリ設定
+# Settings → Actions → General → Workflow permissions を
+# 「Read and write permissions」にしておく必要がある。read-only のままだと
+# GITHUB_TOKEN が contents: write を得られず、`gh pr merge` がマージコミットを
+# 作れずに失敗/スキップし、ボットによる自動マージが一切成立しない。
 permissions:
   contents: write
   pull-requests: write
