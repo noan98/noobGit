@@ -1,7 +1,10 @@
 use git2::{BranchType, Repository, Status, StatusOptions};
 
 use crate::error::{CoreError, Result};
-use crate::model::{BranchInfo, ChangeKind, CommitInfo, FileChange, RepoStatus};
+use crate::model::{
+    BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, FileChange, LikelyBase,
+    RepoStatus,
+};
 use crate::safety::is_protected;
 
 /// 指定パス（またはその親）からGitリポジトリを開く。
@@ -154,6 +157,93 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
     Ok(out)
 }
 
+/// 現在ブランチと各ローカルブランチの関係（取り込み済み判定・ahead/behind・派生元推定）を返す。
+///
+/// すべて読み取り専用。判定の基準は現在ブランチの先端コミット。未誕生ブランチや
+/// detached HEAD のように先端を特定できない場合は、関係を計算せず空で返す。
+pub fn branch_graph(repo: &Repository) -> Result<BranchGraph> {
+    let current = current_branch(repo);
+
+    // 現在ブランチの先端 Oid。コミットが無い／detached 等で取れなければ関係は出せない。
+    let head_oid = match repo.head().ok().and_then(|h| h.target()) {
+        Some(o) => o,
+        None => {
+            return Ok(BranchGraph {
+                current,
+                likely_base: None,
+                relations: Vec::new(),
+            });
+        }
+    };
+
+    let mut relations = Vec::new();
+    // 派生元候補: (ブランチ名, 現在ブランチが先行している数, 現在ブランチが遅れている数)。
+    // 「分岐点が現在ブランチの先端に最も近い」= 現在ブランチがそのブランチより先行している
+    //  コミット数（ahead）が最小、という基準で推定する。
+    let mut candidates: Vec<(String, usize, usize)> = Vec::new();
+
+    for item in repo.branches(Some(BranchType::Local))? {
+        let (branch, _) = item?;
+        let name = match branch.name()? {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let tip = match branch.get().target() {
+            Some(o) => o,
+            None => continue,
+        };
+        let is_current = current.as_deref() == Some(name.as_str());
+
+        // (このブランチが現在ブランチより先行している数, 遅れている数)。
+        let (ahead, behind) = repo.graph_ahead_behind(tip, head_oid)?;
+        // 取り込み済み = このブランチの先端が現在ブランチの先祖（独自コミットが無い）。
+        // 現在ブランチ自身は取り込み済み扱いにしない。
+        let merged_into_current = !is_current && ahead == 0;
+
+        relations.push(BranchRelation {
+            name: name.clone(),
+            is_current,
+            merged_into_current,
+            ahead,
+            behind,
+        });
+
+        if !is_current {
+            // 現在ブランチ視点に変換: 現在が先行している数 = behind、遅れている数 = ahead。
+            candidates.push((name, behind, ahead));
+        }
+    }
+
+    let likely_base = pick_likely_base(candidates);
+
+    Ok(BranchGraph {
+        current,
+        likely_base,
+        relations,
+    })
+}
+
+/// 派生元（推定）を選ぶ。分岐点が現在ブランチの先端に最も近い（現在ブランチの先行数が
+/// 最小の）ブランチを採用し、同点が複数あれば曖昧フラグを立てる。
+fn pick_likely_base(mut candidates: Vec<(String, usize, usize)>) -> Option<LikelyBase> {
+    if candidates.is_empty() {
+        return None;
+    }
+    // 名前順に整えてから選ぶことで、同点時の採用候補を決定的にする。
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let min_ahead = candidates.iter().map(|c| c.1).min()?;
+    let tied = candidates.iter().filter(|c| c.1 == min_ahead).count();
+    let (name, ahead, behind) = candidates.into_iter().find(|c| c.1 == min_ahead)?;
+
+    Some(LikelyBase {
+        name,
+        ambiguous: tied > 1,
+        ahead,
+        behind,
+    })
+}
+
 /// 直近 `max` 件のコミット履歴を新しい順に返す。
 pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
     log_paged(repo, 0, max)
@@ -291,6 +381,135 @@ mod tests {
         let st = status(&repo).unwrap();
         assert_eq!(st.unstaged.len(), 1);
         assert_eq!(st.unstaged[0].kind, ChangeKind::Modified);
+    }
+
+    #[test]
+    fn branch_graph_detects_merged_and_unmerged() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        // merged は c1 のまま据え置く（後で main が進むので取り込み済みになる）。
+        create_branch(&repo, "merged").unwrap();
+        // feature は独自コミットを持たせて未取り込みにする。
+        create_branch(&repo, "feature").unwrap();
+
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("b.txt", "x");
+        fx.stage_all();
+        fx.commit("feature-c2"); // feature: c1 -> feature-c2
+
+        let repo = fx.open();
+        switch_branch(&repo, "main").unwrap();
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("main-c2"); // main: c1 -> main-c2
+
+        let repo = fx.open();
+        let g = branch_graph(&repo).unwrap();
+        assert_eq!(g.current.as_deref(), Some("main"));
+
+        let by = |n: &str| g.relations.iter().find(|r| r.name == n).unwrap();
+
+        // merged は c1 のまま → main(c1->main-c2) に取り込み済み。
+        assert!(by("merged").merged_into_current);
+        assert_eq!(by("merged").ahead, 0);
+
+        // feature は独自コミットがある → 未取り込み。ahead/behind が両方 1。
+        assert!(!by("feature").merged_into_current);
+        assert_eq!(by("feature").ahead, 1); // feature-c2
+        assert_eq!(by("feature").behind, 1); // main-c2
+
+        // 現在ブランチ自身は取り込み済み扱いにしない。
+        assert!(by("main").is_current);
+        assert!(!by("main").merged_into_current);
+    }
+
+    #[test]
+    fn branch_graph_estimates_likely_base_with_ahead_behind() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2"); // main: c1 -> c2
+
+        let repo = fx.open();
+        create_branch(&repo, "feature").unwrap();
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("c3"); // feature: c1 -> c2 -> c3
+
+        let repo = fx.open();
+        let g = branch_graph(&repo).unwrap();
+        assert_eq!(g.current.as_deref(), Some("feature"));
+
+        let lb = g.likely_base.expect("派生元が推定できる");
+        assert_eq!(lb.name, "main");
+        assert!(!lb.ambiguous);
+        // feature は main より c3 の分だけ先行し、遅れは無い。
+        assert_eq!(lb.ahead, 1);
+        assert_eq!(lb.behind, 0);
+    }
+
+    #[test]
+    fn branch_graph_marks_ambiguous_base_on_tie() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        // a と b は c1 に据え置く（feature から見て同じ距離の候補になる）。
+        create_branch(&repo, "a").unwrap();
+        create_branch(&repo, "b").unwrap();
+        create_branch(&repo, "feature").unwrap();
+
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2"); // feature: c1 -> c2
+
+        let repo = fx.open();
+        let g = branch_graph(&repo).unwrap();
+        let lb = g.likely_base.expect("候補はある");
+        // main/a/b すべて c1 で同点 → 曖昧。採用名は決定的に名前順で先頭。
+        assert!(lb.ambiguous);
+        assert_eq!(lb.name, "a");
+    }
+
+    #[test]
+    fn branch_graph_empty_repo_has_no_relations() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        let g = branch_graph(&repo).unwrap();
+        assert!(g.relations.is_empty());
+        assert!(g.likely_base.is_none());
+    }
+
+    #[test]
+    fn branch_graph_single_branch_has_no_likely_base() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        let g = branch_graph(&repo).unwrap();
+        // 自分以外のローカルブランチが無いので派生元は推定できない。
+        assert!(g.likely_base.is_none());
+        assert_eq!(g.relations.len(), 1);
+        assert!(g.relations[0].is_current);
     }
 
     #[test]

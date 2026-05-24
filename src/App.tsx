@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  type BranchGraph,
   type BranchInfo,
   type CommitInfo,
   type Explanation,
@@ -42,16 +43,17 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // ステージ系は作業ツリーの状態だけが変わる。
   stage: { status: true, undo: true },
   unstage: { status: true, undo: true },
-  // コミットは status（ステージ消化）と log（新コミット）に効く。ブランチ一覧は不変。
-  commit: { status: true, log: true, undo: true },
+  // コミットは status（ステージ消化）と log（新コミット）に効く。HEAD が動くので
+  // ブランチ関係（取り込み済み判定・ahead/behind）も変わるため branches も更新する。
+  commit: { status: true, branches: true, log: true, undo: true },
   // 作成はブランチ一覧だけ。HEAD も作業ツリーも動かさない。
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
   switch_branch: FULL_REFRESH,
   // 削除はブランチ一覧だけ。
   delete_branch: { branches: true, undo: true },
-  // ハードリセットは HEAD が動くので status と log が変わる。
-  reset_hard: { status: true, log: true, undo: true },
+  // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
+  reset_hard: { status: true, branches: true, log: true, undo: true },
   // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
   pull: FULL_REFRESH,
   push: FULL_REFRESH,
@@ -73,6 +75,7 @@ export default function App() {
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [branchGraph, setBranchGraph] = useState<BranchGraph | null>(null);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -101,8 +104,10 @@ export default function App() {
       try {
         const tasks: Promise<unknown>[] = [];
         if (parts.status) tasks.push(api.getStatus(repoPath).then(setStatus));
-        if (parts.branches)
+        if (parts.branches) {
           tasks.push(api.getBranches(repoPath).then(setBranches));
+          tasks.push(api.getBranchGraph(repoPath).then(setBranchGraph));
+        }
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
           const want = Math.max(LOG_PAGE_SIZE, loadedCount.current);
@@ -408,6 +413,7 @@ export default function App() {
         <section className="col">
           <BranchPanel
             branches={branches}
+            graph={branchGraph}
             onCreate={(name) =>
               void guarded("ブランチを作成", "create_branch", () =>
                 api.createBranch(repoPath, name),

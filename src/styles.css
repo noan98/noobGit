@@ -277,7 +277,15 @@ textarea {
   flex: 1;
 }
 .branches li {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.branch-row {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 .branches .current {
   font-weight: 600;
@@ -293,6 +301,35 @@ textarea {
   padding: 1px 5px;
   border-radius: 4px;
   margin-left: 6px;
+}
+.badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 6px;
+}
+.badge.merged {
+  background: #dafbe1;
+  color: var(--safe);
+}
+.badge.unmerged {
+  background: #ffebe9;
+  color: var(--destructive);
+}
+.branch-relation {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 14px;
+}
+.branch-relation strong {
+  color: var(--text);
+}
+.branch-relation .ambiguous {
+  color: var(--caution);
+  margin-left: 2px;
+}
+.ahead-behind {
+  color: var(--muted);
 }
 .branch-name.remote {
   color: var(--muted);
