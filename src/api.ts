@@ -42,6 +42,23 @@ export interface CommitInfo {
   time: number;
 }
 
+export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  old_lineno: number | null;
+  new_lineno: number | null;
+  content: string;
+}
+
+export interface FileDiff {
+  path: string;
+  is_binary: boolean;
+  truncated: boolean;
+  is_conflicted: boolean;
+  lines: DiffLine[];
+}
+
 export interface BranchRelation {
   name: string;
   is_current: boolean;
@@ -127,6 +144,12 @@ export const api = {
     invoke<BranchInfo[]>("get_branches", { repoPath }),
   getLog: (repoPath: string, skip: number, max: number) =>
     invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  getDiffUnstaged: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
+  getDiffStaged: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_staged", { repoPath, path }),
+  getDiffConflict: (repoPath: string, path: string) =>
+    invoke<FileDiff>("get_diff_conflict", { repoPath, path }),
   getBranchGraph: (repoPath: string) =>
     invoke<BranchGraph>("get_branch_graph", { repoPath }),
 

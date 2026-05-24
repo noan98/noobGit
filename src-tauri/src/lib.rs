@@ -7,7 +7,7 @@ use git2::Repository;
 
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
-use noobgit_core::model::{BranchGraph, BranchInfo, CommitInfo, RepoStatus};
+use noobgit_core::model::{BranchGraph, BranchInfo, CommitInfo, FileDiff, RepoStatus};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{identity, ops, repo, undo};
@@ -32,6 +32,27 @@ fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
 fn get_log(repo_path: String, skip: usize, max: usize) -> Result<Vec<CommitInfo>, String> {
     let r = open(&repo_path)?;
     repo::log_paged(&r, skip, max).map_err(|e| e.to_string())
+}
+
+/// 指定ファイルの未ステージ差分（インデックス↔作業ツリー）を返す。
+#[tauri::command]
+fn get_diff_unstaged(repo_path: String, path: String) -> Result<FileDiff, String> {
+    let r = open(&repo_path)?;
+    repo::diff_unstaged(&r, &path).map_err(|e| e.to_string())
+}
+
+/// 指定ファイルのステージ済み差分（HEAD↔インデックス）を返す。
+#[tauri::command]
+fn get_diff_staged(repo_path: String, path: String) -> Result<FileDiff, String> {
+    let r = open(&repo_path)?;
+    repo::diff_staged(&r, &path).map_err(|e| e.to_string())
+}
+
+/// コンフリクト中ファイルの作業ツリーの内容（競合の目印を含む）を返す。
+#[tauri::command]
+fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String> {
+    let r = open(&repo_path)?;
+    repo::diff_conflict(&r, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -156,6 +177,9 @@ pub fn run() {
             get_status,
             get_branches,
             get_log,
+            get_diff_unstaged,
+            get_diff_staged,
+            get_diff_conflict,
             get_branch_graph,
             explain_operation,
             assess_operation,

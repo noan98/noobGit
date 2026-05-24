@@ -5,6 +5,7 @@ import {
   type BranchInfo,
   type CommitInfo,
   type Explanation,
+  type FileDiff,
   type Identity,
   type IdentityScope,
   type OperationKind,
@@ -16,6 +17,11 @@ import { StatusPanel } from "./components/StatusPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import {
+  DiffPanel,
+  type DiffSelection,
+  type DiffSource,
+} from "./components/DiffPanel";
 import { IdentityDialog } from "./components/IdentityDialog";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -93,6 +99,11 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // 差分プレビュー: 選択中ファイルと、その差分。
+  const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [showIdentity, setShowIdentity] = useState(false);
@@ -146,6 +157,48 @@ export default function App() {
       void loadIdentity();
     }
   }, [opened, refresh, loadIdentity]);
+
+  // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
+  // コンフリクト）で呼ぶコマンドが変わる。
+  const loadDiff = useCallback(
+    async (sel: DiffSelection | null) => {
+      if (!repoPath || !sel) {
+        setDiff(null);
+        return;
+      }
+      setDiffLoading(true);
+      try {
+        const d =
+          sel.source === "staged"
+            ? await api.getDiffStaged(repoPath, sel.path)
+            : sel.source === "conflicted"
+              ? await api.getDiffConflict(repoPath, sel.path)
+              : await api.getDiffUnstaged(repoPath, sel.path);
+        setDiff(d);
+        setError(null);
+      } catch (e) {
+        setDiff(null);
+        setError(String(e));
+      } finally {
+        setDiffLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  // 選択が変わったとき、または status の再取得で変更内容が変わったときに差分を取り直す。
+  useEffect(() => {
+    void loadDiff(selectedFile);
+  }, [selectedFile, status, loadDiff]);
+
+  // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
+  const selectFile = useCallback((path: string, source: DiffSource) => {
+    setSelectedFile((cur) =>
+      cur && cur.path === path && cur.source === source
+        ? null
+        : { path, source },
+    );
+  }, []);
 
   async function openRepo() {
     if (!repoPath.trim()) return;
@@ -323,6 +376,8 @@ export default function App() {
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
+              setSelectedFile(null);
+              setDiff(null);
             }}
           >
             別のリポジトリ
@@ -359,6 +414,8 @@ export default function App() {
           {status && (
             <StatusPanel
               status={status}
+              selected={selectedFile}
+              onSelect={selectFile}
               onStageAll={() =>
                 void exec(() => api.stageAll(repoPath), {
                   refresh: REFRESH_BY_OP.stage,
@@ -376,6 +433,12 @@ export default function App() {
               }
             />
           )}
+
+          <DiffPanel
+            selection={selectedFile}
+            diff={diff}
+            loading={diffLoading}
+          />
 
           <div className="panel commit-box">
             <h2>コミット</h2>

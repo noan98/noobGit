@@ -66,6 +66,46 @@ pub struct BranchInfo {
     pub is_protected: bool,
 }
 
+/// 差分の1行の種別。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    /// 変更されていない文脈行（前後の参考行）。
+    Context,
+    /// 追加された行。
+    Addition,
+    /// 削除された行。
+    Deletion,
+    /// ハンクの見出し（例: `@@ -1,3 +1,4 @@`）。変更のかたまりの区切り。
+    Hunk,
+}
+
+/// 差分の1行。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    /// 変更前ファイルでの行番号（削除・文脈行のみ。それ以外は None）。
+    pub old_lineno: Option<u32>,
+    /// 変更後ファイルでの行番号（追加・文脈行のみ。それ以外は None）。
+    pub new_lineno: Option<u32>,
+    /// 行の中身（末尾の改行は取り除き済み）。
+    pub content: String,
+}
+
+/// 1ファイルの差分結果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    /// バイナリのため行単位の差分を表示できない場合は true。
+    pub is_binary: bool,
+    /// 行数上限を超えたため途中で打ち切った場合は true。
+    pub truncated: bool,
+    /// コンフリクト中のファイルの内容（競合の目印を含む）を表示している場合は true。
+    pub is_conflicted: bool,
+    /// 表示する差分行（`is_binary` のときは空）。
+    pub lines: Vec<DiffLine>,
+}
+
 /// 現在ブランチと各ローカルブランチの関係（すべて読み取り専用で算出）。
 ///
 /// 「このブランチはどこから切ったのか」「もう取り込まれたのか（消して安全か）」を
