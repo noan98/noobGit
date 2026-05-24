@@ -241,6 +241,8 @@ textarea {
 .commit-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 .summary {
   font-weight: 500;

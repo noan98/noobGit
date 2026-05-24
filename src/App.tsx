@@ -219,7 +219,16 @@ export default function App() {
         </section>
 
         <section className="col">
-          <HistoryPanel commits={commits} />
+          <HistoryPanel
+            commits={commits}
+            onReset={(c) =>
+              void guarded(
+                `「${c.short_id}」までハードリセット`,
+                "reset_hard",
+                () => api.resetHard(repoPath, c.id),
+              )
+            }
+          />
         </section>
 
         <section className="col">

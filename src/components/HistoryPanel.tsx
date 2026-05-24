@@ -2,6 +2,7 @@ import type { CommitInfo } from "../api";
 
 interface Props {
   commits: CommitInfo[];
+  onReset: (commit: CommitInfo) => void;
 }
 
 function formatTime(unixSeconds: number): string {
@@ -15,7 +16,7 @@ function formatTime(unixSeconds: number): string {
   });
 }
 
-export function HistoryPanel({ commits }: Props) {
+export function HistoryPanel({ commits, onReset }: Props) {
   return (
     <div className="panel">
       <div className="panel-head">
@@ -35,6 +36,13 @@ export function HistoryPanel({ commits }: Props) {
                   {c.author_name} ・ {formatTime(c.time)}
                 </span>
               </div>
+              <button
+                className="link danger"
+                title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                onClick={() => onReset(c)}
+              >
+                ここまで戻す
+              </button>
             </li>
           ))}
         </ul>
