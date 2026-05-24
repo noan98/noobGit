@@ -1,7 +1,10 @@
-# Auto-merge: CIが全green かつ CodeRabbit が最新コミットをapprove した
-# PR を、追加の手動操作なしでマージする。mainへの自動マージは blast radius が
-# 大きいため、条件はすべてワークフロー側で厳格に再確認してから merge する
-# （暴発防止が最重要）。
+# Auto-merge: CI が全 green で、CodeRabbit が反対(変更要求)しておらず未解決の
+# レビュースレッドも無い PR を、追加の手動操作なしでマージする。CodeRabbit の
+# 明示的な approve は必須にしない（レートリミットによる承認待ちで効率が落ちる
+# のを避けるため）。代わりに「未解決スレッド無し（作者が解決でき、CodeRabbit の
+# 再承認を待たない）」＋「最新コミットへの CHANGES_REQUESTED 無し」で反対のみ
+# 尊重する。mainへの自動マージは blast radius が大きいため、条件はすべて
+# ワークフロー側で厳格に再確認してから merge する（暴発防止が最重要）。
 #
 # 設計上のポイント:
 #  - チェックアウトしない: PRコード(信頼できない可能性)を一切実行せず、
@@ -37,14 +40,13 @@ jobs:
   automerge:
     name: 条件を満たすPRを自動マージ
     runs-on: ubuntu-latest
-    # 肯定的なシグナル（CI成功 / approveレビュー）があるときだけ起動する。
-    # 条件本体は下のスクリプトで厳格に再確認する。
+    # CI成功時、またはレビュー提出時に起動する（条件本体は下のスクリプトで
+    # 厳格に再確認する）。承認は必須でないため review.state では絞らない。
     if: >
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.event == 'pull_request' &&
        github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'pull_request_review' &&
-       github.event.review.state == 'approved')
+      (github.event_name == 'pull_request_review')
     steps:
       - name: 条件を確認して自動マージ
         env:
@@ -114,25 +116,29 @@ jobs:
           [ "$ci_conclusion" = "success" ] \
             || skip "CIがsuccessでない (conclusion=${ci_conclusion:-none})"
 
-          # 5. CodeRabbit の最新レビューが「最新コミットに対して APPROVED」か確認する。
-          #    --paginate は --jq を併用するとページ毎に適用され集計が壊れる。
-          #    --jq を付けない --paginate は全ページを1つの配列にまとめるため、
-          #    取得後に jq で一括処理する。さらに COMMENTED は承認可否に影響しない
-          #    （GitHub の review decision と同様）ので、判定対象は
-          #    APPROVED / CHANGES_REQUESTED / DISMISSED の「決定的」レビューに絞る。
+          # 5. CodeRabbit が「最新コミットに対して変更要求中」でないことを確認する。
+          #    承認(APPROVED)は必須にしない（レートリミットによる承認待ちを避ける）。
+          #    CodeRabbit の反対は、(a) 未解決スレッド無し[後段。作者が解決でき
+          #    CodeRabbit の再承認を待たない] と (b) 最新コミットへの
+          #    CHANGES_REQUESTED 無し、の2点で尊重する。未レビューの PR は CI
+          #    green だけで通す。CHANGES_REQUESTED を head_sha に限定するのは、
+          #    古いコミットへの変更要求は新しい push で更新され、未解決スレッド側で
+          #    引き続き担保されるため（再承認待ちで停滞させない）。
+          #    --paginate は --jq 併用でページ毎適用になり集計が壊れるため、--jq
+          #    無しで全ページを1配列にまとめてから jq 一括処理する。COMMENTED は
+          #    承認可否に影響しないので決定的レビュー(APPROVED/CHANGES_REQUESTED/
+          #    DISMISSED)に絞って最新を判定する。
           reviews_json=$(gh api "repos/$GH_REPO/pulls/$PR/reviews" --paginate)
           latest_review=$(jq -c \
             "[.[] | select(.user.login == \"$CODERABBIT_LOGIN\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or .state == \"DISMISSED\"))] | sort_by(.submitted_at) | last" \
             <<<"$reviews_json")
-          if [ -z "$latest_review" ] || [ "$latest_review" = "null" ]; then
-            skip "CodeRabbitの決定的レビュー(承認/変更要求)が無い"
+          if [ -n "$latest_review" ] && [ "$latest_review" != "null" ]; then
+            review_state=$(jq -r '.state' <<<"$latest_review")
+            review_commit=$(jq -r '.commit_id' <<<"$latest_review")
+            if [ "$review_state" = "CHANGES_REQUESTED" ] && [ "$review_commit" = "$head_sha" ]; then
+              skip "CodeRabbitが最新コミットに変更要求中 (CHANGES_REQUESTED)"
+            fi
           fi
-          review_state=$(jq -r '.state' <<<"$latest_review")
-          review_commit=$(jq -r '.commit_id' <<<"$latest_review")
-          [ "$review_state" = "APPROVED" ] \
-            || skip "CodeRabbitがAPPROVEDでない (state=$review_state)"
-          [ "$review_commit" = "$head_sha" ] \
-            || skip "CodeRabbitの承認が最新コミットでない"
 
           # 6. 未解決のレビュースレッドが無いことを確認する
           #    （Require conversation resolution と整合）。

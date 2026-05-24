@@ -161,23 +161,28 @@ formatting is split into its own fast job.
   the Windows installers via `tauri-apps/tauri-action` on `windows-latest` and
   publishes a **draft** GitHub Release. Cutting a release = pushing a `vX.Y.Z`
   tag; review the draft, then publish.
-- **`workflows/automerge.yml`** — auto-merges a PR once it's fully green and
-  approved, so no manual Merge click is needed. Triggers on
-  `pull_request_review` (submitted) and `workflow_run` (ci.yml completed), so
-  conditions are re-evaluated whenever CI finishes or a review lands. It does
-  **not** check out the PR — it judges purely from `gh`/API queries, so fork
-  PRs are safe and no `pull_request_target` is used. Permissions are minimal
-  (`contents: write`, `pull-requests: write`). Because `main`'s branch
-  protection has required status checks **OFF**, every condition is re-checked
-  in the workflow before merging (暴発防止): PR open & non-draft, base `main`,
-  `mergeable`, the **ci.yml run for the head SHA concluded `success`**,
-  CodeRabbit's latest review is `APPROVED` **for that head SHA**, and there are
-  **no unresolved review threads** (matches Require conversation resolution).
-  Any PR not meeting all of these is left for manual merge as before
-  (e.g. docs-only PRs where `paths-ignore` skips CI, so no run exists).
-  Dependabot PRs are not special-cased — they auto-merge only if they also get
-  CodeRabbit approval. Merge method is **merge commit** (`gh pr merge --merge`)
-  to match the existing `Merge pull request #..` history; switch the final
+- **`workflows/automerge.yml`** — auto-merges a PR once CI is green and there's
+  no outstanding CodeRabbit objection, so no manual Merge click is needed.
+  Triggers on `pull_request_review` (submitted) and `workflow_run` (ci.yml
+  completed), so conditions are re-evaluated whenever CI finishes or a review
+  lands. It does **not** check out the PR — it judges purely from `gh`/API
+  queries, so fork PRs are safe and no `pull_request_target` is used.
+  Permissions are minimal (`contents: write`, `pull-requests: write`). Because
+  `main`'s branch protection has required status checks **OFF**, every
+  condition is re-checked in the workflow before merging (暴発防止): PR open &
+  non-draft, base `main`, `mergeable`, the **ci.yml run for the head SHA
+  concluded `success`**, **no unresolved review threads** (matches Require
+  conversation resolution), and CodeRabbit is **not** requesting changes on the
+  head SHA (`CHANGES_REQUESTED`). A CodeRabbit **approval is intentionally NOT
+  required** — waiting on it was dropped to avoid stalling on CodeRabbit rate
+  limits. CodeRabbit's concerns are instead honored by the author-controllable
+  "resolve all threads" gate plus the head-SHA `CHANGES_REQUESTED` block, so a
+  merge never overrides an active objection but also never waits for CodeRabbit
+  to re-approve. Consequently an **un-reviewed PR merges on CI alone**. Any PR
+  not meeting these is left for manual merge (e.g. docs-only PRs where
+  `paths-ignore` skips CI, so no run exists). Dependabot PRs are not
+  special-cased. Merge method is **merge commit** (`gh pr merge --merge`) to
+  match the existing `Merge pull request #..` history; switch the final
   `--merge` flag to change it. The CodeRabbit bot login is matched exactly
   (`coderabbitai[bot]`).
 - **`dependabot.yml`** — weekly update PRs for three ecosystems: `cargo` (root
