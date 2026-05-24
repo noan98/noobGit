@@ -133,5 +133,48 @@ jobs:
           [ "$unresolved" = "0" ] || skip "未解決のレビュースレッドが ${unresolved} 件ある"
 
           # 6. 全条件を満たしたのでマージする（履歴に合わせて merge commit）。
-          echo "全条件を満たしたため PR #$PR をマージします。"
-          gh pr merge "$PR" --merge
+          #    GitHub の merge-state(mergeStateStatus) は非同期計算で、CI 完了直後など
+          #    再計算が追いつかず一時的に BLOCKED/UNKNOWN を返すことがある。この瞬間に
+          #    即 merge すると "not mergeable" で失敗するため（手動運用に落ちてしまう）、
+          #    マージ可能状態になるまで指数 backoff でポーリングしてから merge する。
+          #    待っても解消しない BLOCKED/UNKNOWN は恒久的な保護条件の可能性があるので
+          #    安全側でスキップ（手動運用に委ねる）。DIRTY/BEHIND は再試行で直らない
+          #    終端状態なので即スキップ。
+          echo "全条件を満たしたため PR #$PR のマージを試みます。"
+          delay=5
+          merged=false
+          mss=''
+          for attempt in 1 2 3 4 5; do
+            if [ "$attempt" -gt 1 ]; then
+              sleep "$delay"
+              delay=$((delay * 2))
+            fi
+            mss=$(gh pr view "$PR" --json mergeStateStatus --jq '.mergeStateStatus')
+            case "$mss" in
+              CLEAN|UNSTABLE|HAS_HOOKS)
+                # マージ可能。失敗しても merge-state のラグの可能性があるので再評価する。
+                if gh pr merge "$PR" --merge; then
+                  merged=true
+                  break
+                fi
+                echo "merge が失敗。再評価して再試行する (attempt=$attempt, mergeStateStatus=$mss)"
+                ;;
+              BLOCKED|UNKNOWN)
+                # 再計算待ちの可能性。backoff して再評価する。
+                echo "merge-state がまだ $mss。再計算待ちとして再試行する (attempt=$attempt)"
+                ;;
+              DIRTY)
+                skip "コンフリクトが発生している (mergeStateStatus=DIRTY)"
+                ;;
+              BEHIND)
+                skip "head が base より古くブランチ更新が必要 (mergeStateStatus=BEHIND)"
+                ;;
+              *)
+                skip "マージできない状態 (mergeStateStatus=$mss)"
+                ;;
+            esac
+          done
+
+          [ "$merged" = "true" ] \
+            || skip "再試行後も merge-state が確定せずマージ保留 (最終=$mss)"
+          echo "PR #$PR をマージしました。"
