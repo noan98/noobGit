@@ -90,10 +90,12 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   delete_branch: { branches: true, undo: true },
   // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
   reset_hard: { status: true, branches: true, log: true, undo: true },
-  // 以下は現状 UI から呼ばれないが、型を網羅させるため安全側（全件）にしておく。
+  // push はリモートを更新するだけでローカルの作業ツリーや履歴は動かない。リモート追跡や
+  // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
+  push: { branches: true },
+  force_push: { branches: true },
+  // pull / merge はまだ UI から呼ばれないが、影響範囲が広いので安全側（全件）にしておく。
   pull: FULL_REFRESH,
-  push: FULL_REFRESH,
-  force_push: FULL_REFRESH,
   merge: FULL_REFRESH,
 };
 
@@ -556,6 +558,34 @@ export default function App() {
                 `ブランチ「${name}」を削除`,
                 "delete_branch",
                 () => api.deleteBranch(repoPath, name),
+                name,
+              )
+            }
+            onPush={(name) =>
+              void guarded(
+                `ブランチ「${name}」を送信`,
+                "push",
+                () =>
+                  api.push(
+                    repoPath,
+                    "origin",
+                    `refs/heads/${name}:refs/heads/${name}`,
+                    false,
+                  ),
+                name,
+              )
+            }
+            onForcePush={(name) =>
+              void guarded(
+                `ブランチ「${name}」を強制送信`,
+                "force_push",
+                () =>
+                  api.push(
+                    repoPath,
+                    "origin",
+                    `refs/heads/${name}:refs/heads/${name}`,
+                    true,
+                  ),
                 name,
               )
             }
