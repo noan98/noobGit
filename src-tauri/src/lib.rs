@@ -8,7 +8,7 @@ use git2::Repository;
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus,
+    BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus, StashInfo,
 };
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
@@ -77,10 +77,17 @@ fn assess_operation(
 ) -> Result<RiskAssessment, String> {
     let r = open(&repo_path)?;
     let working_dir_dirty = repo::is_dirty(&r).map_err(|e| e.to_string())?;
+    // amend のときだけ、HEAD が公開（push）済みかを判定する（危険度の引き上げに使う）。
+    let head_published = if matches!(op, OperationKind::AmendCommit) {
+        repo::head_is_published(&r).unwrap_or(false)
+    } else {
+        false
+    };
     let ctx = SafetyContext {
         target_branch,
         working_dir_dirty,
         protected_branches: Vec::new(),
+        head_published,
     };
     Ok(assess(op, &ctx))
 }
@@ -107,6 +114,48 @@ fn unstage(repo_path: String, path: String) -> Result<(), String> {
 fn commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     let r = open(&repo_path)?;
     ops::commit(&r, &message).map_err(|e| e.to_string())
+}
+
+/// 直前のコミットを書き換える（amend）。メッセージが空ならもとのメッセージを保つ。
+#[tauri::command]
+fn amend_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
+    let r = open(&repo_path)?;
+    ops::amend_commit(&r, &message).map_err(|e| e.to_string())
+}
+
+/// 指定パスの、まだコミットしていない変更を捨てる（破棄）。元に戻せない破壊的操作。
+#[tauri::command]
+fn discard_path(repo_path: String, path: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::discard_path(&r, &path).map_err(|e| e.to_string())
+}
+
+/// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避する。
+#[tauri::command]
+fn stash_save(repo_path: String, message: String) -> Result<(), String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_save(&mut r, &message).map_err(|e| e.to_string())
+}
+
+/// 退避を作業ツリーに取り出す（一覧には残す）。
+#[tauri::command]
+fn stash_apply(repo_path: String, index: usize) -> Result<(), String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_apply(&mut r, index).map_err(|e| e.to_string())
+}
+
+/// 退避を作業ツリーに取り出し、一覧から取り除く（pop）。
+#[tauri::command]
+fn stash_pop(repo_path: String, index: usize) -> Result<(), String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_pop(&mut r, index).map_err(|e| e.to_string())
+}
+
+/// 退避の一覧を返す（0 がいちばん新しい退避）。
+#[tauri::command]
+fn get_stashes(repo_path: String) -> Result<Vec<StashInfo>, String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_list(&mut r).map_err(|e| e.to_string())
 }
 
 /// 現在の identity（user.name / user.email）を取得する。初回セットアップ案内に使う。
@@ -210,6 +259,12 @@ pub fn run() {
             stage_path,
             unstage,
             commit,
+            amend_commit,
+            discard_path,
+            stash_save,
+            stash_apply,
+            stash_pop,
+            get_stashes,
             get_identity,
             set_identity,
             create_branch,

@@ -37,9 +37,9 @@ noobGit/
 
 | モジュール | 責務 |
 |---|---|
-| `model.rs` | Serde データ型: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`。 |
-| `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log`, `current_branch`, `is_dirty`。 |
-| `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `unstage`, `commit`, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`、リモート取り込み `fetch` / `pull`（`pull` は安全な fast-forward のみ。分岐時は何も変えずに中断）、リモート送信 `push`（`force` で強制 push）。ローカルの書き込みは undo エントリを記録する（ベストエフォート）。`fetch` / `pull` / `push` はネットワーク操作で undo は記録しない。 |
+| `model.rs` | Serde データ型: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`, `StashInfo`。 |
+| `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log`, `current_branch`, `is_dirty`, `head_is_published`（HEAD が上流より先行していない＝公開済みかの判定。amend の危険度に使う）。 |
+| `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `unstage`, `commit`, `amend_commit`（直前コミットの書き換え。author 据え置き・committer 更新。元コミットへの soft reset を undo に記録）, `discard_path`（未コミット変更の破棄。HEAD にあれば最後のコミット状態へ強制復元、新規なら index から外して削除。不可逆なので undo は記録しない）, `stash_save` / `stash_apply` / `stash_pop` / `stash_list`（作業の一時退避。`stash_save` は未追跡も含めて退避し、取り出し用の `PopStash` undo を記録。`apply` / `pop` はコンフリクトしうる。stash 系は `&mut Repository` を取る）, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`、リモート取り込み `fetch` / `pull`（`pull` は安全な fast-forward のみ。分岐時は何も変えずに中断）、リモート送信 `push`（`force` で強制 push）。ローカルの書き込みは undo エントリを記録する（ベストエフォート。`discard` は不可逆なので例外）。`fetch` / `pull` / `push` はネットワーク操作で undo は記録しない。 |
 | `safety.rs` | リスク分類: `assess(op, ctx) -> RiskAssessment`（`RiskLevel::{Safe, Caution, Destructive}`）。保護ブランチ（`main`/`master`）を定義する。 |
 | `explain.rs` | `OperationKind` ごとの平易な日本語の説明（`what` / `why` / `on_trouble`）。操作文言の唯一の出典。 |
 | `undo.rs` | ワンクリック undo。ジャーナルは `.git/noobgit_undo.json` に保存。`UndoAction` の各バリアントが、各操作をどう巻き戻すかを記述する。 |

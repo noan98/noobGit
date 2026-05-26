@@ -11,9 +11,11 @@ import {
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
+  type StashInfo,
   type UndoEntry,
 } from "./api";
 import { StatusPanel } from "./components/StatusPanel";
+import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -66,6 +68,7 @@ interface RefreshParts {
   branches?: boolean;
   log?: boolean;
   undo?: boolean;
+  stash?: boolean;
 }
 
 // リポジトリを開いた直後や手動更新で使う全件再取得。
@@ -74,6 +77,7 @@ const FULL_REFRESH: RefreshParts = {
   branches: true,
   log: true,
   undo: true,
+  stash: true,
 };
 
 // 各操作が画面のどの部分に影響するか。これに載っていない部分は再取得しない。
@@ -85,6 +89,16 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // コミットは status（ステージ消化）と log（新コミット）に効く。HEAD が動くので
   // ブランチ関係（取り込み済み判定・ahead/behind）も変わるため branches も更新する。
   commit: { status: true, branches: true, log: true, undo: true },
+  // amend は直前コミットを作り直す。status・log・ブランチ関係が変わり、undo も積まれる。
+  amend_commit: { status: true, branches: true, log: true, undo: true },
+  // 破棄は作業ツリーの状態だけが変わる（undo は記録しない）。
+  discard: { status: true },
+  // 退避は作業ツリーがクリーンになり、退避一覧と undo が変わる。
+  stash_save: { status: true, undo: true, stash: true },
+  // 適用は作業ツリーへ取り出すだけ（退避は一覧に残る）。
+  stash_apply: { status: true },
+  // 取り出し（pop）は作業ツリーに戻し、退避一覧から消える。
+  stash_pop: { status: true, stash: true },
   // 作成はブランチ一覧だけ。HEAD も作業ツリーも動かさない。
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
@@ -146,6 +160,7 @@ export default function App() {
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
+  const [stashes, setStashes] = useState<StashInfo[]>([]);
 
   // 現在読み込み済みのコミット件数。再取得時に「もっと見る」で広げた範囲を保つため、
   // クロージャの陳腐化を避けて常に最新値を参照できるよう ref で持つ。
@@ -190,6 +205,7 @@ export default function App() {
           );
         }
         if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
+        if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
         await Promise.all(tasks);
         setError(null);
         return true;
@@ -421,6 +437,54 @@ export default function App() {
     );
   }
 
+  // 変更の破棄。元に戻せない破壊的操作なので必ず guarded を通す。
+  function doDiscard(path: string) {
+    void guarded(`「${path}」の変更を破棄`, "discard", () =>
+      api.discardPath(repoPath, path),
+    );
+  }
+
+  // 直前のコミットを修正（amend）。コミットと同様に名前・メール未設定なら先に案内する。
+  function doAmend() {
+    if (commits.length === 0) return;
+    if (!identityComplete) {
+      setError(null);
+      setNotice("コミットの修正の前に、名前とメールアドレスを設定しましょう。");
+      setShowIdentity(true);
+      return;
+    }
+    const msg = commitMsg.trim();
+    void guarded("直前のコミットを修正", "amend_commit", async () => {
+      await api.amendCommit(repoPath, msg);
+      setCommitMsg("");
+      setNotice("直前のコミットを修正しました。");
+    });
+  }
+
+  // 退避（保存）。安全操作なので guarded はダイアログを出さずそのまま実行する。
+  function doStashSave(message: string) {
+    void guarded("変更を退避", "stash_save", async () => {
+      await api.stashSave(repoPath, message);
+      setNotice("変更を退避しました。作業ツリーをきれいにしました。");
+    });
+  }
+
+  // 退避の適用（一覧に残す）。コンフリクトの可能性があるため guarded を通す。
+  function doStashApply(index: number) {
+    void guarded("退避を適用", "stash_apply", async () => {
+      await api.stashApply(repoPath, index);
+      setNotice("退避した変更を取り出しました（退避は一覧に残しています）。");
+    });
+  }
+
+  // 退避の取り出し（pop・一覧から削除）。コンフリクトの可能性があるため guarded を通す。
+  function doStashPop(index: number) {
+    void guarded("退避を取り出す", "stash_pop", async () => {
+      await api.stashPop(repoPath, index);
+      setNotice("退避した変更を取り出し、一覧から取り除きました。");
+    });
+  }
+
   if (!opened) {
     return (
       <div className="welcome">
@@ -498,6 +562,7 @@ export default function App() {
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
+              setStashes([]);
               setSelectedFile(null);
               setDiff(null);
             }}
@@ -553,6 +618,7 @@ export default function App() {
                   refresh: REFRESH_BY_OP.unstage,
                 })
               }
+              onDiscard={doDiscard}
             />
           )}
 
@@ -569,14 +635,32 @@ export default function App() {
               placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
               onChange={(e) => setCommitMsg(e.target.value)}
             />
-            <button
-              className="btn"
-              onClick={doCommit}
-              disabled={!commitMsg.trim()}
-            >
-              コミットする
-            </button>
+            <div className="commit-actions">
+              <button
+                className="btn"
+                onClick={doCommit}
+                disabled={!commitMsg.trim()}
+              >
+                コミットする
+              </button>
+              <button
+                className="btn btn-small"
+                onClick={doAmend}
+                disabled={commits.length === 0}
+                title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
+              >
+                直前を修正
+              </button>
+            </div>
           </div>
+
+          <StashPanel
+            stashes={stashes}
+            canStash={!!status && !status.is_clean}
+            onSave={doStashSave}
+            onApply={doStashApply}
+            onPop={doStashPop}
+          />
         </section>
 
         <section className="col">

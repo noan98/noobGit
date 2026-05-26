@@ -23,6 +23,9 @@ pub enum UndoAction {
     DeleteBranch { name: String },
     /// 最初のコミットを取り消し、未誕生ブランチに戻す。
     UncommitInitial { branch: String },
+    /// 退避（stash）を取り消す。記録時の退避コミットを `id` で探して pop（取り出し）する。
+    /// 該当 id が見つからない（すでに取り出し済み）なら何もしない（冪等）。
+    PopStash { id: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -134,6 +137,25 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                 r.delete()?;
             }
         }
+        UndoAction::PopStash { id } => {
+            // stash 操作は &mut Repository を要するので、同じパスで開き直す。
+            let mut r = Repository::open(repo.path())?;
+            let target = git2::Oid::from_str(id)?;
+            // 記録時の退避コミットと一致する退避の index を探す。
+            let mut found: Option<usize> = None;
+            r.stash_foreach(|index, _message, oid| {
+                if *oid == target {
+                    found = Some(index);
+                    false
+                } else {
+                    true
+                }
+            })?;
+            // 見つかったときだけ pop する。無ければ取り出し済みとみなし何もしない（冪等）。
+            if let Some(index) = found {
+                r.stash_pop(index, None)?;
+            }
+        }
     }
     Ok(())
 }
@@ -198,6 +220,40 @@ mod tests {
         assert!(desc.contains("temp"));
         assert!(repo.find_branch("temp", git2::BranchType::Local).is_ok());
         assert!(!can_undo(&repo).unwrap());
+    }
+
+    // 退避(stash)の取り消し(PopStash)で変更が作業ツリーに戻り、再適用しても壊れない（冪等）。
+    #[test]
+    fn pop_stash_undo_restores_changes_and_is_idempotent() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 変更を作って退避する（stash_save が PopStash の undo を積む）。
+        fx.write_file("a.txt", "2");
+        let stash_id = {
+            let mut repo = fx.open();
+            crate::ops::stash_save(&mut repo, "wip").unwrap();
+            match peek(&repo).unwrap().unwrap().action {
+                UndoAction::PopStash { id } => id,
+                other => panic!("PopStash を期待したが {other:?} だった"),
+            }
+        };
+        // 退避後は作業ツリーがクリーン。
+        assert!(crate::repo::status(&fx.open()).unwrap().is_clean);
+
+        // 1回目の適用: 退避を取り出して変更が戻る。
+        let action = UndoAction::PopStash { id: stash_id };
+        let repo = fx.open();
+        apply(&repo, &action).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "2"
+        );
+
+        // 2回目の適用: 該当の退避はもう無いので no-op（エラーにならない）。
+        apply(&fx.open(), &action).unwrap();
     }
 
     // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。

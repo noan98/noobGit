@@ -7,6 +7,11 @@ pub enum OperationKind {
     Stage,
     Unstage,
     Commit,
+    AmendCommit,
+    Discard,
+    StashSave,
+    StashApply,
+    StashPop,
     CreateBranch,
     SwitchBranch,
     DeleteBranch,
@@ -50,6 +55,8 @@ pub struct SafetyContext {
     pub working_dir_dirty: bool,
     /// 保護ブランチ一覧。空なら既定値を使う。
     pub protected_branches: Vec<String>,
+    /// 直前のコミット（HEAD）がすでにリモートへ送信（公開）済みか。amend の危険度判定に使う。
+    pub head_published: bool,
 }
 
 /// 操作のリスク評価結果。確認ダイアログの内容に使う。
@@ -96,6 +103,76 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
         OperationKind::Commit => {
             RiskAssessment::safe("変更の記録を1つ作るだけで、あとから取り消せます。")
         }
+
+        OperationKind::AmendCommit => {
+            if ctx.head_published {
+                RiskAssessment {
+                    level: RiskLevel::Destructive,
+                    reasons: vec![
+                        "直前のコミットを書き換えます（amend）。".to_string(),
+                        "このコミットはすでにリモートへ送信（push）済みのようです。書き換えると他の人が持っている履歴と食い違い、混乱や事故の原因になります。".to_string(),
+                    ],
+                    reversible: true,
+                    permanent_data_loss: false,
+                    recommended_alternative: Some(
+                        "共有済みのコミットは書き換えず、修正を新しいコミットとして積むほうが安全です。".to_string(),
+                    ),
+                }
+            } else {
+                RiskAssessment {
+                    level: RiskLevel::Caution,
+                    reasons: vec![
+                        "直前のコミットを書き換えます（amend）。メッセージの修正や、入れ忘れたファイルの追加ができます。".to_string(),
+                        "まだ送信（push）していないコミットなので、書き換えても他の人には影響しません。".to_string(),
+                    ],
+                    reversible: true,
+                    permanent_data_loss: false,
+                    recommended_alternative: None,
+                }
+            }
+        }
+
+        OperationKind::Discard => RiskAssessment {
+            level: RiskLevel::Destructive,
+            reasons: vec![
+                "選んだファイルの、まだコミットしていない変更を捨てます（新規ファイルは削除します）。".to_string(),
+                "捨てた変更は元に戻せません。もっとも事故が起きやすい操作のひとつです。".to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: true,
+            recommended_alternative: Some(
+                "あとで必要になるかもしれないなら、まず「退避(stash)」で安全にしまっておけます。".to_string(),
+            ),
+        },
+
+        OperationKind::StashSave => RiskAssessment::safe(
+            "変更を消さずに一時的にしまい、作業ツリーをきれいな状態に戻します。あとから取り出せます。",
+        ),
+
+        OperationKind::StashApply => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "退避していた変更を、いまの作業ツリーに取り出して戻します（退避は一覧に残します）。".to_string(),
+                "いまの内容と退避した内容が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
+
+        OperationKind::StashPop => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "退避していた変更を取り出して戻し、その退避を一覧から取り除きます。".to_string(),
+                "いまの内容と退避した内容が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "コンフリクトが心配なときは、先に「適用（一覧に残す）」で試すと、失敗しても退避が残ります。".to_string(),
+            ),
+        },
+
         OperationKind::CreateBranch => {
             RiskAssessment::safe("新しいブランチを作るだけで、既存の内容は変わりません。")
         }
@@ -322,6 +399,48 @@ mod tests {
         };
         assert_eq!(
             assess(OperationKind::SwitchBranch, &dirty).level,
+            RiskLevel::Caution
+        );
+    }
+
+    #[test]
+    fn amend_is_caution_locally_and_destructive_when_published() {
+        let local = SafetyContext::default(); // head_published = false
+        assert_eq!(
+            assess(OperationKind::AmendCommit, &local).level,
+            RiskLevel::Caution
+        );
+        let published = SafetyContext {
+            head_published: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            assess(OperationKind::AmendCommit, &published).level,
+            RiskLevel::Destructive
+        );
+    }
+
+    #[test]
+    fn discard_is_destructive_with_permanent_loss() {
+        let a = assess(OperationKind::Discard, &SafetyContext::default());
+        assert_eq!(a.level, RiskLevel::Destructive);
+        assert!(a.permanent_data_loss);
+        assert!(!a.reversible);
+    }
+
+    #[test]
+    fn stash_save_is_safe_and_restore_is_caution() {
+        let ctx = SafetyContext::default();
+        assert_eq!(
+            assess(OperationKind::StashSave, &ctx).level,
+            RiskLevel::Safe
+        );
+        assert_eq!(
+            assess(OperationKind::StashApply, &ctx).level,
+            RiskLevel::Caution
+        );
+        assert_eq!(
+            assess(OperationKind::StashPop, &ctx).level,
             RiskLevel::Caution
         );
     }

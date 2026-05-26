@@ -43,6 +43,33 @@ pub fn is_dirty(repo: &Repository) -> Result<bool> {
     Ok(!status.is_clean)
 }
 
+/// 直前のコミット（HEAD）がすでにリモートへ送信（公開）済みとみなせるか。
+///
+/// 現在ブランチに上流（upstream）があり、ローカルが上流より先行していない
+/// （＝HEAD が上流から辿れる）ときに `true` を返す。amend の危険度判定に使う。
+/// 上流が無い・先端が取れない場合は判断できないので `false`（ローカル扱い）にする。
+pub fn head_is_published(repo: &Repository) -> Result<bool> {
+    let name = match current_branch(repo) {
+        Some(n) => n,
+        None => return Ok(false),
+    };
+    let local = match repo.find_branch(&name, BranchType::Local) {
+        Ok(b) => b,
+        Err(_) => return Ok(false),
+    };
+    let upstream = match local.upstream() {
+        Ok(u) => u,
+        Err(_) => return Ok(false),
+    };
+    let (local_oid, upstream_oid) = match (local.get().target(), upstream.get().target()) {
+        (Some(l), Some(u)) => (l, u),
+        _ => return Ok(false),
+    };
+    // ahead = ローカルにあって上流に無いコミット数。0 なら HEAD は上流に含まれる＝公開済み。
+    let (ahead, _behind) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
+    Ok(ahead == 0)
+}
+
 /// リポジトリの現在状態（git status 相当）を返す。
 pub fn status(repo: &Repository) -> Result<RepoStatus> {
     let mut opts = StatusOptions::new();
@@ -557,6 +584,47 @@ mod tests {
         // skip がコミット総数以上なら空。
         assert!(log_paged(&repo, 5, 10).unwrap().is_empty());
         assert!(log_paged(&repo, 99, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn head_is_published_true_when_not_ahead_of_upstream() {
+        use crate::ops::{commit, stage_all};
+
+        // 上流（upstream）を用意してクローンする。クローン直後は HEAD == origin/main。
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("clone");
+        let cloned = git2::Repository::clone(upstream.path().to_str().unwrap(), &dest).unwrap();
+        {
+            let mut cfg = cloned.config().unwrap();
+            cfg.set_str("user.name", "Clone User").unwrap();
+            cfg.set_str("user.email", "clone@example.com").unwrap();
+        }
+
+        // 上流より先行していない → 公開済みとみなす。
+        let repo = git2::Repository::open(&dest).unwrap();
+        assert!(head_is_published(&repo).unwrap());
+
+        // ローカルにコミットを積むと上流より先行する → 未公開扱い。
+        std::fs::write(dest.join("a.txt"), "2").unwrap();
+        stage_all(&repo).unwrap();
+        commit(&repo, "local-c2").unwrap();
+        let repo = git2::Repository::open(&dest).unwrap();
+        assert!(!head_is_published(&repo).unwrap());
+    }
+
+    #[test]
+    fn head_is_published_false_without_upstream() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        // 上流が無いローカルブランチは判断できないので false。
+        assert!(!head_is_published(&fx.open()).unwrap());
     }
 
     #[test]

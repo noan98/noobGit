@@ -84,6 +84,11 @@ export type OperationKind =
   | "stage"
   | "unstage"
   | "commit"
+  | "amend_commit"
+  | "discard"
+  | "stash_save"
+  | "stash_apply"
+  | "stash_pop"
   | "create_branch"
   | "switch_branch"
   | "delete_branch"
@@ -114,6 +119,13 @@ export interface Explanation {
 export interface UndoEntry {
   op: OperationKind;
   description: string;
+}
+
+// 退避（stash）1件の情報。index は一覧での位置（0 が最新）。
+export interface StashInfo {
+  index: number;
+  message: string;
+  id: string;
 }
 
 // fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
@@ -183,6 +195,19 @@ export const api = {
     invoke<void>("unstage", { repoPath, path }),
   commit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("commit", { repoPath, message }),
+  amendCommit: (repoPath: string, message: string) =>
+    invoke<CommitInfo>("amend_commit", { repoPath, message }),
+  discardPath: (repoPath: string, path: string) =>
+    invoke<void>("discard_path", { repoPath, path }),
+
+  getStashes: (repoPath: string) =>
+    invoke<StashInfo[]>("get_stashes", { repoPath }),
+  stashSave: (repoPath: string, message: string) =>
+    invoke<void>("stash_save", { repoPath, message }),
+  stashApply: (repoPath: string, index: number) =>
+    invoke<void>("stash_apply", { repoPath, index }),
+  stashPop: (repoPath: string, index: number) =>
+    invoke<void>("stash_pop", { repoPath, index }),
 
   getIdentity: (repoPath: string) =>
     invoke<Identity>("get_identity", { repoPath }),

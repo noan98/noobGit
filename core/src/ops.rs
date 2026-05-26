@@ -1,14 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions,
-    RemoteCallbacks, Repository, ResetType,
+    RemoteCallbacks, Repository, ResetType, StashFlags,
 };
 
 use crate::error::{CoreError, Result};
-use crate::model::{CommitInfo, FetchOutcome, PullOutcome};
+use crate::model::{CommitInfo, FetchOutcome, PullOutcome, StashInfo};
 use crate::repo::current_branch;
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
@@ -135,6 +135,192 @@ fn commit_info(commit: &Commit) -> CommitInfo {
         author_name: author.name().unwrap_or("").to_string(),
         author_email: author.email().unwrap_or("").to_string(),
         time: commit.time().seconds(),
+    }
+}
+
+/// 直前のコミット（HEAD）を書き換える（amend）。
+///
+/// 現在のインデックスからツリーを作るので、ステージ済みの変更があれば取り込まれる。
+/// `new_message` が空ならもとのメッセージを引き継ぐ（＝入れ忘れたファイルの追加だけ）。
+/// author はもとのまま、committer を現在の identity に更新する（git の amend と同じ）。
+/// 取り消し用に、修正前のコミットへ戻す soft reset を記録する。
+pub fn amend_commit(repo: &Repository, new_message: &str) -> Result<CommitInfo> {
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、修正（amend）できません。先に最初のコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let original = head_commit.id();
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "コミットの修正には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // 現在のインデックスからツリーを作る。ステージ済みの変更があれば取り込まれる。
+    let mut index = repo.index()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+
+    // メッセージが空ならもとのメッセージを引き継ぐ。
+    let message = if new_message.trim().is_empty() {
+        head_commit.message().unwrap_or("").to_string()
+    } else {
+        new_message.to_string()
+    };
+    if message.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "コミットメッセージを入力してください。".to_string(),
+        ));
+    }
+
+    let new_oid = head_commit.amend(
+        Some("HEAD"),
+        None,
+        Some(&sig),
+        None,
+        Some(&message),
+        Some(&tree),
+    )?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::AmendCommit,
+            description: "直前のコミットの修正（amend）を取り消す".to_string(),
+            action: UndoAction::SoftResetTo {
+                previous: original.to_string(),
+            },
+        },
+    );
+
+    let commit = repo.find_commit(new_oid)?;
+    Ok(commit_info(&commit))
+}
+
+/// 指定パスの、まだコミットしていない変更を捨てる（破棄）。
+///
+/// - HEAD にあるファイル: 最後にコミットした状態へ強制的に戻す（ステージ済み・未ステージの
+///   変更をいずれも捨てる）。
+/// - HEAD に無いファイル（新規）: インデックスから外し、作業ツリーから削除する。
+///
+/// 捨てた内容は元に戻せない破壊的操作。安全な代替は stash（退避）。undo は記録しない。
+pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
+
+    // 作業ツリー外を指す相対パスは扱わない（安全のため）。
+    let rel = Path::new(path);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
+    }
+
+    // HEAD のツリーに当該パスがあるか（＝コミット済みのファイルか）。
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let in_head = head_tree
+        .as_ref()
+        .map(|t| t.get_path(rel).is_ok())
+        .unwrap_or(false);
+
+    if in_head {
+        // コミット済み: HEAD の内容へ強制的に戻す（インデックスも合わせる）。
+        let tree = head_tree.expect("in_head が真ならツリーは存在する");
+        let mut co = CheckoutBuilder::new();
+        co.force().update_index(true).path(path);
+        repo.checkout_tree(tree.as_object(), Some(&mut co))?;
+    } else {
+        // 新規ファイル: ステージされていれば外し、作業ツリーから削除する。
+        let mut index = repo.index()?;
+        if index.get_path(rel, 0).is_some() {
+            index.remove_path(rel)?;
+            index.write()?;
+        }
+        let full = workdir.join(rel);
+        if full.exists() {
+            std::fs::remove_file(&full)
+                .map_err(|e| CoreError::Git(format!("ファイルを削除できませんでした: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
+/// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避し、作業ツリーを
+/// きれいな状態に戻す。`message` が空なら libgit2 が既定のメッセージを付ける。
+///
+/// 退避は変更を消さない安全操作。直後に取り出せるよう、PopStash の undo を記録する。
+pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "退避（stash）には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    let msg = message.trim();
+    let msg = if msg.is_empty() { None } else { Some(msg) };
+    let flags = StashFlags::INCLUDE_UNTRACKED;
+
+    let stash_oid = repo.stash_save2(&sig, msg, Some(flags)).map_err(|e| {
+        if e.code() == git2::ErrorCode::NotFound {
+            CoreError::Blocked("退避できる変更がありません。".to_string())
+        } else {
+            CoreError::Git(format!("退避（stash）に失敗しました: {}", e.message()))
+        }
+    })?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::StashSave,
+            description: "退避（stash）を取り消す（しまった変更を作業ツリーに戻す）".to_string(),
+            action: UndoAction::PopStash {
+                id: stash_oid.to_string(),
+            },
+        },
+    );
+    Ok(())
+}
+
+/// 退避を作業ツリーに取り出す（一覧には残す）。コンフリクトが起きることがある。
+pub fn stash_apply(repo: &mut Repository, index: usize) -> Result<()> {
+    repo.stash_apply(index, None).map_err(map_stash_restore_err)
+}
+
+/// 退避を作業ツリーに取り出し、一覧から取り除く（pop）。コンフリクトが起きることがある。
+pub fn stash_pop(repo: &mut Repository, index: usize) -> Result<()> {
+    repo.stash_pop(index, None).map_err(map_stash_restore_err)
+}
+
+/// 退避の一覧を返す（0 がいちばん新しい退避）。
+pub fn stash_list(repo: &mut Repository) -> Result<Vec<StashInfo>> {
+    let mut out = Vec::new();
+    repo.stash_foreach(|index, message, id| {
+        out.push(StashInfo {
+            index,
+            message: message.to_string(),
+            id: id.to_string(),
+        });
+        true
+    })?;
+    Ok(out)
+}
+
+/// stash の取り出し（apply / pop）のエラーを初学者向けの日本語に変換する。
+fn map_stash_restore_err(e: git2::Error) -> CoreError {
+    use git2::ErrorCode;
+    match e.code() {
+        ErrorCode::NotFound => {
+            CoreError::InvalidInput("指定した退避が見つかりませんでした。".to_string())
+        }
+        ErrorCode::Conflict | ErrorCode::MergeConflict => CoreError::Blocked(
+            "退避を取り出すとコンフリクト（競合）が起きるため、安全のため中断しました。先にいまの変更を整理してから取り出してください。"
+                .to_string(),
+        ),
+        _ => CoreError::Git(format!("退避の取り出しに失敗しました: {}", e.message())),
     }
 }
 
@@ -989,6 +1175,196 @@ mod tests {
 
         let bare_repo = bare.open();
         assert_eq!(bare_repo.refname_to_id("refs/heads/main").unwrap(), d1);
+    }
+
+    #[test]
+    fn amend_changes_message_without_adding_commit() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("typo mesage");
+
+        let repo = fx.open();
+        let info = amend_commit(&repo, "fixed message").unwrap();
+        assert_eq!(info.summary, "fixed message");
+        // 履歴を書き換えただけなのでコミット数は増えない。
+        assert_eq!(log(&repo, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn amend_incorporates_staged_then_undo_restores_previous_commit() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let original = fx.head_oid();
+
+        // 入れ忘れたファイルをステージし、メッセージは空（もとのまま）で amend する。
+        fx.write_file("b.txt", "new");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+        let info = amend_commit(&repo, "").unwrap();
+        assert_eq!(info.summary, "c1"); // メッセージは引き継がれる
+        assert_ne!(info.id, original.to_string()); // 別のコミットになっている
+
+        // amend 後のコミットに b.txt が含まれている。
+        let repo = fx.open();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(tree.get_name("b.txt").is_some());
+
+        // Undo で amend 前のコミットに戻る（変更はステージに残る）。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(repo.head().unwrap().target().unwrap(), original);
+        assert_eq!(log(&repo, 10).unwrap().len(), 1);
+        assert_eq!(status(&repo).unwrap().staged.len(), 1);
+    }
+
+    #[test]
+    fn amend_without_commit_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+        // まだ1件もコミットが無ければ amend できない。
+        assert!(matches!(
+            amend_commit(&repo, "x").unwrap_err(),
+            CoreError::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn discard_reverts_tracked_modification() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "original\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // ステージ済み・未ステージの両方の変更を作る。
+        fx.write_file("a.txt", "changed\n");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+        fx.write_file("a.txt", "changed again\n");
+
+        discard_path(&repo, "a.txt").unwrap();
+
+        // 最後にコミットした内容へ戻り、作業ツリーはクリーンになる。
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "original\n"
+        );
+        let repo = fx.open();
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
+    fn discard_deletes_untracked_file() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("junk.txt", "delete me");
+        let repo = fx.open();
+        assert!(fx.path().join("junk.txt").exists());
+
+        discard_path(&repo, "junk.txt").unwrap();
+        assert!(!fx.path().join("junk.txt").exists());
+        let repo = fx.open();
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
+    fn discard_rejects_path_traversal() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(matches!(
+            discard_path(&repo, "../x.txt").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            discard_path(&repo, "/etc/passwd").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    #[test]
+    fn stash_save_cleans_tree_then_pop_restores() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 追跡ファイルの変更 + 未追跡ファイル。
+        fx.write_file("a.txt", "2");
+        fx.write_file("new.txt", "fresh");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        // 退避後は作業ツリーがクリーンで、退避が1件ある。
+        let repo = fx.open();
+        assert!(status(&repo).unwrap().is_clean);
+        {
+            let mut repo = fx.open();
+            let list = stash_list(&mut repo).unwrap();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].index, 0);
+        }
+
+        // pop で変更が戻り、退避一覧が空になる。
+        {
+            let mut repo = fx.open();
+            stash_pop(&mut repo, 0).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "2"
+        );
+        assert!(fx.path().join("new.txt").exists());
+        {
+            let mut repo = fx.open();
+            assert!(stash_list(&mut repo).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn stash_apply_keeps_stash_in_list() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+        {
+            let mut repo = fx.open();
+            stash_apply(&mut repo, 0).unwrap();
+            // apply は退避を一覧に残す。
+            assert_eq!(stash_list(&mut repo).unwrap().len(), 1);
+        }
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "2"
+        );
+    }
+
+    #[test]
+    fn stash_save_with_clean_tree_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let mut repo = fx.open();
+        // クリーンな状態では退避できる変更が無い。
+        assert!(matches!(
+            stash_save(&mut repo, "x").unwrap_err(),
+            CoreError::Blocked(_)
+        ));
     }
 
     #[test]

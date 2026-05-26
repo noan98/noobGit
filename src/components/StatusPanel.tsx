@@ -7,6 +7,7 @@ interface Props {
   onStageAll: () => void;
   onStagePath: (path: string) => void;
   onUnstage: (path: string) => void;
+  onDiscard: (path: string) => void;
   onSelect: (path: string, source: DiffSource) => void;
 }
 
@@ -16,6 +17,7 @@ export function StatusPanel({
   onStageAll,
   onStagePath,
   onUnstage,
+  onDiscard,
   onSelect,
 }: Props) {
   const hasUnstaged = status.unstaged.length > 0 || status.untracked.length > 0;
@@ -92,6 +94,13 @@ export function StatusPanel({
                 <button className="link" onClick={() => onStagePath(f.path)}>
                   ステージ
                 </button>
+                <button
+                  className="link danger"
+                  onClick={() => onDiscard(f.path)}
+                  title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
+                >
+                  破棄
+                </button>
               </li>
             ))}
           </ul>
@@ -115,6 +124,13 @@ export function StatusPanel({
                 </button>
                 <button className="link" onClick={() => onStagePath(p)}>
                   ステージ
+                </button>
+                <button
+                  className="link danger"
+                  onClick={() => onDiscard(p)}
+                  title="この新しいファイルを削除します（元に戻せません）"
+                >
+                  破棄
                 </button>
               </li>
             ))}
