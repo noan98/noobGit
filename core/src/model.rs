@@ -162,6 +162,19 @@ pub struct CommitInfo {
     pub time: i64,
 }
 
+/// 退避（stash）1件の情報。
+///
+/// `index` は一覧での位置で、0 がいちばん新しい退避。apply / pop はこの index で指定する。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashInfo {
+    /// 一覧での位置（0 が最新）。
+    pub index: usize,
+    /// 退避時のメッセージ（例: `WIP on main: ...`）。
+    pub message: String,
+    /// 退避コミットのID。
+    pub id: String,
+}
+
 /// fetch（リモートの取得）の結果サマリ。
 ///
 /// fetch はリモート追跡ブランチ（例: `origin/main`）を最新化するだけで、作業中の

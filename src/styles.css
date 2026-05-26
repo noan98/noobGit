@@ -594,6 +594,38 @@ textarea {
 .commit-box textarea {
   margin-bottom: 8px;
 }
+.commit-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ---- stash ---- */
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 8px;
+  line-height: 1.6;
+}
+.stash-save {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.stash-save input {
+  flex: 1;
+}
+.stashes .sha {
+  color: var(--accent);
+  font-size: 12px;
+}
+.stashes .summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---- confirm dialog ---- */
 .overlay {
