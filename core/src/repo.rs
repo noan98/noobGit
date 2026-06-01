@@ -586,45 +586,85 @@ mod tests {
         assert!(log_paged(&repo, 99, 10).unwrap().is_empty());
     }
 
-    #[test]
-    fn head_is_published_true_when_not_ahead_of_upstream() {
-        use crate::ops::{commit, stage_all};
+    /// upstream を用意してローカルにクローンし、(一時ディレクトリ, クローン先パス) を返す。
+    /// クローン直後は HEAD == origin/main。identity を設定してローカルコミットを作れるようにする。
+    fn clone_with_upstream(upstream: &TestRepo) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("clone");
+        let cloned = git2::Repository::clone(upstream.path().to_str().unwrap(), &dest).unwrap();
+        let mut cfg = cloned.config().unwrap();
+        cfg.set_str("user.name", "Clone User").unwrap();
+        cfg.set_str("user.email", "clone@example.com").unwrap();
+        (dir, dest)
+    }
 
-        // 上流（upstream）を用意してクローンする。クローン直後は HEAD == origin/main。
+    #[test]
+    fn head_is_published_no_upstream_returns_false() {
+        // ケース A: 上流が設定されていないローカルブランチは判断できないので false（未公開扱い）。
+        // ここで誤って true を返すと amend に Destructive が付かず、警告なしで危険操作を許してしまう。
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        assert!(!head_is_published(&fx.open()).unwrap());
+    }
+
+    #[test]
+    fn head_is_published_at_upstream_returns_true() {
+        // 上流と同一（先行も後退もしていない）→ 公開済みとみなす。
         let upstream = TestRepo::new();
         upstream.write_file("a.txt", "1");
         upstream.stage_all();
         upstream.commit("c1");
 
-        let dir = tempfile::TempDir::new().unwrap();
-        let dest = dir.path().join("clone");
-        let cloned = git2::Repository::clone(upstream.path().to_str().unwrap(), &dest).unwrap();
-        {
-            let mut cfg = cloned.config().unwrap();
-            cfg.set_str("user.name", "Clone User").unwrap();
-            cfg.set_str("user.email", "clone@example.com").unwrap();
-        }
-
-        // 上流より先行していない → 公開済みとみなす。
+        let (_keep, dest) = clone_with_upstream(&upstream);
         let repo = git2::Repository::open(&dest).unwrap();
         assert!(head_is_published(&repo).unwrap());
+    }
 
-        // ローカルにコミットを積むと上流より先行する → 未公開扱い。
+    #[test]
+    fn head_is_published_ahead_of_upstream_returns_false() {
+        use crate::ops::{commit, stage_all};
+
+        // クローン後にローカルだけコミットを積むと上流より先行する → まだ未公開（amend は安全）。
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let (_keep, dest) = clone_with_upstream(&upstream);
+        let repo = git2::Repository::open(&dest).unwrap();
         std::fs::write(dest.join("a.txt"), "2").unwrap();
         stage_all(&repo).unwrap();
         commit(&repo, "local-c2").unwrap();
+
         let repo = git2::Repository::open(&dest).unwrap();
         assert!(!head_is_published(&repo).unwrap());
     }
 
     #[test]
-    fn head_is_published_false_without_upstream() {
-        let fx = TestRepo::new();
-        fx.write_file("a.txt", "1");
-        fx.stage_all();
-        fx.commit("c1");
-        // 上流が無いローカルブランチは判断できないので false。
-        assert!(!head_is_published(&fx.open()).unwrap());
+    fn head_is_published_behind_upstream_returns_true() {
+        use crate::ops::fetch;
+
+        // ケース C: 上流が先に進み、ローカルが後退している（ahead=0, behind>0）状態。
+        // ローカルの全コミットは上流に含まれる＝公開済みなので true が正しい（安全側）。
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let (_keep, dest) = clone_with_upstream(&upstream);
+
+        // 上流を進めてから fetch する。origin/main だけが前進し、ローカル main は据え置きになる。
+        upstream.write_file("a.txt", "2");
+        upstream.stage_all();
+        upstream.commit("c2");
+
+        let repo = git2::Repository::open(&dest).unwrap();
+        fetch(&repo, "origin").unwrap();
+
+        let repo = git2::Repository::open(&dest).unwrap();
+        assert!(head_is_published(&repo).unwrap());
     }
 
     #[test]

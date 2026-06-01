@@ -127,6 +127,11 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # ルートにあるワークスペースの target をキャッシュ対象にする。
+          workspaces: ". -> target"
+          # ビルド失敗時もキャッシュを保存し、次回の再コンパイルを減らす。
+          cache-on-failure: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
