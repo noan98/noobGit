@@ -1275,6 +1275,94 @@ mod tests {
     }
 
     #[test]
+    fn discard_staged_new_file_removes_from_index_and_disk() {
+        // ケース A: `git add` 済みだが HEAD には無い新規ファイル。
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 新規ファイルを作ってステージする（index には stage 0 で載るが HEAD には無い）。
+        fx.write_file("staged_new.txt", "draft");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+        assert_eq!(status(&repo).unwrap().staged.len(), 1);
+
+        discard_path(&repo, "staged_new.txt").unwrap();
+
+        // index からもディスクからも消える。
+        assert!(!fx.path().join("staged_new.txt").exists());
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(st.is_clean);
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("staged_new.txt"), 0)
+            .is_none());
+    }
+
+    #[test]
+    fn discard_deleted_file_restores_from_head() {
+        // ケース C: HEAD にあるファイルを削除した状態（ChangeKind::Deleted）から復元する。
+        let fx = TestRepo::new();
+        fx.write_file("keep.txt", "original\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // ファイルを削除し、その削除をステージする（INDEX_DELETED の状態を作る）。
+        std::fs::remove_file(fx.path().join("keep.txt")).unwrap();
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+        assert!(status(&repo)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|c| c.path == "keep.txt" && c.kind == crate::model::ChangeKind::Deleted));
+
+        // 破棄すると HEAD の内容へ復元され、作業ツリーはクリーンに戻る。
+        discard_path(&repo, "keep.txt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("keep.txt")).unwrap(),
+            "original\n"
+        );
+        let repo = fx.open();
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
+    fn discard_renamed_file_handles_old_and_new_paths() {
+        // ケース D: 名前変更（= 旧パスの削除 + 新パスの追加）の各パスへの破棄。
+        // discard_path はリテラルなパスに対して動くので、両パスを独立に検証する。
+        let fx = TestRepo::new();
+        fx.write_file("old.txt", "content\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // old.txt -> new.txt の名前変更を作ってステージする。
+        std::fs::remove_file(fx.path().join("old.txt")).unwrap();
+        fx.write_file("new.txt", "content\n");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+
+        // 新パス（HEAD に無い）を破棄: index・ディスクから消える。
+        discard_path(&repo, "new.txt").unwrap();
+        assert!(!fx.path().join("new.txt").exists());
+
+        // 旧パス（HEAD にある）を破棄: 削除を取り消して HEAD の内容へ復元される。
+        let repo = fx.open();
+        discard_path(&repo, "old.txt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("old.txt")).unwrap(),
+            "content\n"
+        );
+
+        // 両パスを破棄した結果、作業ツリーはクリーンに戻る。
+        let repo = fx.open();
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
     fn discard_rejects_path_traversal() {
         let fx = TestRepo::new();
         let repo = fx.open();
