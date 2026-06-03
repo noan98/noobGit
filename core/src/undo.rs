@@ -96,8 +96,12 @@ pub fn undo_last(repo: &Repository) -> Result<String> {
         .pop()
         .ok_or_else(|| CoreError::NothingToUndo("取り消せる操作がありません。".to_string()))?;
 
-    apply(repo, &entry.action)?;
+    // apply の成否にかかわらずエントリを消費する。
+    // apply が失敗しても再実行すると同じ結果になるため、消費して次の Undo が動けるようにする
+    // （例: stash pop のコンフリクト時に同じエントリで失敗し続ける「ブロック状態」を防ぐ）。
+    let result = apply(repo, &entry.action);
     save(repo, &entries)?;
+    result?;
     Ok(entry.description)
 }
 
@@ -254,6 +258,43 @@ mod tests {
 
         // 2回目の適用: 該当の退避はもう無いので no-op（エラーにならない）。
         apply(&fx.open(), &action).unwrap();
+    }
+
+    // stash pop がコンフリクトで失敗しても、エントリは消費されて次の Undo が動くこと。
+    // 修正前: apply 失敗 → save が呼ばれず → エントリが残る → 次の undo_last も同じエラー（永久ブロック）。
+    // 修正後: apply の成否にかかわらず save して消費する → 次の undo_last は NothingToUndo になる。
+    #[test]
+    fn pop_stash_conflict_does_not_permanently_block_undo() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 変更を退避する（PopStash の undo エントリを積む）。
+        fx.write_file("a.txt", "stashed");
+        {
+            let mut repo = fx.open();
+            crate::ops::stash_save(&mut repo, "wip").unwrap();
+        }
+        // 退避後の作業ツリーは a.txt = "base"（コミット状態）。
+
+        // コンフリクトを起こす変更を作業ツリーに加える（stash のベース "base" とも "stashed" とも違う）。
+        fx.write_file("a.txt", "conflict");
+
+        // undo_last: stash_pop を試みるがコンフリクトでエラーになる。
+        let repo = fx.open();
+        let err = undo_last(&repo).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Blocked(_) | CoreError::Git(_)),
+            "stash コンフリクト時に何らかのエラーが返ること: {err:?}"
+        );
+
+        // エントリは消費済みなので、次の undo_last は NothingToUndo になる（ブロックされない）。
+        let err2 = undo_last(&repo).unwrap_err();
+        assert!(
+            matches!(err2, CoreError::NothingToUndo(_)),
+            "エントリ消費後は NothingToUndo になること: {err2:?}"
+        );
     }
 
     // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。
