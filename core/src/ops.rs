@@ -339,6 +339,12 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
         )
     })?;
 
+    if repo.find_branch(name, BranchType::Local).is_ok() {
+        return Err(CoreError::InvalidInput(format!(
+            "ブランチ「{name}」はすでに存在します。別の名前を使ってください。"
+        )));
+    }
+
     repo.branch(name, &head_commit, false)?;
     record_undo(
         repo,
@@ -1440,6 +1446,71 @@ mod tests {
         );
     }
 
+    // stash_save が PopStash の undo エントリを記録することを確認する（#73）。
+    #[test]
+    fn stash_save_records_undo_entry() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        let repo = fx.open();
+        let entry = crate::undo::peek(&repo)
+            .unwrap()
+            .expect("stash_save は PopStash の undo エントリを記録すること");
+        assert!(
+            matches!(entry.action, crate::undo::UndoAction::PopStash { .. }),
+            "PopStash エントリが記録されていること"
+        );
+        assert!(
+            entry.description.contains("退避"),
+            "説明に「退避」を含む日本語メッセージであること: {}",
+            entry.description
+        );
+    }
+
+    // stash_apply がコンフリクト時にエラーを返し、作業ツリーの状態を保全すること（#73）。
+    #[test]
+    fn stash_apply_conflict_returns_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // a.txt = "stash_change" を退避する。
+        fx.write_file("a.txt", "stash_change");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+        // 退避後の作業ツリーは a.txt = "base"（コミット状態）。
+
+        // コンフリクトを起こす変更を作業ツリーに加える（ステージしない）。
+        fx.write_file("a.txt", "local_change");
+
+        // stash_apply は競合でエラーになる。
+        {
+            let mut repo = fx.open();
+            let err = stash_apply(&mut repo, 0).unwrap_err();
+            assert!(
+                matches!(err, crate::error::CoreError::Blocked(_)),
+                "コンフリクト時は Blocked エラーになること: {err:?}"
+            );
+        }
+
+        // 作業ツリーの状態が保全されていること（a.txt は "local_change" のまま）。
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "local_change"
+        );
+    }
+
     #[test]
     fn stash_save_with_clean_tree_is_blocked() {
         let fx = TestRepo::new();
@@ -1453,6 +1524,83 @@ mod tests {
             stash_save(&mut repo, "x").unwrap_err(),
             CoreError::Blocked(_)
         ));
+    }
+
+    // ダーティな状態でのブランチ切り替えが Blocked エラーになること（#96）。
+    #[test]
+    fn switch_branch_with_dirty_tree_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // feature を c1 から作成（a.txt = "1"）。
+        {
+            let repo = fx.open();
+            create_branch(&repo, "feature").unwrap();
+        }
+
+        // main を進めて feature と分岐させる（a.txt = "2"）。
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+
+        // 作業ツリーを汚す（未コミット変更）。
+        fx.write_file("a.txt", "dirty");
+
+        // feature に切り替えると a.txt を "1" にする必要があるが、
+        // 未コミット変更があるため Blocked エラーになる。
+        let repo = fx.open();
+        let err = switch_branch(&repo, "feature").unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("未コミット"),
+            "日本語メッセージに「未コミット」を含むこと: {msg}"
+        );
+    }
+
+    // 既存ブランチと同名で作成しようとすると日本語エラーになること（#96）。
+    #[test]
+    fn create_duplicate_branch_fails_with_japanese_message() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_branch(&repo, "feature").unwrap();
+
+        // 同名ブランチを再作成すると InvalidInput エラーになる。
+        let err = create_branch(&repo, "feature").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("すでに存在します") || msg.contains("feature"),
+            "日本語エラーメッセージにブランチ名を含むこと: {msg}"
+        );
+    }
+
+    // 現在チェックアウト中のブランチ削除が日本語メッセージ付きで Blocked になること（#96）。
+    #[test]
+    fn delete_current_branch_is_blocked_with_japanese_message() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_branch(&repo, "feature").unwrap();
+        switch_branch(&repo, "feature").unwrap();
+
+        // 今チェックアウト中のブランチは削除できない。
+        let err = delete_branch(&repo, "feature").unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("チェックアウト") || msg.contains("削除できません"),
+            "日本語メッセージがチェックアウト中を説明すること: {msg}"
+        );
     }
 
     #[test]
