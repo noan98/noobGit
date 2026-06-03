@@ -1,9 +1,19 @@
+import { Box } from "@chakra-ui/react";
+import { motion } from "framer-motion";
 import type { Explanation, RiskAssessment, RiskLevel } from "../api";
+import { fadeIn, scaleIn } from "../theme/motion";
 
 const levelLabel: Record<RiskLevel, string> = {
   safe: "安全な操作",
   caution: "注意が必要な操作",
   destructive: "危険な操作",
+};
+
+// 危険度 → セマンティックカラートークン群（src/theme.ts）。badge の塗りに使う。
+const levelTone: Record<RiskLevel, "success" | "warning" | "danger"> = {
+  safe: "success",
+  caution: "warning",
+  destructive: "danger",
 };
 
 interface Props {
@@ -21,13 +31,38 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  const tone = levelTone[assessment.level];
   return (
-    <div className="overlay" role="dialog" aria-modal="true">
-      <div className={`dialog risk-${assessment.level}`}>
+    // オーバーレイはフェードイン、ダイアログはスケールインで現れる。
+    // 動きのパラメータは motion トークン（fadeIn / scaleIn）に集約している。
+    <motion.div
+      className="overlay"
+      role="dialog"
+      aria-modal="true"
+      variants={fadeIn}
+      initial="hidden"
+      animate="visible"
+    >
+      <motion.div
+        className={`dialog risk-${assessment.level}`}
+        variants={scaleIn}
+        initial="hidden"
+        animate="visible"
+      >
         <div className="dialog-head">
-          <span className={`risk-badge risk-${assessment.level}`}>
+          {/* 危険度バッジはセマンティックトークンで塗る（danger/warning/success の
+              solid 色と、その上に載せる onSolid 文字色）。data-theme に追従する。 */}
+          <Box
+            as="span"
+            bg={`${tone}.solid`}
+            color="neutral.onSolid"
+            fontSize="12px"
+            px="8px"
+            py="2px"
+            borderRadius="12px"
+          >
             {levelLabel[assessment.level]}
-          </span>
+          </Box>
           <h2>{title}</h2>
         </div>
 
@@ -75,7 +110,7 @@ export function ConfirmDialog({
             理解して実行する
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

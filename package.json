@@ -11,7 +11,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@chakra-ui/react": "^3.35.0",
+    "@emotion/react": "^11.14.0",
     "@tauri-apps/api": "^2.1.1",
+    "framer-motion": "^12.40.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

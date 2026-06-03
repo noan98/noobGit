@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>noobGit</title>
+    <!-- 日本語最適化フォント Noto Sans JP を読み込む。
+         font-display: swap（&display=swap）でフォント取得中もシステムフォントで
+         表示し、レイアウトシフトを抑える。ウェイトは可変軸 400..700 で本文(400)・
+         中字(500)・強調(600/700)を 1 ファイルでまかなう。 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400..700&display=swap"
+      rel="stylesheet"
+    />
     <!-- 画面表示前にテーマを確定し、ライト→ダークのちらつきを防ぐ。
          保存値（noobgit-theme）と OS 設定から light/dark を解決して反映する。 -->
     <script>
