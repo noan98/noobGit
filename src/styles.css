@@ -761,6 +761,64 @@ textarea {
 .trouble {
   color: var(--muted);
   font-size: 13px;
+  margin: 4px 0 0;
+}
+/* on_trouble 折りたたみ（困ったときは） */
+.trouble-details {
+  margin: 8px 0 0;
+}
+.trouble-summary {
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.trouble-summary::before {
+  content: "▶";
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+.trouble-details[open] .trouble-summary::before {
+  transform: rotate(90deg);
+}
+/* reset_hard 確認ダイアログの失われる変更ファイル一覧 */
+.affected-files-section {
+  margin: 0 0 12px;
+}
+.affected-files-section h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--destructive);
+}
+.affected-files-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--destructive-border);
+  border-radius: var(--radius-sm);
+  background: var(--destructive-bg);
+  padding: 4px 6px;
+}
+.affected-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.affected-file-path {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  color: var(--text);
+}
+.affected-files-clean {
+  font-size: 13px;
+  color: var(--safe);
+  margin: 0;
 }
 /* ---- identity dialog form ---- */
 .field {
