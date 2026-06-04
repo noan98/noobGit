@@ -62,6 +62,13 @@ const config = defineConfig({
           bg: cssVar("accent-bg"),
           border: cssVar("accent-border"),
         },
+        // 名前変更（rename）専用のトーン。意味色（安全/注意/危険）とは別の中立的な
+        // 識別色として紫を使い、ファイル変更種別バッジ（#52）で他と一目で見分ける。
+        rename: {
+          fg: cssVar("rename"),
+          bg: cssVar("rename-bg"),
+          border: cssVar("rename-border"),
+        },
         // 通常テキスト・背景・罫線。
         neutral: {
           fg: cssVar("text"),

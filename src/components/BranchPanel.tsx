@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
+import { NoUpstreamBadge, SyncBadge } from "./SyncBadge";
 
 interface Props {
   branches: BranchInfo[];
@@ -70,6 +71,7 @@ export function BranchPanel({
                       保護
                     </span>
                   )}
+                  {b.upstream === null && <NoUpstreamBadge />}
                   {rel && !b.is_head && rel.merged_into_current && (
                     <span
                       className="badge merged"
@@ -119,24 +121,30 @@ export function BranchPanel({
               </div>
 
               {b.is_head && likelyBase && (
-                <div className="branch-relation" title="Git は派生元を記録しないため、分岐点（merge-base）からの推定です。">
-                  派生元（推定）:{" "}
-                  <strong>{likelyBase.name}</strong>
+                <div
+                  className="branch-relation"
+                  title="Git は派生元を記録しないため、分岐点（merge-base）からの推定です。"
+                >
+                  派生元（推定）: <strong>{likelyBase.name}</strong>
                   {likelyBase.ambiguous && (
                     <span className="ambiguous">（候補が複数あり不確実）</span>
-                  )}
-                  <span className="ahead-behind">
-                    {" "}
-                    ↑{likelyBase.ahead} / ↓{likelyBase.behind}
-                  </span>
+                  )}{" "}
+                  <SyncBadge
+                    ahead={likelyBase.ahead}
+                    behind={likelyBase.behind}
+                    reference="派生元"
+                  />
                 </div>
               )}
 
               {rel && !b.is_head && !rel.merged_into_current && (
                 <div className="branch-relation">
-                  <span className="ahead-behind" title="現在のブランチに対する先行/遅れのコミット数">
-                    現在のブランチに対して ↑{rel.ahead} / ↓{rel.behind}
-                  </span>
+                  現在のブランチに対して{" "}
+                  <SyncBadge
+                    ahead={rel.ahead}
+                    behind={rel.behind}
+                    reference="現在のブランチ"
+                  />
                 </div>
               )}
             </li>
