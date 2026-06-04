@@ -14,6 +14,7 @@ import {
   type StashInfo,
   type UndoEntry,
 } from "./api";
+import { showToast } from "./components/Toaster";
 import { StatusPanel } from "./components/StatusPanel";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -248,19 +249,23 @@ export default function App() {
       setIdentity(await api.getIdentity(repoPath));
       setShowIdentity(false);
       setError(null);
-      setNotice(
+      const msg =
         scope === "global"
           ? "名前とメールを設定しました（このPC全体）。"
-          : "名前とメールを設定しました（このリポジトリ）。",
-      );
+          : "名前とメールを設定しました（このリポジトリ）。";
+      setNotice(msg);
+      showToast(msg, "success");
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
     }
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
   // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
   // networkOp: true を渡すと実行中に isNetworkBusy を立て、完了・失敗時に必ず下ろす。
+  // 成功・失敗の結果はトースト通知でも伝える（既存バナーと併用）。
   const exec = useCallback(
     async (
       action: () => Promise<void>,
@@ -270,11 +275,16 @@ export default function App() {
       try {
         await action();
         setError(null);
-        if (opts.successMsg) setNotice(opts.successMsg);
+        if (opts.successMsg) {
+          setNotice(opts.successMsg);
+          showToast(opts.successMsg, "success");
+        }
         await refresh(opts.refresh ?? FULL_REFRESH);
       } catch (e) {
         setNotice(null);
-        setError(String(e));
+        const msg = String(e);
+        setError(msg);
+        showToast(msg, "error");
       } finally {
         if (opts.networkOp) setIsNetworkBusy(false);
       }
@@ -303,7 +313,9 @@ export default function App() {
         setGuard({ title, assessment, explanation, action, refresh: parts, networkOp });
       }
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
     }
   }
 
@@ -321,6 +333,7 @@ export default function App() {
     if (!identityComplete) {
       setError(null);
       setNotice("コミットの前に、名前とメールアドレスを設定しましょう。");
+      showToast("コミットの前に、名前とメールアドレスを設定しましょう。", "warning");
       setShowIdentity(true);
       return;
     }
@@ -344,7 +357,9 @@ export default function App() {
         setHasMoreCommits(more.length === LOG_PAGE_SIZE);
         setError(null);
       } catch (e) {
-        setError(String(e));
+        const errMsg = String(e);
+        setError(errMsg);
+        showToast(errMsg, "error");
       } finally {
         setLoadingMore(false);
       }
@@ -354,7 +369,8 @@ export default function App() {
   function doUndo() {
     void exec(async () => {
       const desc = await api.undoLast(repoPath);
-      setNotice(`取り消しました: ${desc}`);
+      // 取り消し完了はトーストで通知（exec の successMsg 経路を使わず直接呼ぶ）。
+      showToast(`取り消しました: ${desc}`, "success");
     });
   }
 
@@ -363,11 +379,11 @@ export default function App() {
     void exec(
       async () => {
         const outcome = await api.fetch(repoPath, DEFAULT_REMOTE);
-        setNotice(
+        const msg =
           outcome.updated_refs > 0
             ? `リモート「${outcome.remote}」から最新情報を取得しました（追跡ブランチ ${outcome.updated_refs} 件を更新）。`
-            : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`,
-        );
+            : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`;
+        showToast(msg, "info");
       },
       { refresh: REFRESH_BY_OP.fetch, networkOp: true },
     );
@@ -388,11 +404,11 @@ export default function App() {
       "pull",
       async () => {
         const outcome = await api.pull(repoPath, DEFAULT_REMOTE, branch);
-        setNotice(
+        const msg =
           outcome.kind === "up_to_date"
             ? "すでに最新の状態でした。取り込むものはありません。"
-            : `リモートの変更を取り込みました（${outcome.commit.short_id} まで前進）。`,
-        );
+            : `リモートの変更を取り込みました（${outcome.commit.short_id} まで前進）。`;
+        showToast(msg, "success");
       },
       branch,
       true, // networkOp
@@ -412,6 +428,7 @@ export default function App() {
     if (!identityComplete) {
       setError(null);
       setNotice("コミットの修正の前に、名前とメールアドレスを設定しましょう。");
+      showToast("コミットの修正の前に、名前とメールアドレスを設定しましょう。", "warning");
       setShowIdentity(true);
       return;
     }
@@ -419,7 +436,7 @@ export default function App() {
     void guarded("直前のコミットを修正", "amend_commit", async () => {
       await api.amendCommit(repoPath, msg);
       setCommitMsg("");
-      setNotice("直前のコミットを修正しました。");
+      showToast("直前のコミットを修正しました。", "success");
     });
   }
 
@@ -427,7 +444,7 @@ export default function App() {
   function doStashSave(message: string) {
     void guarded("変更を退避", "stash_save", async () => {
       await api.stashSave(repoPath, message);
-      setNotice("変更を退避しました。作業ツリーをきれいにしました。");
+      showToast("変更を退避しました。作業ツリーをきれいにしました。", "success");
     });
   }
 
@@ -435,7 +452,7 @@ export default function App() {
   function doStashApply(index: number) {
     void guarded("退避を適用", "stash_apply", async () => {
       await api.stashApply(repoPath, index);
-      setNotice("退避した変更を取り出しました（退避は一覧に残しています）。");
+      showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
     });
   }
 
@@ -443,7 +460,7 @@ export default function App() {
   function doStashPop(index: number) {
     void guarded("退避を取り出す", "stash_pop", async () => {
       await api.stashPop(repoPath, index);
-      setNotice("退避した変更を取り出し、一覧から取り除きました。");
+      showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
     });
   }
 
