@@ -1,4 +1,5 @@
 import type { CommitInfo } from "../api";
+import { EmptyState } from "./EmptyState";
 
 interface Props {
   commits: CommitInfo[];
@@ -6,6 +7,8 @@ interface Props {
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
+  // コミット入力欄へ誘導する（Empty State の「コミットへ」ボタン用）。
+  onGoToCommit: () => void;
 }
 
 function formatTime(unixSeconds: number): string {
@@ -25,6 +28,7 @@ export function HistoryPanel({
   hasMore,
   loadingMore,
   onLoadMore,
+  onGoToCommit,
 }: Props) {
   return (
     <div className="panel">
@@ -33,7 +37,12 @@ export function HistoryPanel({
       </div>
 
       {commits.length === 0 ? (
-        <p className="empty">まだコミットがありません。最初のコミットをしてみましょう。</p>
+        <EmptyState
+          icon="📝"
+          title="まだコミットがありません"
+          description="最初のコミットを作って、変更の記録を始めましょう。"
+          action={{ label: "コミットへ", onClick: onGoToCommit }}
+        />
       ) : (
         <>
           <ul className="commits">
