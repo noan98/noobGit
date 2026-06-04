@@ -258,6 +258,17 @@ textarea {
   padding: 4px 10px;
   font-size: 13px;
 }
+/* ネットワーク操作中のスピナー: ボタン内に表示し、360度連続回転させる。
+   display:inline-block がないと transform が効かないため必須。 */
+.network-spinner {
+  display: inline-block;
+  animation: spin 0.9s linear infinite;
+  margin-right: 4px;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 /* テーマ切り替えボタン: アイコンとラベルを横並びにし、アイコンを縦中央に揃える。
    アイコンは currentColor で描くので --text に追従する（ThemeToggle.tsx 参照）。 */
 .theme-toggle {
@@ -293,6 +304,10 @@ textarea {
 }
 .link.danger {
   color: var(--destructive);
+}
+.link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---- layout ---- */

@@ -95,6 +95,8 @@ interface Guard {
   explanation: Explanation;
   action: () => Promise<void>;
   refresh: RefreshParts;
+  // ネットワーク操作の場合 true。確認ダイアログ経由で exec を呼ぶときに isNetworkBusy を立てる。
+  networkOp?: boolean;
 }
 
 export default function App() {
@@ -121,6 +123,9 @@ export default function App() {
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
   const commitInput = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState<string | null>(null);
+  // ネットワーク操作（fetch / pull / push）の実行中フラグ。
+  // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
+  const [isNetworkBusy, setIsNetworkBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
@@ -255,11 +260,13 @@ export default function App() {
 
   // 安全な操作はそのまま実行し、結果を更新する。
   // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
+  // networkOp: true を渡すと実行中に isNetworkBusy を立て、完了・失敗時に必ず下ろす。
   const exec = useCallback(
     async (
       action: () => Promise<void>,
-      opts: { successMsg?: string; refresh?: RefreshParts } = {},
+      opts: { successMsg?: string; refresh?: RefreshParts; networkOp?: boolean } = {},
     ) => {
+      if (opts.networkOp) setIsNetworkBusy(true);
       try {
         await action();
         setError(null);
@@ -268,17 +275,21 @@ export default function App() {
       } catch (e) {
         setNotice(null);
         setError(String(e));
+      } finally {
+        if (opts.networkOp) setIsNetworkBusy(false);
       }
     },
     [refresh],
   );
 
   // リスクを評価し、危険なら確認ダイアログを挟んでから実行する。
+  // networkOp: true を渡すとネットワーク操作として isNetworkBusy を管理する。
   async function guarded(
     title: string,
     op: OperationKind,
     action: () => Promise<void>,
     targetBranch?: string,
+    networkOp?: boolean,
   ) {
     try {
       const [assessment, explanation] = await Promise.all([
@@ -287,9 +298,9 @@ export default function App() {
       ]);
       const parts = REFRESH_BY_OP[op];
       if (assessment.level === "safe") {
-        await exec(action, { refresh: parts });
+        await exec(action, { refresh: parts, networkOp });
       } else {
-        setGuard({ title, assessment, explanation, action, refresh: parts });
+        setGuard({ title, assessment, explanation, action, refresh: parts, networkOp });
       }
     } catch (e) {
       setError(String(e));
@@ -298,9 +309,9 @@ export default function App() {
 
   async function confirmGuard() {
     if (!guard) return;
-    const { action, refresh: parts } = guard;
+    const { action, refresh: parts, networkOp } = guard;
     setGuard(null);
-    await exec(action, { refresh: parts });
+    await exec(action, { refresh: parts, networkOp });
   }
 
   function doCommit() {
@@ -358,7 +369,7 @@ export default function App() {
             : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`,
         );
       },
-      { refresh: REFRESH_BY_OP.fetch },
+      { refresh: REFRESH_BY_OP.fetch, networkOp: true },
     );
   }
 
@@ -384,6 +395,7 @@ export default function App() {
         );
       },
       branch,
+      true, // networkOp
     );
   }
 
@@ -469,16 +481,30 @@ export default function App() {
           <button
             className="btn btn-small"
             onClick={doFetch}
+            disabled={isNetworkBusy}
             title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
           >
-            🔄 取得
+            {isNetworkBusy ? (
+              <>
+                <span className="network-spinner">🔄</span>取得中…
+              </>
+            ) : (
+              "🔄 取得"
+            )}
           </button>
           <button
             className="btn btn-small"
             onClick={doPull}
+            disabled={isNetworkBusy}
             title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
           >
-            ⬇ 取り込む
+            {isNetworkBusy ? (
+              <>
+                <span className="network-spinner">⬇</span>取り込み中…
+              </>
+            ) : (
+              "⬇ 取り込む"
+            )}
           </button>
           {undoInfo && (
             <button className="btn btn-undo" onClick={doUndo}>
@@ -634,6 +660,7 @@ export default function App() {
           <BranchPanel
             branches={branches}
             graph={branchGraph}
+            networkBusy={isNetworkBusy}
             onCreate={(name) =>
               void guarded("ブランチを作成", "create_branch", () =>
                 api.createBranch(repoPath, name),
@@ -667,6 +694,7 @@ export default function App() {
                     false,
                   ),
                 name,
+                true, // networkOp
               )
             }
             onForcePush={(name) =>
@@ -681,6 +709,7 @@ export default function App() {
                     true,
                   ),
                 name,
+                true, // networkOp
               )
             }
           />

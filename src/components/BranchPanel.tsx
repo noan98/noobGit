@@ -10,6 +10,8 @@ interface Props {
   onDelete: (name: string) => void;
   onPush: (name: string) => void;
   onForcePush: (name: string) => void;
+  // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
+  networkBusy?: boolean;
 }
 
 export function BranchPanel({
@@ -20,6 +22,7 @@ export function BranchPanel({
   onDelete,
   onPush,
   onForcePush,
+  networkBusy = false,
 }: Props) {
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
@@ -94,9 +97,14 @@ export function BranchPanel({
                   <button
                     className="link"
                     onClick={() => onPush(b.name)}
-                    title="このブランチのコミットをリモート（origin）へ送信します"
+                    disabled={networkBusy}
+                    title={
+                      networkBusy
+                        ? "ネットワーク操作が進行中です"
+                        : "このブランチのコミットをリモート（origin）へ送信します"
+                    }
                   >
-                    送信
+                    {networkBusy ? "送信中…" : "送信"}
                   </button>
                   {!b.is_head && (
                     <button className="link" onClick={() => onSwitch(b.name)}>
@@ -114,9 +122,14 @@ export function BranchPanel({
                   <button
                     className="link danger"
                     onClick={() => onForcePush(b.name)}
-                    title="リモートの履歴を上書きします（強制push）。とても危険です。"
+                    disabled={networkBusy}
+                    title={
+                      networkBusy
+                        ? "ネットワーク操作が進行中です"
+                        : "リモートの履歴を上書きします（強制push）。とても危険です。"
+                    }
                   >
-                    強制送信
+                    {networkBusy ? "送信中…" : "強制送信"}
                   </button>
                 </span>
               </div>
