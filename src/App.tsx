@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
   type BranchGraph,
@@ -19,6 +20,11 @@ import { StatusPanel } from "./components/StatusPanel";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
+import {
+  StatusPanelSkeleton,
+  HistoryPanelSkeleton,
+  BranchPanelSkeleton,
+} from "./components/SkeletonPanels";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import {
   DiffPanel,
@@ -103,6 +109,8 @@ interface Guard {
 export default function App() {
   const [repoPath, setRepoPath] = useState("");
   const [opened, setOpened] = useState(false);
+  // リポジトリの初期読み込み中フラグ。true の間は各パネルをスケルトンで表示する。
+  const [repoLoading, setRepoLoading] = useState(false);
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -235,8 +243,13 @@ export default function App() {
   async function openRepo() {
     if (!repoPath.trim()) return;
     setNotice(null);
+    // 先に開いた状態にしてスケルトンを表示し、その裏で初期読み込みを行う。
+    setRepoLoading(true);
+    setOpened(true);
     const ok = await refresh();
-    if (ok) setOpened(true);
+    // 開けなかった場合は元の入力画面に戻す（エラーはバナーで表示済み）。
+    if (!ok) setOpened(false);
+    setRepoLoading(false);
   }
 
   async function saveIdentity(
@@ -584,29 +597,50 @@ export default function App() {
 
       <main className="columns">
         <section className="col">
-          {status && (
-            <StatusPanel
-              status={status}
-              selected={selectedFile}
-              onSelect={selectFile}
-              onStageAll={() =>
-                void exec(() => api.stageAll(repoPath), {
-                  refresh: REFRESH_BY_OP.stage,
-                })
-              }
-              onStagePath={(p) =>
-                void exec(() => api.stagePath(repoPath, p), {
-                  refresh: REFRESH_BY_OP.stage,
-                })
-              }
-              onUnstage={(p) =>
-                void exec(() => api.unstage(repoPath, p), {
-                  refresh: REFRESH_BY_OP.unstage,
-                })
-              }
-              onDiscard={doDiscard}
-            />
-          )}
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="status-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <StatusPanelSkeleton />
+              </motion.div>
+            ) : (
+              status && (
+                <motion.div
+                  key="status-content"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <StatusPanel
+                    status={status}
+                    selected={selectedFile}
+                    onSelect={selectFile}
+                    onStageAll={() =>
+                      void exec(() => api.stageAll(repoPath), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
+                    onStagePath={(p) =>
+                      void exec(() => api.stagePath(repoPath, p), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
+                    onUnstage={(p) =>
+                      void exec(() => api.unstage(repoPath, p), {
+                        refresh: REFRESH_BY_OP.unstage,
+                      })
+                    }
+                    onDiscard={doDiscard}
+                  />
+                </motion.div>
+              )
+            )}
+          </AnimatePresence>
 
           <DiffPanel
             selection={selectedFile}
@@ -651,85 +685,127 @@ export default function App() {
         </section>
 
         <section className="col">
-          <HistoryPanel
-            commits={commits}
-            hasMore={hasMoreCommits}
-            loadingMore={loadingMore}
-            onLoadMore={loadMore}
-            onGoToCommit={() => {
-              commitInput.current?.focus();
-              commitInput.current?.scrollIntoView({
-                behavior: "smooth",
-                block: "center",
-              });
-            }}
-            onReset={(c) =>
-              void guarded(
-                `「${c.short_id}」までハードリセット`,
-                "reset_hard",
-                () => api.resetHard(repoPath, c.id),
-              )
-            }
-          />
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="history-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <HistoryPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="history-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <HistoryPanel
+                  commits={commits}
+                  hasMore={hasMoreCommits}
+                  loadingMore={loadingMore}
+                  onLoadMore={loadMore}
+                  onGoToCommit={() => {
+                    commitInput.current?.focus();
+                    commitInput.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  }}
+                  onReset={(c) =>
+                    void guarded(
+                      `「${c.short_id}」までハードリセット`,
+                      "reset_hard",
+                      () => api.resetHard(repoPath, c.id),
+                    )
+                  }
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
 
         <section className="col">
-          <BranchPanel
-            branches={branches}
-            graph={branchGraph}
-            networkBusy={isNetworkBusy}
-            onCreate={(name) =>
-              void guarded("ブランチを作成", "create_branch", () =>
-                api.createBranch(repoPath, name),
-              )
-            }
-            onSwitch={(name) =>
-              void guarded(
-                `ブランチ「${name}」へ切り替え`,
-                "switch_branch",
-                () => api.switchBranch(repoPath, name),
-                name,
-              )
-            }
-            onDelete={(name) =>
-              void guarded(
-                `ブランチ「${name}」を削除`,
-                "delete_branch",
-                () => api.deleteBranch(repoPath, name),
-                name,
-              )
-            }
-            onPush={(name) =>
-              void guarded(
-                `ブランチ「${name}」を送信`,
-                "push",
-                () =>
-                  api.push(
-                    repoPath,
-                    "origin",
-                    `refs/heads/${name}:refs/heads/${name}`,
-                    false,
-                  ),
-                name,
-                true, // networkOp
-              )
-            }
-            onForcePush={(name) =>
-              void guarded(
-                `ブランチ「${name}」を強制送信`,
-                "force_push",
-                () =>
-                  api.push(
-                    repoPath,
-                    "origin",
-                    `refs/heads/${name}:refs/heads/${name}`,
-                    true,
-                  ),
-                name,
-                true, // networkOp
-              )
-            }
-          />
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="branch-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <BranchPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="branch-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <BranchPanel
+                  branches={branches}
+                  graph={branchGraph}
+                  networkBusy={isNetworkBusy}
+                  onCreate={(name) =>
+                    void guarded("ブランチを作成", "create_branch", () =>
+                      api.createBranch(repoPath, name),
+                    )
+                  }
+                  onSwitch={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」へ切り替え`,
+                      "switch_branch",
+                      () => api.switchBranch(repoPath, name),
+                      name,
+                    )
+                  }
+                  onDelete={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を削除`,
+                      "delete_branch",
+                      () => api.deleteBranch(repoPath, name),
+                      name,
+                    )
+                  }
+                  onPush={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を送信`,
+                      "push",
+                      () =>
+                        api.push(
+                          repoPath,
+                          "origin",
+                          `refs/heads/${name}:refs/heads/${name}`,
+                          false,
+                        ),
+                      name,
+                      true, // networkOp
+                    )
+                  }
+                  onForcePush={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を強制送信`,
+                      "force_push",
+                      () =>
+                        api.push(
+                          repoPath,
+                          "origin",
+                          `refs/heads/${name}:refs/heads/${name}`,
+                          true,
+                        ),
+                      name,
+                      true, // networkOp
+                    )
+                  }
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
       </main>
 
