@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
 import { EmptyState } from "./EmptyState";
+import { AheadBehindBadge } from "./AheadBehindBadge";
 
 interface Props {
   branches: BranchInfo[];
@@ -141,18 +142,23 @@ export function BranchPanel({
                   {likelyBase.ambiguous && (
                     <span className="ambiguous">（候補が複数あり不確実）</span>
                   )}
-                  <span className="ahead-behind">
-                    {" "}
-                    ↑{likelyBase.ahead} / ↓{likelyBase.behind}
-                  </span>
+                  {" "}
+                  <AheadBehindBadge
+                    ahead={likelyBase.ahead}
+                    behind={likelyBase.behind}
+                    upstream={likelyBase.name}
+                  />
                 </div>
               )}
 
               {rel && !b.is_head && !rel.merged_into_current && (
                 <div className="branch-relation">
-                  <span className="ahead-behind" title="現在のブランチに対する先行/遅れのコミット数">
-                    現在のブランチに対して ↑{rel.ahead} / ↓{rel.behind}
-                  </span>
+                  現在のブランチに対して{" "}
+                  <AheadBehindBadge
+                    ahead={rel.ahead}
+                    behind={rel.behind}
+                    upstream={b.upstream}
+                  />
                 </div>
               )}
             </li>

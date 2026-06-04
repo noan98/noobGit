@@ -74,6 +74,13 @@ const config = defineConfig({
           bg: cssVar("type-change-bg"),
           border: cssVar("type-change-border"),
         },
+        // ブランチの diverged（分岐）状態バッジ用。ahead かつ behind がある状態。
+        // オレンジ系の CSS 変数（type-change と共有）を流用する。
+        diverged: {
+          fg: cssVar("type-change"),
+          bg: cssVar("type-change-bg"),
+          border: cssVar("type-change-border"),
+        },
         // 通常テキスト・背景・罫線。
         neutral: {
           fg: cssVar("text"),
