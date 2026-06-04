@@ -56,11 +56,23 @@ const config = defineConfig({
           border: cssVar("safe-border"),
           solid: cssVar("safe-emphasis"),
         },
-        // アクセント（リンク・情報）の色。
+        // アクセント（リンク・情報）の色。変更（modified）バッジの青にも使う。
         accent: {
           fg: cssVar("accent"),
           bg: cssVar("accent-bg"),
           border: cssVar("accent-border"),
+        },
+        // ファイル変更バッジ（#52）専用の追加色。名前変更=紫 / 種別変更=オレンジ。
+        // 値は styles.css の CSS 変数へ橋渡しするので data-theme に自動追従する。
+        rename: {
+          fg: cssVar("rename"),
+          bg: cssVar("rename-bg"),
+          border: cssVar("rename-border"),
+        },
+        typeChange: {
+          fg: cssVar("type-change"),
+          bg: cssVar("type-change-bg"),
+          border: cssVar("type-change-border"),
         },
         // 通常テキスト・背景・罫線。
         neutral: {
