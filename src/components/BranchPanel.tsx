@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
 import { EmptyState } from "./EmptyState";
+import { AheadBehindBadge } from "./AheadBehindBadge";
 
 interface Props {
   branches: BranchInfo[];
@@ -10,6 +11,8 @@ interface Props {
   onDelete: (name: string) => void;
   onPush: (name: string) => void;
   onForcePush: (name: string) => void;
+  // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
+  networkBusy?: boolean;
 }
 
 export function BranchPanel({
@@ -20,6 +23,7 @@ export function BranchPanel({
   onDelete,
   onPush,
   onForcePush,
+  networkBusy = false,
 }: Props) {
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
@@ -94,9 +98,14 @@ export function BranchPanel({
                   <button
                     className="link"
                     onClick={() => onPush(b.name)}
-                    title="このブランチのコミットをリモート（origin）へ送信します"
+                    disabled={networkBusy}
+                    title={
+                      networkBusy
+                        ? "ネットワーク操作が進行中です"
+                        : "このブランチのコミットをリモート（origin）へ送信します"
+                    }
                   >
-                    送信
+                    {networkBusy ? "送信中…" : "送信"}
                   </button>
                   {!b.is_head && (
                     <button className="link" onClick={() => onSwitch(b.name)}>
@@ -114,9 +123,14 @@ export function BranchPanel({
                   <button
                     className="link danger"
                     onClick={() => onForcePush(b.name)}
-                    title="リモートの履歴を上書きします（強制push）。とても危険です。"
+                    disabled={networkBusy}
+                    title={
+                      networkBusy
+                        ? "ネットワーク操作が進行中です"
+                        : "リモートの履歴を上書きします（強制push）。とても危険です。"
+                    }
                   >
-                    強制送信
+                    {networkBusy ? "送信中…" : "強制送信"}
                   </button>
                 </span>
               </div>
@@ -128,18 +142,23 @@ export function BranchPanel({
                   {likelyBase.ambiguous && (
                     <span className="ambiguous">（候補が複数あり不確実）</span>
                   )}
-                  <span className="ahead-behind">
-                    {" "}
-                    ↑{likelyBase.ahead} / ↓{likelyBase.behind}
-                  </span>
+                  {" "}
+                  <AheadBehindBadge
+                    ahead={likelyBase.ahead}
+                    behind={likelyBase.behind}
+                    upstream={likelyBase.name}
+                  />
                 </div>
               )}
 
               {rel && !b.is_head && !rel.merged_into_current && (
                 <div className="branch-relation">
-                  <span className="ahead-behind" title="現在のブランチに対する先行/遅れのコミット数">
-                    現在のブランチに対して ↑{rel.ahead} / ↓{rel.behind}
-                  </span>
+                  現在のブランチに対して{" "}
+                  <AheadBehindBadge
+                    ahead={rel.ahead}
+                    behind={rel.behind}
+                    upstream={b.upstream}
+                  />
                 </div>
               )}
             </li>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
   type BranchGraph,
@@ -15,10 +16,16 @@ import {
   type StashInfo,
   type UndoEntry,
 } from "./api";
+import { showToast } from "./components/Toaster";
 import { StatusPanel } from "./components/StatusPanel";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
+import {
+  StatusPanelSkeleton,
+  HistoryPanelSkeleton,
+  BranchPanelSkeleton,
+} from "./components/SkeletonPanels";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import {
   DiffPanel,
@@ -96,6 +103,8 @@ interface Guard {
   explanation: Explanation;
   action: () => Promise<void>;
   refresh: RefreshParts;
+  // ネットワーク操作の場合 true。確認ダイアログ経由で exec を呼ぶときに isNetworkBusy を立てる。
+  networkOp?: boolean;
   // reset_hard 時のみ設定。ConfirmDialog に失われる変更ファイル一覧を渡す。
   affectedFiles?: FileChange[];
 }
@@ -103,6 +112,8 @@ interface Guard {
 export default function App() {
   const [repoPath, setRepoPath] = useState("");
   const [opened, setOpened] = useState(false);
+  // リポジトリの初期読み込み中フラグ。true の間は各パネルをスケルトンで表示する。
+  const [repoLoading, setRepoLoading] = useState(false);
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -124,6 +135,9 @@ export default function App() {
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
   const commitInput = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState<string | null>(null);
+  // ネットワーク操作（fetch / pull / push）の実行中フラグ。
+  // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
+  const [isNetworkBusy, setIsNetworkBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
@@ -232,8 +246,13 @@ export default function App() {
   async function openRepo() {
     if (!repoPath.trim()) return;
     setNotice(null);
+    // 先に開いた状態にしてスケルトンを表示し、その裏で初期読み込みを行う。
+    setRepoLoading(true);
+    setOpened(true);
     const ok = await refresh();
-    if (ok) setOpened(true);
+    // 開けなかった場合は元の入力画面に戻す（エラーはバナーで表示済み）。
+    if (!ok) setOpened(false);
+    setRepoLoading(false);
   }
 
   async function saveIdentity(
@@ -246,42 +265,57 @@ export default function App() {
       setIdentity(await api.getIdentity(repoPath));
       setShowIdentity(false);
       setError(null);
-      setNotice(
+      const msg =
         scope === "global"
           ? "名前とメールを設定しました（このPC全体）。"
-          : "名前とメールを設定しました（このリポジトリ）。",
-      );
+          : "名前とメールを設定しました（このリポジトリ）。";
+      setNotice(msg);
+      showToast(msg, "success");
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
     }
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
   // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
+  // networkOp: true を渡すと実行中に isNetworkBusy を立て、完了・失敗時に必ず下ろす。
+  // 成功・失敗の結果はトースト通知でも伝える（既存バナーと併用）。
   const exec = useCallback(
     async (
       action: () => Promise<void>,
-      opts: { successMsg?: string; refresh?: RefreshParts } = {},
+      opts: { successMsg?: string; refresh?: RefreshParts; networkOp?: boolean } = {},
     ) => {
+      if (opts.networkOp) setIsNetworkBusy(true);
       try {
         await action();
         setError(null);
-        if (opts.successMsg) setNotice(opts.successMsg);
+        if (opts.successMsg) {
+          setNotice(opts.successMsg);
+          showToast(opts.successMsg, "success");
+        }
         await refresh(opts.refresh ?? FULL_REFRESH);
       } catch (e) {
         setNotice(null);
-        setError(String(e));
+        const msg = String(e);
+        setError(msg);
+        showToast(msg, "error");
+      } finally {
+        if (opts.networkOp) setIsNetworkBusy(false);
       }
     },
     [refresh],
   );
 
   // リスクを評価し、危険なら確認ダイアログを挟んでから実行する。
+  // networkOp: true を渡すとネットワーク操作として isNetworkBusy を管理する。
   async function guarded(
     title: string,
     op: OperationKind,
     action: () => Promise<void>,
     targetBranch?: string,
+    networkOp?: boolean,
   ) {
     try {
       const [assessment, explanation] = await Promise.all([
@@ -290,7 +324,7 @@ export default function App() {
       ]);
       const parts = REFRESH_BY_OP[op];
       if (assessment.level === "safe") {
-        await exec(action, { refresh: parts });
+        await exec(action, { refresh: parts, networkOp });
       } else {
         // reset_hard の場合のみ失われる変更ファイル一覧を取得してダイアログに渡す。
         // 取得失敗はベストエフォートで無視（ファイルリストなしでダイアログを表示）。
@@ -303,18 +337,20 @@ export default function App() {
             affectedFiles = undefined;
           }
         }
-        setGuard({ title, assessment, explanation, action, refresh: parts, affectedFiles });
+        setGuard({ title, assessment, explanation, action, refresh: parts, networkOp, affectedFiles });
       }
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
     }
   }
 
   async function confirmGuard() {
     if (!guard) return;
-    const { action, refresh: parts } = guard;
+    const { action, refresh: parts, networkOp } = guard;
     setGuard(null);
-    await exec(action, { refresh: parts });
+    await exec(action, { refresh: parts, networkOp });
   }
 
   function doCommit() {
@@ -324,6 +360,7 @@ export default function App() {
     if (!identityComplete) {
       setError(null);
       setNotice("コミットの前に、名前とメールアドレスを設定しましょう。");
+      showToast("コミットの前に、名前とメールアドレスを設定しましょう。", "warning");
       setShowIdentity(true);
       return;
     }
@@ -347,7 +384,9 @@ export default function App() {
         setHasMoreCommits(more.length === LOG_PAGE_SIZE);
         setError(null);
       } catch (e) {
-        setError(String(e));
+        const errMsg = String(e);
+        setError(errMsg);
+        showToast(errMsg, "error");
       } finally {
         setLoadingMore(false);
       }
@@ -357,7 +396,8 @@ export default function App() {
   function doUndo() {
     void exec(async () => {
       const desc = await api.undoLast(repoPath);
-      setNotice(`取り消しました: ${desc}`);
+      // 取り消し完了はトーストで通知（exec の successMsg 経路を使わず直接呼ぶ）。
+      showToast(`取り消しました: ${desc}`, "success");
     });
   }
 
@@ -366,13 +406,13 @@ export default function App() {
     void exec(
       async () => {
         const outcome = await api.fetch(repoPath, DEFAULT_REMOTE);
-        setNotice(
+        const msg =
           outcome.updated_refs > 0
             ? `リモート「${outcome.remote}」から最新情報を取得しました（追跡ブランチ ${outcome.updated_refs} 件を更新）。`
-            : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`,
-        );
+            : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`;
+        showToast(msg, "info");
       },
-      { refresh: REFRESH_BY_OP.fetch },
+      { refresh: REFRESH_BY_OP.fetch, networkOp: true },
     );
   }
 
@@ -391,13 +431,14 @@ export default function App() {
       "pull",
       async () => {
         const outcome = await api.pull(repoPath, DEFAULT_REMOTE, branch);
-        setNotice(
+        const msg =
           outcome.kind === "up_to_date"
             ? "すでに最新の状態でした。取り込むものはありません。"
-            : `リモートの変更を取り込みました（${outcome.commit.short_id} まで前進）。`,
-        );
+            : `リモートの変更を取り込みました（${outcome.commit.short_id} まで前進）。`;
+        showToast(msg, "success");
       },
       branch,
+      true, // networkOp
     );
   }
 
@@ -414,6 +455,7 @@ export default function App() {
     if (!identityComplete) {
       setError(null);
       setNotice("コミットの修正の前に、名前とメールアドレスを設定しましょう。");
+      showToast("コミットの修正の前に、名前とメールアドレスを設定しましょう。", "warning");
       setShowIdentity(true);
       return;
     }
@@ -421,7 +463,7 @@ export default function App() {
     void guarded("直前のコミットを修正", "amend_commit", async () => {
       await api.amendCommit(repoPath, msg);
       setCommitMsg("");
-      setNotice("直前のコミットを修正しました。");
+      showToast("直前のコミットを修正しました。", "success");
     });
   }
 
@@ -429,7 +471,7 @@ export default function App() {
   function doStashSave(message: string) {
     void guarded("変更を退避", "stash_save", async () => {
       await api.stashSave(repoPath, message);
-      setNotice("変更を退避しました。作業ツリーをきれいにしました。");
+      showToast("変更を退避しました。作業ツリーをきれいにしました。", "success");
     });
   }
 
@@ -437,7 +479,7 @@ export default function App() {
   function doStashApply(index: number) {
     void guarded("退避を適用", "stash_apply", async () => {
       await api.stashApply(repoPath, index);
-      setNotice("退避した変更を取り出しました（退避は一覧に残しています）。");
+      showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
     });
   }
 
@@ -445,7 +487,7 @@ export default function App() {
   function doStashPop(index: number) {
     void guarded("退避を取り出す", "stash_pop", async () => {
       await api.stashPop(repoPath, index);
-      setNotice("退避した変更を取り出し、一覧から取り除きました。");
+      showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
     });
   }
 
@@ -483,16 +525,30 @@ export default function App() {
           <button
             className="btn btn-small"
             onClick={doFetch}
+            disabled={isNetworkBusy}
             title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
           >
-            🔄 取得
+            {isNetworkBusy ? (
+              <>
+                <span className="network-spinner">🔄</span>取得中…
+              </>
+            ) : (
+              "🔄 取得"
+            )}
           </button>
           <button
             className="btn btn-small"
             onClick={doPull}
+            disabled={isNetworkBusy}
             title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
           >
-            ⬇ 取り込む
+            {isNetworkBusy ? (
+              <>
+                <span className="network-spinner">⬇</span>取り込み中…
+              </>
+            ) : (
+              "⬇ 取り込む"
+            )}
           </button>
           {undoInfo && (
             <button className="btn btn-undo" onClick={doUndo}>
@@ -555,29 +611,50 @@ export default function App() {
 
       <main className="columns">
         <section className="col">
-          {status && (
-            <StatusPanel
-              status={status}
-              selected={selectedFile}
-              onSelect={selectFile}
-              onStageAll={() =>
-                void exec(() => api.stageAll(repoPath), {
-                  refresh: REFRESH_BY_OP.stage,
-                })
-              }
-              onStagePath={(p) =>
-                void exec(() => api.stagePath(repoPath, p), {
-                  refresh: REFRESH_BY_OP.stage,
-                })
-              }
-              onUnstage={(p) =>
-                void exec(() => api.unstage(repoPath, p), {
-                  refresh: REFRESH_BY_OP.unstage,
-                })
-              }
-              onDiscard={doDiscard}
-            />
-          )}
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="status-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <StatusPanelSkeleton />
+              </motion.div>
+            ) : (
+              status && (
+                <motion.div
+                  key="status-content"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <StatusPanel
+                    status={status}
+                    selected={selectedFile}
+                    onSelect={selectFile}
+                    onStageAll={() =>
+                      void exec(() => api.stageAll(repoPath), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
+                    onStagePath={(p) =>
+                      void exec(() => api.stagePath(repoPath, p), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
+                    onUnstage={(p) =>
+                      void exec(() => api.unstage(repoPath, p), {
+                        refresh: REFRESH_BY_OP.unstage,
+                      })
+                    }
+                    onDiscard={doDiscard}
+                  />
+                </motion.div>
+              )
+            )}
+          </AnimatePresence>
 
           <DiffPanel
             selection={selectedFile}
@@ -622,82 +699,127 @@ export default function App() {
         </section>
 
         <section className="col">
-          <HistoryPanel
-            commits={commits}
-            hasMore={hasMoreCommits}
-            loadingMore={loadingMore}
-            onLoadMore={loadMore}
-            onGoToCommit={() => {
-              commitInput.current?.focus();
-              commitInput.current?.scrollIntoView({
-                behavior: "smooth",
-                block: "center",
-              });
-            }}
-            onReset={(c) =>
-              void guarded(
-                `「${c.short_id}」までハードリセット`,
-                "reset_hard",
-                () => api.resetHard(repoPath, c.id),
-              )
-            }
-          />
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="history-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <HistoryPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="history-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <HistoryPanel
+                  commits={commits}
+                  hasMore={hasMoreCommits}
+                  loadingMore={loadingMore}
+                  onLoadMore={loadMore}
+                  onGoToCommit={() => {
+                    commitInput.current?.focus();
+                    commitInput.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  }}
+                  onReset={(c) =>
+                    void guarded(
+                      `「${c.short_id}」までハードリセット`,
+                      "reset_hard",
+                      () => api.resetHard(repoPath, c.id),
+                    )
+                  }
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
 
         <section className="col">
-          <BranchPanel
-            branches={branches}
-            graph={branchGraph}
-            onCreate={(name) =>
-              void guarded("ブランチを作成", "create_branch", () =>
-                api.createBranch(repoPath, name),
-              )
-            }
-            onSwitch={(name) =>
-              void guarded(
-                `ブランチ「${name}」へ切り替え`,
-                "switch_branch",
-                () => api.switchBranch(repoPath, name),
-                name,
-              )
-            }
-            onDelete={(name) =>
-              void guarded(
-                `ブランチ「${name}」を削除`,
-                "delete_branch",
-                () => api.deleteBranch(repoPath, name),
-                name,
-              )
-            }
-            onPush={(name) =>
-              void guarded(
-                `ブランチ「${name}」を送信`,
-                "push",
-                () =>
-                  api.push(
-                    repoPath,
-                    "origin",
-                    `refs/heads/${name}:refs/heads/${name}`,
-                    false,
-                  ),
-                name,
-              )
-            }
-            onForcePush={(name) =>
-              void guarded(
-                `ブランチ「${name}」を強制送信`,
-                "force_push",
-                () =>
-                  api.push(
-                    repoPath,
-                    "origin",
-                    `refs/heads/${name}:refs/heads/${name}`,
-                    true,
-                  ),
-                name,
-              )
-            }
-          />
+          <AnimatePresence mode="wait">
+            {repoLoading ? (
+              <motion.div
+                key="branch-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <BranchPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="branch-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <BranchPanel
+                  branches={branches}
+                  graph={branchGraph}
+                  networkBusy={isNetworkBusy}
+                  onCreate={(name) =>
+                    void guarded("ブランチを作成", "create_branch", () =>
+                      api.createBranch(repoPath, name),
+                    )
+                  }
+                  onSwitch={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」へ切り替え`,
+                      "switch_branch",
+                      () => api.switchBranch(repoPath, name),
+                      name,
+                    )
+                  }
+                  onDelete={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を削除`,
+                      "delete_branch",
+                      () => api.deleteBranch(repoPath, name),
+                      name,
+                    )
+                  }
+                  onPush={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を送信`,
+                      "push",
+                      () =>
+                        api.push(
+                          repoPath,
+                          "origin",
+                          `refs/heads/${name}:refs/heads/${name}`,
+                          false,
+                        ),
+                      name,
+                      true, // networkOp
+                    )
+                  }
+                  onForcePush={(name) =>
+                    void guarded(
+                      `ブランチ「${name}」を強制送信`,
+                      "force_push",
+                      () =>
+                        api.push(
+                          repoPath,
+                          "origin",
+                          `refs/heads/${name}:refs/heads/${name}`,
+                          true,
+                        ),
+                      name,
+                      true, // networkOp
+                    )
+                  }
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
       </main>
 
