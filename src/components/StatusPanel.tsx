@@ -1,5 +1,6 @@
-import { changeKindLabel, type RepoStatus } from "../api";
+import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
+import { StatusBadge } from "./StatusBadge";
 
 interface Props {
   status: RepoStatus;
@@ -50,9 +51,7 @@ export function StatusPanel({
           <ul>
             {status.staged.map((f) => (
               <li key={`s-${f.path}`}>
-                <span className={`tag tag-${f.kind}`}>
-                  {changeKindLabel[f.kind]}
-                </span>
+                <StatusBadge kind={f.kind} />
                 <button
                   type="button"
                   className={pathClass(f.path, "staged")}
@@ -80,9 +79,7 @@ export function StatusPanel({
           <ul>
             {status.unstaged.map((f) => (
               <li key={`u-${f.path}`}>
-                <span className={`tag tag-${f.kind}`}>
-                  {changeKindLabel[f.kind]}
-                </span>
+                <StatusBadge kind={f.kind} />
                 <button
                   type="button"
                   className={pathClass(f.path, "unstaged")}
@@ -113,7 +110,7 @@ export function StatusPanel({
           <ul>
             {status.untracked.map((p) => (
               <li key={`n-${p}`}>
-                <span className="tag tag-untracked">未追跡</span>
+                <StatusBadge kind="untracked" />
                 <button
                   type="button"
                   className={pathClass(p, "unstaged")}
@@ -144,7 +141,7 @@ export function StatusPanel({
           <ul>
             {status.conflicted.map((p) => (
               <li key={`c-${p}`}>
-                <span className="tag tag-conflicted">コンフリクト</span>
+                <StatusBadge kind="conflicted" />
                 <button
                   type="button"
                   className={pathClass(p, "conflicted")}

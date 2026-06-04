@@ -39,6 +39,15 @@
   --accent-bg: #ddf4ff;
   --accent-border: #b6e3ff;
 
+  /* ファイル変更バッジ用の追加色（#52）。名前変更=紫 / 種別変更=オレンジ。
+     他の種別は既存の意味色を再利用する（新規=緑 / 変更=青 / 削除=赤 / 競合=黄）。 */
+  --rename: #8250df;
+  --rename-bg: #faf0ff;
+  --rename-border: #e5cdf7;
+  --type-change: #bc4c00;
+  --type-change-bg: #fff1e5;
+  --type-change-border: #ffc69e;
+
   /* 意味色の塗り（白文字を載せるソリッドなバッジ／ボタン用） */
   --safe-emphasis: #1a7f37;
   --caution-emphasis: #9a6700;
@@ -108,6 +117,14 @@
   --destructive-border: rgba(248, 81, 73, 0.4);
   --accent-bg: rgba(56, 139, 253, 0.16);
   --accent-border: rgba(56, 139, 253, 0.4);
+
+  /* ファイル変更バッジ用の追加色（#52）のダーク版。 */
+  --rename: #d2a8ff;
+  --rename-bg: rgba(163, 113, 247, 0.16);
+  --rename-border: rgba(163, 113, 247, 0.4);
+  --type-change: #ec775c;
+  --type-change-bg: rgba(219, 109, 40, 0.16);
+  --type-change-border: rgba(219, 109, 40, 0.4);
 
   --safe-emphasis: #238636;
   --caution-emphasis: #9e6a03;
@@ -399,36 +416,6 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* ---- change tags ---- */
-.tag {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  white-space: nowrap;
-}
-.tag-added,
-.tag-untracked {
-  background: var(--safe-bg);
-  color: var(--safe);
-}
-.tag-modified,
-.tag-type_change {
-  background: var(--caution-bg);
-  color: var(--caution);
-}
-.tag-deleted {
-  background: var(--destructive-bg);
-  color: var(--destructive);
-}
-.tag-renamed {
-  background: var(--accent-bg);
-  color: var(--accent);
-}
-.tag-conflicted {
-  background: var(--destructive-bg);
-  color: var(--destructive);
 }
 
 /* ---- diff preview ---- */
