@@ -1,7 +1,14 @@
+import { useEffect } from "react";
 import { Box } from "@chakra-ui/react";
-import { motion } from "framer-motion";
-import type { Explanation, RiskAssessment, RiskLevel } from "../api";
-import { fadeIn, scaleIn } from "../theme/motion";
+import { motion, useAnimation } from "framer-motion";
+import type {
+  Explanation,
+  FileChange,
+  RiskAssessment,
+  RiskLevel,
+} from "../api";
+import { fadeIn, shakeXKeyframes, spring, transitions } from "../theme/motion";
+import { StatusBadge } from "./StatusBadge";
 
 const levelLabel: Record<RiskLevel, string> = {
   safe: "安全な操作",
@@ -22,6 +29,8 @@ interface Props {
   explanation: Explanation;
   onConfirm: () => void;
   onCancel: () => void;
+  // reset_hard 時のみ渡す。staged + unstaged の変更ファイル一覧。
+  affectedFiles?: FileChange[];
 }
 
 export function ConfirmDialog({
@@ -30,11 +39,48 @@ export function ConfirmDialog({
   explanation,
   onConfirm,
   onCancel,
+  affectedFiles,
 }: Props) {
   const tone = levelTone[assessment.level];
+  const isDestructive = assessment.level === "destructive";
+
+  // ダイアログのアニメーション制御。
+  // destructive の場合は scale-in に続けて水平震えを実行して危険を訴える。
+  const dialogControls = useAnimation();
+  useEffect(() => {
+    void (async () => {
+      await dialogControls.start({
+        opacity: 1,
+        scale: 1,
+        transition: spring.snappy,
+      });
+      if (isDestructive) {
+        await dialogControls.start({
+          x: [...shakeXKeyframes],
+          transition: { duration: 0.3, ease: "easeOut" },
+        });
+      }
+    })();
+  }, [dialogControls, isDestructive]);
+
+  // destructive ではキャンセルを右（優先位置）に置き autoFocus でデフォルトフォーカスを与える。
+  const cancelBtn = (
+    <button className="btn" onClick={onCancel} autoFocus={isDestructive}>
+      やめておく
+    </button>
+  );
+  const confirmBtn = (
+    <button
+      className={`btn btn-confirm risk-${assessment.level}`}
+      onClick={onConfirm}
+    >
+      理解して実行する
+    </button>
+  );
+
   return (
-    // オーバーレイはフェードイン、ダイアログはスケールインで現れる。
-    // 動きのパラメータは motion トークン（fadeIn / scaleIn）に集約している。
+    // オーバーレイはフェードイン、ダイアログは useAnimation でスケールイン
+    // （destructive の場合はさらに水平震え）で現れる。
     <motion.div
       className="overlay"
       role="dialog"
@@ -45,9 +91,9 @@ export function ConfirmDialog({
     >
       <motion.div
         className={`dialog risk-${assessment.level}`}
-        variants={scaleIn}
-        initial="hidden"
-        animate="visible"
+        initial={{ opacity: 0, scale: 0.96, x: 0 }}
+        animate={dialogControls}
+        exit={{ opacity: 0, scale: 0.96, transition: transitions.fast }}
       >
         <div className="dialog-head">
           {/* 危険度バッジはセマンティックトークンで塗る（danger/warning/success の
@@ -80,6 +126,27 @@ export function ConfirmDialog({
           </ul>
         </section>
 
+        {/* reset_hard 時のみ表示: 失われる変更ファイルの一覧 */}
+        {affectedFiles !== undefined && (
+          <section className="affected-files-section">
+            <h3>失われる変更</h3>
+            {affectedFiles.length === 0 ? (
+              <p className="affected-files-clean">
+                変更なし — 安全にリセットできます
+              </p>
+            ) : (
+              <div className="affected-files-list">
+                {affectedFiles.map((f) => (
+                  <div key={f.path} className="affected-file">
+                    <StatusBadge kind={f.kind} />
+                    <span className="affected-file-path">{f.path}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
         <div className="flags">
           <span className={assessment.reversible ? "flag-ok" : "flag-warn"}>
             {assessment.reversible
@@ -97,18 +164,26 @@ export function ConfirmDialog({
           <p className="alt">💡 {assessment.recommended_alternative}</p>
         )}
 
-        <p className="trouble">{explanation.on_trouble}</p>
+        {/* on_trouble は折りたたみ表示。ダイアログが長くなりすぎず、必要な人だけ開ける。 */}
+        <details className="trouble-details">
+          <summary className="trouble-summary">困ったときは</summary>
+          <p className="trouble">{explanation.on_trouble}</p>
+        </details>
 
+        {/* destructive: [実行（左・非優先）] [やめておく（右・優先・フォーカス）]
+            その他:      [やめておく（左）]   [実行（右）] */}
         <div className="dialog-actions">
-          <button className="btn" onClick={onCancel}>
-            やめておく
-          </button>
-          <button
-            className={`btn btn-confirm risk-${assessment.level}`}
-            onClick={onConfirm}
-          >
-            理解して実行する
-          </button>
+          {isDestructive ? (
+            <>
+              {confirmBtn}
+              {cancelBtn}
+            </>
+          ) : (
+            <>
+              {cancelBtn}
+              {confirmBtn}
+            </>
+          )}
         </div>
       </motion.div>
     </motion.div>
