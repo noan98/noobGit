@@ -1,6 +1,7 @@
 import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
+import { EmptyState } from "./EmptyState";
 
 interface Props {
   status: RepoStatus;
@@ -43,7 +44,13 @@ export function StatusPanel({
         </button>
       </div>
 
-      {status.is_clean && <p className="empty">変更はありません。きれいな状態です。</p>}
+      {status.is_clean && (
+        <EmptyState
+          icon="✨"
+          title="変更はありません"
+          description="ファイルを編集すると、その変更がここに表示されます。きれいな状態です。"
+        />
+      )}
 
       {status.staged.length > 0 && (
         <div className="group">

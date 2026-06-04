@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
+import { EmptyState } from "./EmptyState";
 
 interface Props {
   branches: BranchInfo[];
@@ -21,6 +22,7 @@ export function BranchPanel({
   onForcePush,
 }: Props) {
   const [newName, setNewName] = useState("");
+  const newNameInput = useRef<HTMLInputElement>(null);
   const local = branches.filter((b) => !b.is_remote);
   const remote = branches.filter((b) => b.is_remote);
 
@@ -46,6 +48,7 @@ export function BranchPanel({
 
       <div className="branch-create">
         <input
+          ref={newNameInput}
           value={newName}
           placeholder="新しいブランチ名"
           onChange={(e) => setNewName(e.target.value)}
@@ -143,6 +146,18 @@ export function BranchPanel({
           );
         })}
       </ul>
+
+      {local.length <= 1 && (
+        <EmptyState
+          icon="🌿"
+          title="ブランチはまだ 1 つだけです"
+          description="ブランチを作ると、いまの状態を壊さずに安全に新機能を試せます。"
+          action={{
+            label: "ブランチを作る",
+            onClick: () => newNameInput.current?.focus(),
+          }}
+        />
+      )}
 
       {remote.length > 0 && (
         <div className="group">

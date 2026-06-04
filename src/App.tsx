@@ -118,6 +118,8 @@ export default function App() {
   }, [commits]);
 
   const [commitMsg, setCommitMsg] = useState("");
+  // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
+  const commitInput = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
@@ -572,6 +574,7 @@ export default function App() {
           <div className="panel commit-box">
             <h2>コミット</h2>
             <textarea
+              ref={commitInput}
               value={commitMsg}
               placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
               onChange={(e) => setCommitMsg(e.target.value)}
@@ -610,6 +613,13 @@ export default function App() {
             hasMore={hasMoreCommits}
             loadingMore={loadingMore}
             onLoadMore={loadMore}
+            onGoToCommit={() => {
+              commitInput.current?.focus();
+              commitInput.current?.scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+              });
+            }}
             onReset={(c) =>
               void guarded(
                 `「${c.short_id}」までハードリセット`,
