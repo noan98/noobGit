@@ -241,6 +241,20 @@ textarea {
   padding: 4px 10px;
   font-size: 13px;
 }
+/* テーマ切り替えボタン: アイコンとラベルを横並びにし、アイコンを縦中央に揃える。
+   アイコンは currentColor で描くので --text に追従する（ThemeToggle.tsx 参照）。 */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.theme-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  /* アニメーション中に回転しても幅が揺れないよう固定枠を確保する。 */
+  width: 16px;
+  height: 16px;
+}
 .btn-undo {
   background: var(--caution-bg);
   border-color: var(--caution-border);
