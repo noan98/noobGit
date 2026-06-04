@@ -52,3 +52,7 @@ export const scaleIn: Variants = {
   visible: { opacity: 1, scale: 1, transition: spring.snappy },
   exit: { opacity: 0, scale: 0.96, transition: transitions.fast },
 };
+
+// 破壊的操作の確認ダイアログで scale-in の後に連続して実行する水平震えの x 値列。
+// ConfirmDialog の useAnimation に適用する（duration 0.3 秒）。
+export const shakeXKeyframes = [0, -6, 6, -5, 5, -3, 3, 0] as const;

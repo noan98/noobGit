@@ -6,6 +6,7 @@ import {
   type BranchInfo,
   type CommitInfo,
   type Explanation,
+  type FileChange,
   type FileDiff,
   type Identity,
   type IdentityScope,
@@ -104,6 +105,8 @@ interface Guard {
   refresh: RefreshParts;
   // ネットワーク操作の場合 true。確認ダイアログ経由で exec を呼ぶときに isNetworkBusy を立てる。
   networkOp?: boolean;
+  // reset_hard 時のみ設定。ConfirmDialog に失われる変更ファイル一覧を渡す。
+  affectedFiles?: FileChange[];
 }
 
 export default function App() {
@@ -323,7 +326,18 @@ export default function App() {
       if (assessment.level === "safe") {
         await exec(action, { refresh: parts, networkOp });
       } else {
-        setGuard({ title, assessment, explanation, action, refresh: parts, networkOp });
+        // reset_hard の場合のみ失われる変更ファイル一覧を取得してダイアログに渡す。
+        // 取得失敗はベストエフォートで無視（ファイルリストなしでダイアログを表示）。
+        let affectedFiles: FileChange[] | undefined;
+        if (op === "reset_hard") {
+          try {
+            const s = await api.getStatus(repoPath);
+            affectedFiles = [...s.staged, ...s.unstaged];
+          } catch {
+            affectedFiles = undefined;
+          }
+        }
+        setGuard({ title, assessment, explanation, action, refresh: parts, networkOp, affectedFiles });
       }
     } catch (e) {
       const msg = String(e);
@@ -814,6 +828,7 @@ export default function App() {
           title={guard.title}
           assessment={guard.assessment}
           explanation={guard.explanation}
+          affectedFiles={guard.affectedFiles}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
         />
