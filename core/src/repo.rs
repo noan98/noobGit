@@ -668,6 +668,23 @@ mod tests {
     }
 
     #[test]
+    fn head_is_published_detached_head_returns_false() {
+        // detached HEAD（ブランチを指さない状態）はブランチ名が取れないので false。
+        // amend を安全側（未公開扱い）とするための保守的な判断。
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let oid = fx.commit("c1");
+
+        let repo = fx.open();
+        // HEAD を直接コミット OID に向けて detached 状態にする。
+        repo.set_head_detached(oid).unwrap();
+
+        let repo = fx.open();
+        assert!(!head_is_published(&repo).unwrap());
+    }
+
+    #[test]
     fn modified_tracked_file_is_unstaged() {
         let fx = TestRepo::new();
         fx.write_file("a.txt", "1");
