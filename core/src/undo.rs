@@ -297,6 +297,55 @@ mod tests {
         );
     }
 
+    // save が tmp ファイルを経由して rename するため、成功後に .tmp ファイルが残らないこと。
+    #[test]
+    fn journal_save_leaves_no_tmp_file() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid();
+
+        let repo = fx.open();
+        push(
+            &repo,
+            UndoEntry {
+                op: crate::safety::OperationKind::DeleteBranch,
+                description: "test".into(),
+                action: UndoAction::RecreateBranch {
+                    name: "tmp-branch".into(),
+                    target: target.to_string(),
+                },
+            },
+        )
+        .unwrap();
+
+        // rename が成功しているので .tmp ファイルは存在しない。
+        let tmp = repo.path().join("noobgit_undo.json.tmp");
+        assert!(!tmp.exists(), ".tmp ファイルが残留している");
+
+        // ジャーナル本体は書き込まれている。
+        assert!(repo.path().join("noobgit_undo.json").exists());
+    }
+
+    // discard_path は不可逆なので undo を記録しない。
+    #[test]
+    fn discard_path_does_not_record_undo() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "original");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 変更して discard する。
+        fx.write_file("a.txt", "modified");
+        let repo = fx.open();
+        crate::ops::discard_path(&repo, "a.txt").unwrap();
+
+        // undo エントリは積まれていない。
+        assert!(!can_undo(&repo).unwrap());
+        assert!(peek(&repo).unwrap().is_none());
+    }
+
     // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。
     #[test]
     fn apply_is_idempotent_for_branch_actions() {
