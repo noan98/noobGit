@@ -1,0 +1,5 @@
+# cargo-nextest の設定ファイル。
+# CI プロファイルは JUnit XML を出力し、GitHub Actions でテスト結果をサマリー表示する。
+
+[profile.ci]
+junit = { path = "test-results/junit.xml" }

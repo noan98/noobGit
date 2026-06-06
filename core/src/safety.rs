@@ -20,7 +20,6 @@ pub enum OperationKind {
     Pull,
     Push,
     ForcePush,
-    Merge,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -302,16 +301,6 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
-        OperationKind::Merge => RiskAssessment {
-            level: RiskLevel::Caution,
-            reasons: vec![
-                "別のブランチの内容を取り込みます。コンフリクトが起きることがあります。"
-                    .to_string(),
-            ],
-            reversible: true,
-            permanent_data_loss: false,
-            recommended_alternative: None,
-        },
     }
 }
 

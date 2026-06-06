@@ -96,8 +96,7 @@ export type OperationKind =
   | "fetch"
   | "pull"
   | "push"
-  | "force_push"
-  | "merge";
+  | "force_push";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -237,7 +236,6 @@ export const api = {
     force: boolean,
   ) => invoke<void>("push", { repoPath, remote, refspec, force }),
 
-  canUndo: (repoPath: string) => invoke<boolean>("can_undo", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
   undoLast: (repoPath: string) => invoke<string>("undo_last", { repoPath }),
