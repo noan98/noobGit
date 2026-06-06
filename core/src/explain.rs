@@ -131,12 +131,6 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
                 .into(),
         },
-        OperationKind::Merge => Explanation {
-            title: "マージ（統合）".into(),
-            what: "別のブランチの変更を今のブランチに取り込みます。".into(),
-            why: "コンフリクトが起きることがありますが、落ち着いて解決できます。".into(),
-            on_trouble: "解決中に迷ったら、マージを中止して元の状態に戻すこともできます。".into(),
-        },
     }
 }
 
@@ -163,7 +157,6 @@ mod tests {
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
-            OperationKind::Merge,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty());

@@ -94,7 +94,6 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
   push: { branches: true },
   force_push: { branches: true },
-  merge: FULL_REFRESH,
 };
 
 interface Guard {

@@ -54,6 +54,7 @@ jobs:
               - 'src-tauri/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
 
   frontend:
@@ -102,6 +103,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -152,4 +156,35 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo nextest run
-        run: cargo nextest run --workspace --locked --all-targets
+        run: cargo nextest run --workspace --locked --all-targets --profile ci
+
+      - name: テスト結果をジョブサマリーに出力
+        if: always()
+        run: |
+          if [ -f test-results/junit.xml ]; then
+            python3 - <<'EOF'
+          import xml.etree.ElementTree as ET, os
+          tree = ET.parse("test-results/junit.xml")
+          root = tree.getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite") or root
+          tests   = int(suite.get("tests",    0))
+          fail    = int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+          skipped = int(suite.get("skipped",  0))
+          passed  = tests - fail - skipped
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### テスト結果\n\n")
+              f.write("| 結果 | 件数 |\n|---|---|\n")
+              f.write(f"| ✅ 成功 | {passed} |\n")
+              f.write(f"| ❌ 失敗 | {fail} |\n")
+              f.write(f"| ⏭️ スキップ | {skipped} |\n")
+              f.write(f"| 合計 | {tests} |\n")
+          EOF
+          fi
+
+      - name: テスト結果レポートを公開
+        uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1
+        if: always()
+        with:
+          name: Rust テスト結果
+          path: "**/test-results/*.xml"
+          reporter: java-junit
