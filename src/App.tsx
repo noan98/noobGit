@@ -38,6 +38,24 @@ import { ThemeToggle } from "./components/ThemeToggle";
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
 
+// Conventional Commits プレフィックス定義 (#77)。
+const COMMIT_PREFIXES: { label: string; desc: string }[] = [
+  { label: "feat:", desc: "新機能の追加" },
+  { label: "fix:", desc: "バグ修正" },
+  { label: "docs:", desc: "ドキュメント変更" },
+  { label: "refactor:", desc: "リファクタリング" },
+  { label: "chore:", desc: "雑務・設定変更" },
+];
+
+// プレフィックスを件名（1行目）の先頭に挿入する。
+// 既存の Conventional Commits プレフィックスがあれば置き換える。
+function insertCommitPrefix(current: string, prefix: string): string {
+  const lines = current.split("\n");
+  const cleaned = lines[0].replace(/^[a-z]+(!)?:\s*/, "");
+  lines[0] = `${prefix} ${cleaned}`;
+  return lines.join("\n");
+}
+
 // 取得・取り込みの既定リモート名。多くのリポジトリはクローン元を origin と呼ぶ。
 const DEFAULT_REMOTE = "origin";
 
@@ -663,12 +681,46 @@ export default function App() {
 
           <div className="panel commit-box">
             <h2>コミット</h2>
+            {/* Conventional Commits プレフィックスボタン (#77) */}
+            <div className="prefix-buttons">
+              {COMMIT_PREFIXES.map(({ label, desc }) => (
+                <button
+                  key={label}
+                  className="btn btn-small prefix-btn"
+                  onClick={() => {
+                    setCommitMsg((prev) => insertCommitPrefix(prev, label));
+                    commitInput.current?.focus();
+                  }}
+                  title={desc}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <textarea
               ref={commitInput}
               value={commitMsg}
               placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
               onChange={(e) => setCommitMsg(e.target.value)}
             />
+            {/* 文字数カウンター (#77) */}
+            {commitMsg.length > 0 && (() => {
+              const subject = commitMsg.split("\n")[0];
+              const len = subject.length;
+              const color = len <= 50 ? "var(--safe)" : len <= 72 ? "var(--caution)" : "var(--destructive)";
+              const hint = len > 72
+                ? "短くまとめると見やすくなります"
+                : len > 50
+                  ? "本文への移動を検討してください"
+                  : null;
+              return (
+                <div className="char-count">
+                  <span style={{ color, fontWeight: 600 }}>{len}</span>
+                  <span className="char-limit">/ 50 字推奨</span>
+                  {hint && <span className="char-hint">{hint}</span>}
+                </div>
+              );
+            })()}
             <div className="commit-actions">
               <button
                 className="btn"
@@ -718,6 +770,7 @@ export default function App() {
               >
                 <HistoryPanel
                   commits={commits}
+                  currentBranch={status?.branch ?? null}
                   hasMore={hasMoreCommits}
                   loadingMore={loadingMore}
                   onLoadMore={loadMore}
