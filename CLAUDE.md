@@ -85,6 +85,26 @@ Rust の型は serde でシリアライズされ、TypeScript で消費される
   `invoke("get_log", { repoPath, max })` は `fn get_log(repo_path: String, max:
   usize)` に届く。
 
+### コマンド登録の自動検証
+
+`scripts/check_handlers.py` が `#[tauri::command]` 関数と `generate_handler!` 登録の
+一致を検証する。CI の rust ジョブで自動実行される。手元で確認したい場合:
+
+```bash
+python3 scripts/check_handlers.py
+```
+
+### core 型を変更したときのチェックリスト
+
+CI は `cargo clippy` と `npm run typecheck` で型の整合性を検証するが、
+`serde` の境界を越える型フィールドの追加・削除・改名は静的解析では検出されない。
+`core/` の型（struct・enum のフィールドや variant）を変更した場合は必ず手動で確認:
+
+- `src/api.ts` の対応するインターフェイス・型エイリアスを更新したか
+- 新しいフィールドが `null` になりうる場合、TS 側で `| null` を付けたか
+- `OperationKind` や `ChangeKind` に variant を追加した場合、`api.ts` の型と
+  `App.tsx` の `REFRESH_BY_OP` マップなど switch/条件分岐を更新したか
+
 ## 開発ワークフロー
 
 ```bash
