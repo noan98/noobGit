@@ -55,6 +55,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.config/nextest.toml'
+              - 'scripts/**'
               - '.github/workflows/ci.yml'
 
   frontend:
@@ -149,6 +150,11 @@ jobs:
       # 参照するため、Rustのビルド前にフロントエンドを用意しておく。
       - name: Build frontend (needed for tauri::generate_context!)
         run: npm run build
+
+      # Tauriコマンド登録漏れをPythonスクリプトで検証する。
+      # コンパイル前に実行して早期失敗させる。
+      - name: Tauriコマンド登録漏れチェック
+        run: python3 scripts/check_handlers.py
 
       # clippy は rustc ドライバなので型チェック (cargo check 相当) を内包する。
       # 別途 cargo check を走らせると二重コンパイルになるため clippy に集約。
