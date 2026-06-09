@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { CommitInfo } from "../api";
+import { useEffect, useRef, useState } from "react";
+import type { CommitInfo, LogFilter } from "../api";
 import { EmptyState } from "./EmptyState";
 
 interface Props {
@@ -11,7 +11,15 @@ interface Props {
   onLoadMore: () => void;
   // コミット入力欄へ誘導する（Empty State の「コミットへ」ボタン用）。
   onGoToCommit: () => void;
+  // 検索条件が変わったとき（デバウンス後）に親へ通知して再取得をトリガする。
+  // 条件が空になったら filter は空オブジェクト（条件なし）になる。
+  onSearch: (filter: LogFilter) => void;
+  // 検索（再取得）の実行中かどうか。スピナー表示に使う。
+  searching: boolean;
 }
+
+// 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
+const SEARCH_DEBOUNCE_MS = 300;
 
 // Unix 秒を「N分前」「N時間前」などの相対表記に変換する。
 function formatRelativeTime(unixSeconds: number): string {
@@ -87,20 +95,80 @@ export function HistoryPanel({
   loadingMore,
   onLoadMore,
   onGoToCommit,
+  onSearch,
+  searching,
 }: Props) {
+  // 検索ボックスの入力値。入力のたびに即時反映し、再取得はデバウンスして行う。
+  const [messageQuery, setMessageQuery] = useState("");
+  const [authorQuery, setAuthorQuery] = useState("");
+  // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
+  const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+
+  // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
+  const onSearchRef = useRef(onSearch);
+  useEffect(() => {
+    onSearchRef.current = onSearch;
+  }, [onSearch]);
+
+  // 入力が落ち着いたら（デバウンス後）に親へ条件を通知する。
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const filter: LogFilter = {};
+      const m = messageQuery.trim();
+      const a = authorQuery.trim();
+      if (m) filter.message = m;
+      if (a) filter.author = a;
+      onSearchRef.current(filter);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [messageQuery, authorQuery]);
+
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
+        {searching && (
+          <span className="history-searching" role="status">
+            <span className="network-spinner">🔄</span>検索中…
+          </span>
+        )}
+      </div>
+
+      {/* メッセージ・作者での絞り込み検索。入力は 300ms デバウンスして再取得する。 */}
+      <div className="history-search">
+        <input
+          type="search"
+          className="history-search-input"
+          value={messageQuery}
+          placeholder="メッセージで検索"
+          aria-label="コミットメッセージで検索"
+          onChange={(e) => setMessageQuery(e.target.value)}
+        />
+        <input
+          type="search"
+          className="history-search-input"
+          value={authorQuery}
+          placeholder="作者で検索（名前・メール）"
+          aria-label="作者で検索"
+          onChange={(e) => setAuthorQuery(e.target.value)}
+        />
       </div>
 
       {commits.length === 0 ? (
-        <EmptyState
-          icon="📝"
-          title="まだコミットがありません"
-          description="最初のコミットを作って、変更の記録を始めましょう。"
-          action={{ label: "コミットへ", onClick: onGoToCommit }}
-        />
+        isSearching ? (
+          <EmptyState
+            icon="🔍"
+            title="一致するコミットがありません"
+            description="検索条件を変えるか、入力を消すとすべての履歴に戻ります。"
+          />
+        ) : (
+          <EmptyState
+            icon="📝"
+            title="まだコミットがありません"
+            description="最初のコミットを作って、変更の記録を始めましょう。"
+            action={{ label: "コミットへ", onClick: onGoToCommit }}
+          />
+        )
       ) : (
         <>
           <ul className="commits">

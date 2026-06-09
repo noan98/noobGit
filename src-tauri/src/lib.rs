@@ -10,6 +10,7 @@ use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus, StashInfo,
 };
+use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{identity, ops, repo, undo};
@@ -30,10 +31,20 @@ fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
     repo::branches(&r, &[]).map_err(|e| e.to_string())
 }
 
+/// コミット履歴をページングして返す。`filter` を渡すとメッセージ・作者・日付範囲で
+/// 絞り込む。`filter` が `null`（未指定）のときは従来どおり全件を対象にする。
 #[tauri::command]
-fn get_log(repo_path: String, skip: usize, max: usize) -> Result<Vec<CommitInfo>, String> {
+fn get_log(
+    repo_path: String,
+    skip: usize,
+    max: usize,
+    filter: Option<LogFilter>,
+) -> Result<Vec<CommitInfo>, String> {
     let r = open(&repo_path)?;
-    repo::log_paged(&r, skip, max).map_err(|e| e.to_string())
+    match filter {
+        Some(f) => repo::log_filtered(&r, skip, max, &f).map_err(|e| e.to_string()),
+        None => repo::log_paged(&r, skip, max).map_err(|e| e.to_string()),
+    }
 }
 
 /// 指定ファイルの未ステージ差分（インデックス↔作業ツリー）を返す。

@@ -10,6 +10,7 @@ import {
   type FileDiff,
   type Identity,
   type IdentityScope,
+  type LogFilter,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -141,6 +142,27 @@ export default function App() {
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
 
+  // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
+  const [logFilter, setLogFilter] = useState<LogFilter>({});
+  // 履歴の検索（再取得）中フラグ。HistoryPanel のスピナー表示に使う。
+  const [searching, setSearching] = useState(false);
+
+  // refresh / loadMore のクロージャから常に最新の条件を参照するための ref。
+  const logFilterRef = useRef<LogFilter>({});
+  useEffect(() => {
+    logFilterRef.current = logFilter;
+  }, [logFilter]);
+
+  // 条件が一つでも設定されていれば true（getLog に渡す filter を絞るかの判断に使う）。
+  function hasFilter(f: LogFilter): boolean {
+    return (
+      (f.message != null && f.message !== "") ||
+      (f.author != null && f.author !== "") ||
+      f.since != null ||
+      f.until != null
+    );
+  }
+
   // 現在読み込み済みのコミット件数。再取得時に「もっと見る」で広げた範囲を保つため、
   // クロージャの陳腐化を避けて常に最新値を参照できるよう ref で持つ。
   const loadedCount = useRef(0);
@@ -181,8 +203,11 @@ export default function App() {
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
           const want = Math.max(LOG_PAGE_SIZE, loadedCount.current);
+          // 検索条件があればそれを渡す（無ければ未指定で全件＝従来動作）。
+          const filter = logFilterRef.current;
+          const arg = hasFilter(filter) ? filter : undefined;
           tasks.push(
-            api.getLog(repoPath, 0, want).then((cs) => {
+            api.getLog(repoPath, 0, want, arg).then((cs) => {
               setCommits(cs);
               setHasMoreCommits(cs.length === want);
             }),
@@ -391,12 +416,20 @@ export default function App() {
   }
 
   // 「もっと見る」: 末尾から次のページを読み、現在の一覧に追記する。
+  // 検索条件があれば同じ条件で続きを取得する（条件と無関係なコミットが混ざらない）。
   function loadMore() {
     if (loadingMore || !repoPath) return;
     setLoadingMore(true);
     void (async () => {
       try {
-        const more = await api.getLog(repoPath, commits.length, LOG_PAGE_SIZE);
+        const filter = logFilterRef.current;
+        const arg = hasFilter(filter) ? filter : undefined;
+        const more = await api.getLog(
+          repoPath,
+          commits.length,
+          LOG_PAGE_SIZE,
+          arg,
+        );
         setCommits((prev) => [...prev, ...more]);
         setHasMoreCommits(more.length === LOG_PAGE_SIZE);
         setError(null);
@@ -409,6 +442,43 @@ export default function App() {
       }
     })();
   }
+
+  // 履歴パネルからの検索。条件を保存し、ページングをリセットして先頭から取り直す。
+  // 検索中は HistoryPanel にスピナーを出すため searching を立てる。
+  const runSearch = useCallback(
+    (filter: LogFilter) => {
+      // 条件が変わらないなら何もしない（初回マウント時の空→空の無駄打ちも防ぐ）。
+      const prev = logFilterRef.current;
+      const same =
+        (prev.message ?? "") === (filter.message ?? "") &&
+        (prev.author ?? "") === (filter.author ?? "") &&
+        (prev.since ?? null) === (filter.since ?? null) &&
+        (prev.until ?? null) === (filter.until ?? null);
+      if (same) return;
+      // 新しい条件を即座に ref へ反映（refresh のログ取得が最新条件を見るように）。
+      logFilterRef.current = filter;
+      setLogFilter(filter);
+      if (!repoPath) return;
+      setSearching(true);
+      void (async () => {
+        // ページングはリセットし、先頭ページから取り直す。
+        const arg = hasFilter(filter) ? filter : undefined;
+        try {
+          const cs = await api.getLog(repoPath, 0, LOG_PAGE_SIZE, arg);
+          setCommits(cs);
+          setHasMoreCommits(cs.length === LOG_PAGE_SIZE);
+          setError(null);
+        } catch (e) {
+          const errMsg = String(e);
+          setError(errMsg);
+          showToast(errMsg, "error");
+        } finally {
+          setSearching(false);
+        }
+      })();
+    },
+    [repoPath],
+  );
 
   function doUndo() {
     void exec(async () => {
@@ -592,6 +662,9 @@ export default function App() {
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
+              // 履歴の絞り込みもリセットする。
+              setLogFilter({});
+              logFilterRef.current = {};
               setStashes([]);
               setSelectedFile(null);
               setDiff(null);
@@ -774,6 +847,8 @@ export default function App() {
                   hasMore={hasMoreCommits}
                   loadingMore={loadingMore}
                   onLoadMore={loadMore}
+                  onSearch={runSearch}
+                  searching={searching}
                   onGoToCommit={() => {
                     commitInput.current?.focus();
                     commitInput.current?.scrollIntoView({
