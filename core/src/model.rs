@@ -162,6 +162,28 @@ pub struct CommitInfo {
     pub time: i64,
 }
 
+/// blame（行ごとの最終変更コミット）の1かたまり。
+///
+/// 連続する行が同じコミットで最後に変更された場合、それらをまとめて1つの hunk として返す。
+/// `lines_start` は1始まりの行番号で、`lines_start` から `lines_count` 行ぶんが対象。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlameHunk {
+    /// このかたまりの先頭行番号（1始まり）。
+    pub lines_start: usize,
+    /// このかたまりに含まれる行数。
+    pub lines_count: usize,
+    /// この行を最後に変更したコミットのID（完全な40桁）。
+    pub commit_id: String,
+    /// コミットIDの短縮表示（先頭7桁）。
+    pub short_id: String,
+    /// コミットメッセージの1行目（要約）。
+    pub message_short: String,
+    /// このコミットの著者名。
+    pub author_name: String,
+    /// コミット日時（Unixエポック秒）。
+    pub time: i64,
+}
+
 /// 退避（stash）1件の情報。
 ///
 /// `index` は一覧での位置で、0 がいちばん新しい退避。apply / pop はこの index で指定する。

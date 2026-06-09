@@ -1009,3 +1009,57 @@ textarea {
 .btn-confirm.risk-safe {
   background: var(--safe-emphasis);
 }
+
+/* ---- blame（変更履歴）ビュー ---- */
+.blame-dialog {
+  width: 720px;
+}
+.blame-help {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+.blame-body {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.blame-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.blame-table td {
+  padding: 4px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.blame-row:last-child td {
+  border-bottom: none;
+}
+.blame-commit .sha {
+  color: var(--accent);
+  font-size: 12px;
+  margin-right: 8px;
+}
+.blame-commit .meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blame-author,
+.blame-time {
+  white-space: nowrap;
+}
+.blame-lines {
+  text-align: right;
+  white-space: nowrap;
+}
+.blame-lineno {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}

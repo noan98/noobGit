@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  type BlameHunk,
   type BranchGraph,
   type BranchInfo,
   type CommitInfo,
@@ -33,6 +34,7 @@ import {
   type DiffSource,
 } from "./components/DiffPanel";
 import { IdentityDialog } from "./components/IdentityDialog";
+import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -163,6 +165,12 @@ export default function App() {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
+  // blame（変更履歴）ビュー: 対象パスと、その blame 結果。
+  const [blamePath, setBlamePath] = useState<string | null>(null);
+  const [blameHunks, setBlameHunks] = useState<BlameHunk[] | null>(null);
+  const [blameLoading, setBlameLoading] = useState(false);
+  const [blameError, setBlameError] = useState<string | null>(null);
+
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [showIdentity, setShowIdentity] = useState(false);
@@ -259,6 +267,32 @@ export default function App() {
         : { path, source },
     );
   }, []);
+
+  // ファイルの変更履歴（blame）を開く。取得は補助的なので失敗してもダイアログ内に
+  // エラーを表示するだけで、メインのバナーは汚さない。
+  const openBlame = useCallback(
+    async (path: string) => {
+      if (!repoPath) return;
+      setBlamePath(path);
+      setBlameHunks(null);
+      setBlameError(null);
+      setBlameLoading(true);
+      try {
+        setBlameHunks(await api.getBlame(repoPath, path));
+      } catch (e) {
+        setBlameError(String(e));
+      } finally {
+        setBlameLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  function closeBlame() {
+    setBlamePath(null);
+    setBlameHunks(null);
+    setBlameError(null);
+  }
 
   async function openRepo() {
     if (!repoPath.trim()) return;
@@ -667,6 +701,7 @@ export default function App() {
                       })
                     }
                     onDiscard={doDiscard}
+                    onBlame={(p) => void openBlame(p)}
                   />
                 </motion.div>
               )
@@ -883,6 +918,16 @@ export default function App() {
           affectedFiles={guard.affectedFiles}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {blamePath && (
+        <BlameView
+          path={blamePath}
+          hunks={blameHunks}
+          loading={blameLoading}
+          error={blameError}
+          onClose={closeBlame}
         />
       )}
 
