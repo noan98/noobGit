@@ -811,6 +811,14 @@ textarea {
   white-space: nowrap;
 }
 
+/* ---- file history view ---- */
+/* ファイル別変更履歴モーダル内のコミット一覧。長くなりすぎないようスクロールさせる。 */
+.file-history-commits {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+
 /* ---- confirm dialog ---- */
 .overlay {
   position: fixed;

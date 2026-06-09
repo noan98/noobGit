@@ -18,6 +18,7 @@ import {
 } from "./api";
 import { showToast } from "./components/Toaster";
 import { StatusPanel } from "./components/StatusPanel";
+import { FileHistoryView } from "./components/FileHistoryView";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
@@ -170,6 +171,9 @@ export default function App() {
   const [compareTarget, setCompareTarget] = useState<CommitInfo | null>(null);
   const [commitDiffs, setCommitDiffs] = useState<FileDiff[] | null>(null);
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+
+  // ファイル別変更履歴を表示中の対象パス。null は非表示。
+  const [historyPath, setHistoryPath] = useState<string | null>(null);
 
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -731,6 +735,7 @@ export default function App() {
                       })
                     }
                     onDiscard={doDiscard}
+                    onShowHistory={(p) => setHistoryPath(p)}
                   />
                 </motion.div>
               )
@@ -959,6 +964,14 @@ export default function App() {
           affectedFiles={guard.affectedFiles}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {historyPath && (
+        <FileHistoryView
+          repoPath={repoPath}
+          path={historyPath}
+          onClose={() => setHistoryPath(null)}
         />
       )}
 

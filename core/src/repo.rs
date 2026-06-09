@@ -312,6 +312,61 @@ pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<Commi
     Ok(out)
 }
 
+/// 指定ファイルを変更したコミットだけを新しい順に最大 `max` 件返す（ファイル別履歴）。
+///
+/// 全コミットを時刻順に走査し、各コミットについて「そのコミットのツリー」と「第1親の
+/// ツリー」を `path` に絞って差分（`diff_tree_to_tree`）し、変更（delta）が1件以上ある
+/// コミットだけを集める。親が無い最初のコミットは、そのツリーに `path` が含まれていれば
+/// 対象にする。HEAD が無い（コミット0件）リポジトリは空の `Vec` を返す。
+pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitInfo>> {
+    if repo.head().is_err() {
+        // コミットが1件も無いリポジトリ。
+        return Ok(Vec::new());
+    }
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    revwalk.set_sorting(git2::Sort::TIME)?;
+
+    let mut out = Vec::new();
+    for oid in revwalk {
+        if out.len() >= max {
+            break;
+        }
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let tree = commit.tree()?;
+
+        // このコミットで `path` が変更されたか判定する。
+        let touched = if commit.parent_count() == 0 {
+            // 最初のコミットには親が無いので、ツリーに `path` があれば「追加された」とみなす。
+            tree.get_path(std::path::Path::new(path)).is_ok()
+        } else {
+            let parent_tree = commit.parent(0)?.tree()?;
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut opts))?;
+            diff.deltas().len() > 0
+        };
+
+        if !touched {
+            continue;
+        }
+
+        let author = commit.author();
+        out.push(CommitInfo {
+            id: oid.to_string(),
+            short_id: oid.to_string().chars().take(7).collect(),
+            summary: commit.summary().unwrap_or("").to_string(),
+            author_name: author.name().unwrap_or("").to_string(),
+            author_email: author.email().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
+    }
+
+    Ok(out)
+}
+
 /// 未ステージの変更（インデックス↔作業ツリー）のうち、指定パスの差分を返す。
 ///
 /// 未追跡（新規）ファイルも対象に含め、その中身を「追加行」として表示する。
@@ -770,6 +825,67 @@ mod tests {
         // skip がコミット総数以上なら空。
         assert!(log_paged(&repo, 5, 10).unwrap().is_empty());
         assert!(log_paged(&repo, 99, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn file_log_returns_only_commits_that_touched_the_path() {
+        let fx = TestRepo::new();
+
+        // c1: a.txt を作成。
+        fx.write_file("a.txt", "a1");
+        fx.stage_all();
+        fx.commit("c1: add a");
+
+        // c2: b.txt だけを変更（a.txt は触らない）。
+        fx.write_file("b.txt", "b1");
+        fx.stage_all();
+        fx.commit("c2: add b");
+
+        // c3: a.txt を変更。
+        fx.write_file("a.txt", "a2");
+        fx.stage_all();
+        fx.commit("c3: change a");
+
+        // c4: b.txt を変更。
+        fx.write_file("b.txt", "b2");
+        fx.stage_all();
+        fx.commit("c4: change b");
+
+        let repo = fx.open();
+        // a.txt を触ったのは c1（作成）と c3（変更）だけ。b 系は含まれない。
+        // テストではコミット時刻が同秒になりうるため、特定の並び順は仮定せず
+        // 「対象コミットだけが含まれる」という集合の性質で検証する（log_paged テストと同じ方針）。
+        let a_log = file_log(&repo, "a.txt", 100).unwrap();
+        let mut a_summaries: Vec<&str> = a_log.iter().map(|c| c.summary.as_str()).collect();
+        a_summaries.sort_unstable();
+        assert_eq!(a_summaries, vec!["c1: add a", "c3: change a"]);
+
+        let b_log = file_log(&repo, "b.txt", 100).unwrap();
+        let mut b_summaries: Vec<&str> = b_log.iter().map(|c| c.summary.as_str()).collect();
+        b_summaries.sort_unstable();
+        assert_eq!(b_summaries, vec!["c2: add b", "c4: change b"]);
+    }
+
+    #[test]
+    fn file_log_respects_max_limit() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        // 5 コミットすべてが a.txt を変更しているが、max=2 で 2 件に制限される。
+        let log = file_log(&repo, "a.txt", 2).unwrap();
+        assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn file_log_empty_repo_returns_empty() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(file_log(&repo, "a.txt", 10).unwrap().is_empty());
     }
 
     /// upstream を用意してローカルにクローンし、(一時ディレクトリ, クローン先パス) を返す。
