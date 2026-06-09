@@ -5,6 +5,7 @@ import {
   type BranchGraph,
   type BranchInfo,
   type CommitInfo,
+  type ConflictFile,
   type Explanation,
   type FileChange,
   type FileDiff,
@@ -27,6 +28,7 @@ import {
   BranchPanelSkeleton,
 } from "./components/SkeletonPanels";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ConflictWizard } from "./components/ConflictWizard";
 import {
   DiffPanel,
   type DiffSelection,
@@ -158,6 +160,10 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // コンフリクト中ファイルの詳細（解消ウィザード用）。status.conflicted を補う形で
+  // has_ancestor 等の情報を持つ。status の再取得に合わせて取り直す。
+  const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+
   // 差分プレビュー: 選択中ファイルと、その差分。
   const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
@@ -250,6 +256,27 @@ export default function App() {
   useEffect(() => {
     void loadDiff(selectedFile);
   }, [selectedFile, status, loadDiff]);
+
+  // status にコンフリクトがあれば、その詳細（has_ancestor 等）を取り直す。
+  // 取得失敗はベストエフォートで無視（ウィザードを出さないだけ）。
+  useEffect(() => {
+    if (!repoPath || !status || status.conflicted.length === 0) {
+      setConflicts([]);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getConflicts(repoPath)
+      .then((cs) => {
+        if (!cancelled) setConflicts(cs);
+      })
+      .catch(() => {
+        if (!cancelled) setConflicts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, status]);
 
   // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
   const selectFile = useCallback((path: string, source: DiffSource) => {
@@ -456,6 +483,18 @@ export default function App() {
       },
       branch,
       true, // networkOp
+    );
+  }
+
+  // コンフリクトを「解消済み」としてマークする（解消した内容をステージ）。
+  // ステージ相当の安全操作なので確認ダイアログは挟まず、status を取り直す。
+  function doMarkResolved(path: string) {
+    void exec(
+      async () => {
+        await api.markResolved(repoPath, path);
+        showToast(`「${path}」を解消済みにしました。`, "success");
+      },
+      { refresh: REFRESH_BY_OP.stage },
     );
   }
 
@@ -672,6 +711,19 @@ export default function App() {
               )
             )}
           </AnimatePresence>
+
+          {conflicts.length > 0 && (
+            <ConflictWizard
+              conflicts={conflicts}
+              selectedPath={
+                selectedFile?.source === "conflicted"
+                  ? selectedFile.path
+                  : null
+              }
+              onSelect={(p) => selectFile(p, "conflicted")}
+              onMarkResolved={doMarkResolved}
+            />
+          )}
 
           <DiffPanel
             selection={selectedFile}

@@ -39,6 +39,28 @@ pub fn stage_path(repo: &Repository, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// コンフリクトを解消したファイルを「解消済み」としてマークする。
+///
+/// 解消した内容（作業ツリーの当該ファイル）をインデックスに載せると、libgit2 は
+/// そのパスの conflict エントリ（stage 1/2/3）を取り除いて通常のステージ済み
+/// （stage 0）に置き換える。これがコンフリクト解消マークの実体。ファイルが消えて
+/// いる（削除で解消した）場合はインデックスから取り除く。マーク後はそのまま
+/// コミットへ進める。undo は通常のステージと同じ扱いなので記録しない。
+pub fn mark_resolved(repo: &Repository, path: &str) -> Result<()> {
+    let mut index = repo.index()?;
+    let exists = repo
+        .workdir()
+        .map(|w| w.join(path).exists())
+        .unwrap_or(false);
+    if exists {
+        index.add_path(Path::new(path))?;
+    } else {
+        index.remove_path(Path::new(path))?;
+    }
+    index.write()?;
+    Ok(())
+}
+
 /// 指定パスのステージを解除する（変更内容は保持）。
 pub fn unstage(repo: &Repository, path: &str) -> Result<()> {
     match repo.head() {
@@ -1619,5 +1641,64 @@ mod tests {
         let st = status(&repo).unwrap();
         assert!(st.staged.is_empty());
         assert_eq!(st.unstaged.len(), 1);
+    }
+
+    /// `a.txt` がコンフリクト中になった一時リポジトリを作る（main を other にマージ）。
+    fn repo_with_conflict() -> TestRepo {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        let base_oid = fx.commit("base");
+
+        let repo = fx.open();
+        let base_commit = repo.find_commit(base_oid).unwrap();
+        repo.branch("other", &base_commit, false).unwrap();
+
+        // main 側の変更。
+        fx.write_file("a.txt", "main side\n");
+        fx.stage_all();
+        let main_oid = fx.commit("main change");
+
+        // other へ切り替えて別の変更。
+        let repo = fx.open();
+        let obj = repo.revparse_single("refs/heads/other").unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.force();
+        repo.checkout_tree(&obj, Some(&mut co)).unwrap();
+        repo.set_head("refs/heads/other").unwrap();
+
+        fx.write_file("a.txt", "other side\n");
+        fx.stage_all();
+        fx.commit("other change");
+
+        // main を other にマージしてコンフリクトさせる。
+        let repo = fx.open();
+        let main_commit = repo.find_commit(main_oid).unwrap();
+        let annotated = repo.find_annotated_commit(main_commit.id()).unwrap();
+        repo.merge(&[&annotated], None, None).unwrap();
+
+        fx
+    }
+
+    #[test]
+    fn mark_resolved_clears_conflict_and_stages() {
+        use crate::repo::get_conflicts;
+
+        let fx = repo_with_conflict();
+        let repo = fx.open();
+        // 最初はコンフリクト中。
+        assert_eq!(get_conflicts(&repo).unwrap().len(), 1);
+
+        // 競合の目印を取り除いて解消した想定の内容を書き込む。
+        fx.write_file("a.txt", "resolved\n");
+        let repo = fx.open();
+        mark_resolved(&repo, "a.txt").unwrap();
+
+        let repo = fx.open();
+        // コンフリクトが消え、解消済みのファイルがステージされている。
+        assert!(get_conflicts(&repo).unwrap().is_empty());
+        let st = status(&repo).unwrap();
+        assert!(st.conflicted.is_empty());
+        assert!(st.staged.iter().any(|f| f.path == "a.txt"));
     }
 }

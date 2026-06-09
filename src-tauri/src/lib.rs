@@ -8,7 +8,8 @@ use git2::Repository;
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus, StashInfo,
+    BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileDiff, PullOutcome,
+    RepoStatus, StashInfo,
 };
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
@@ -55,6 +56,20 @@ fn get_diff_staged(repo_path: String, path: String) -> Result<FileDiff, String> 
 fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String> {
     let r = open(&repo_path)?;
     repo::diff_conflict(&r, &path).map_err(|e| e.to_string())
+}
+
+/// コンフリクト中のファイル一覧を返す（解消ウィザード用）。
+#[tauri::command]
+fn get_conflicts(repo_path: String) -> Result<Vec<ConflictFile>, String> {
+    let r = open(&repo_path)?;
+    repo::get_conflicts(&r).map_err(|e| e.to_string())
+}
+
+/// 指定ファイルのコンフリクトを「解消済み」としてマークする（解消した内容をステージ）。
+#[tauri::command]
+fn mark_resolved(repo_path: String, path: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::mark_resolved(&r, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -244,6 +259,8 @@ pub fn run() {
             get_diff_unstaged,
             get_diff_staged,
             get_diff_conflict,
+            get_conflicts,
+            mark_resolved,
             get_branch_graph,
             explain_operation,
             assess_operation,
