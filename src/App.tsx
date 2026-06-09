@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  type BlameHunk,
   type BranchGraph,
   type BranchInfo,
   type CommitInfo,
@@ -35,6 +36,7 @@ import {
 } from "./components/DiffPanel";
 import { IdentityDialog } from "./components/IdentityDialog";
 import { CommitDiffViewer } from "./components/CommitDiffViewer";
+import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -175,6 +177,12 @@ export default function App() {
   // ファイル別変更履歴を表示中の対象パス。null は非表示。
   const [historyPath, setHistoryPath] = useState<string | null>(null);
 
+  // blame（変更履歴）ビュー: 対象パスと、その blame 結果。
+  const [blamePath, setBlamePath] = useState<string | null>(null);
+  const [blameHunks, setBlameHunks] = useState<BlameHunk[] | null>(null);
+  const [blameLoading, setBlameLoading] = useState(false);
+  const [blameError, setBlameError] = useState<string | null>(null);
+
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [showIdentity, setShowIdentity] = useState(false);
@@ -295,6 +303,26 @@ export default function App() {
     [repoPath],
   );
 
+  // ファイルの変更履歴（blame）を開く。取得は補助的なので失敗してもダイアログ内に
+  // エラーを表示するだけで、メインのバナーは汚さない。
+  const openBlame = useCallback(
+    async (path: string) => {
+      if (!repoPath) return;
+      setBlamePath(path);
+      setBlameHunks(null);
+      setBlameError(null);
+      setBlameLoading(true);
+      try {
+        setBlameHunks(await api.getBlame(repoPath, path));
+      } catch (e) {
+        setBlameError(String(e));
+      } finally {
+        setBlameLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
   // 履歴から比較対象を選ぶ。1 つ目で base を選択（target 待ち）、2 つ目で target を
   // 確定して差分を取得する。base をもう一度押すと選択を解除する。
   const onCompareSelect = useCallback(
@@ -324,6 +352,12 @@ export default function App() {
     setCompareTarget(null);
     setCommitDiffs(null);
   }, []);
+
+  function closeBlame() {
+    setBlamePath(null);
+    setBlameHunks(null);
+    setBlameError(null);
+  }
 
   async function openRepo() {
     if (!repoPath.trim()) return;
@@ -736,6 +770,7 @@ export default function App() {
                     }
                     onDiscard={doDiscard}
                     onShowHistory={(p) => setHistoryPath(p)}
+                    onBlame={(p) => void openBlame(p)}
                   />
                 </motion.div>
               )
@@ -972,6 +1007,16 @@ export default function App() {
           repoPath={repoPath}
           path={historyPath}
           onClose={() => setHistoryPath(null)}
+        />
+      )}
+
+      {blamePath && (
+        <BlameView
+          path={blamePath}
+          hunks={blameHunks}
+          loading={blameLoading}
+          error={blameError}
+          onClose={closeBlame}
         />
       )}
 

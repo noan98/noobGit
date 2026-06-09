@@ -59,6 +59,18 @@ export interface FileDiff {
   lines: DiffLine[];
 }
 
+// blame（行ごとの最終変更コミット）の1かたまり。
+// lines_start は1始まりの行番号で、そこから lines_count 行ぶんが対象。
+export interface BlameHunk {
+  lines_start: number;
+  lines_count: number;
+  commit_id: string;
+  short_id: string;
+  message_short: string;
+  author_name: string;
+  time: number;
+}
+
 export interface BranchRelation {
   name: string;
   is_current: boolean;
@@ -180,6 +192,8 @@ export const api = {
   // 2 つのコミット間の差分。fromOid が null なら toOid の第1親との比較になる。
   getDiffBetween: (repoPath: string, fromOid: string | null, toOid: string) =>
     invoke<FileDiff[]>("get_diff_between", { repoPath, fromOid, toOid }),
+  getBlame: (repoPath: string, path: string) =>
+    invoke<BlameHunk[]>("get_blame", { repoPath, path }),
   getBranchGraph: (repoPath: string) =>
     invoke<BranchGraph>("get_branch_graph", { repoPath }),
 

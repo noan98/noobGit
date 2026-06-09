@@ -2,8 +2,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, DiffLine, DiffLineKind,
-    FileChange, FileDiff, LikelyBase, RepoStatus,
+    BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, DiffLine,
+    DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus,
 };
 use crate::safety::is_protected;
 
@@ -739,6 +739,48 @@ pub fn diff_conflict(repo: &Repository, path: &str) -> Result<FileDiff> {
     })
 }
 
+/// 指定ファイルの blame（各行を最後に変更したコミット）を行のかたまり単位で返す。
+///
+/// `git blame` 相当。連続する行が同じコミットで最後に変更された場合はまとめて1つの
+/// hunk になる。`path` は作業ツリー内の相対パス。ファイルが存在しない・コミットが
+/// 1件も無い・バイナリ等の場合は日本語エラーを返す。
+pub fn blame_file(repo: &Repository, path: &str) -> Result<Vec<BlameHunk>> {
+    // 作業ツリー外を指す相対パスは扱わない（安全のため）。
+    let rel = std::path::Path::new(path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
+    }
+
+    let blame = repo.blame_file(rel, None).map_err(|e| {
+        CoreError::Git(format!(
+            "ファイル「{path}」の変更履歴（blame）を取得できませんでした: {}",
+            e.message()
+        ))
+    })?;
+
+    let mut out = Vec::with_capacity(blame.len());
+    for hunk in blame.iter() {
+        let oid = hunk.final_commit_id();
+        let commit = repo.find_commit(oid)?;
+        let author = commit.author();
+        out.push(BlameHunk {
+            lines_start: hunk.final_start_line(),
+            lines_count: hunk.lines_in_hunk(),
+            commit_id: oid.to_string(),
+            short_id: oid.to_string().chars().take(7).collect(),
+            message_short: commit.summary().unwrap_or("").to_string(),
+            author_name: author.name().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1455,5 +1497,74 @@ mod tests {
         let repo = fx.open();
         assert!(diff_conflict(&repo, "../secret.txt").is_err());
         assert!(diff_conflict(&repo, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn blame_file_returns_multiple_hunks_for_two_commits() {
+        let fx = TestRepo::new();
+        // 1回目: 3行のファイルを作る。
+        fx.write_file("a.txt", "line1\nline2\nline3\n");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+
+        // 2回目: 真ん中の行だけを変更する。先頭・末尾は c1 のまま残る。
+        fx.write_file("a.txt", "line1\nCHANGED\nline3\n");
+        fx.stage_all();
+        let c2 = fx.commit("c2");
+
+        let repo = fx.open();
+        let hunks = blame_file(&repo, "a.txt").unwrap();
+
+        // 変更されていない行と変更された行で、別々の hunk に分かれる。
+        assert!(
+            hunks.len() >= 2,
+            "複数の hunk が返るはず: {} 件",
+            hunks.len()
+        );
+
+        // 全行ぶんがちょうど覆われている（行番号は1始まりで連続）。
+        let total: usize = hunks.iter().map(|h| h.lines_count).sum();
+        assert_eq!(total, 3);
+        let mut next = 1usize;
+        for h in &hunks {
+            assert_eq!(h.lines_start, next);
+            next += h.lines_count;
+            // commit_id は妥当（c1 か c2 のいずれか）で、short_id はその先頭7桁。
+            assert!(h.commit_id == c1.to_string() || h.commit_id == c2.to_string());
+            assert_eq!(h.short_id, &h.commit_id[..7]);
+            assert!(!h.message_short.is_empty());
+            assert_eq!(h.author_name, "Test User");
+        }
+
+        // 真ん中の行（2行目）を覆う hunk は c2、それ以外の行は c1 が担当する。
+        let owner = |lineno: usize| -> &str {
+            &hunks
+                .iter()
+                .find(|h| lineno >= h.lines_start && lineno < h.lines_start + h.lines_count)
+                .unwrap()
+                .commit_id
+        };
+        assert_eq!(owner(1), c1.to_string());
+        assert_eq!(owner(2), c2.to_string());
+        assert_eq!(owner(3), c1.to_string());
+    }
+
+    #[test]
+    fn blame_file_missing_path_errors() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        assert!(blame_file(&repo, "does-not-exist.txt").is_err());
+    }
+
+    #[test]
+    fn blame_file_rejects_path_traversal() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(blame_file(&repo, "../secret.txt").is_err());
+        assert!(blame_file(&repo, "/etc/passwd").is_err());
     }
 }

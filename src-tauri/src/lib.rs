@@ -8,7 +8,8 @@ use git2::Repository;
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome, RepoStatus, StashInfo,
+    BlameHunk, BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome,
+    RepoStatus, StashInfo,
 };
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
@@ -75,6 +76,13 @@ fn get_diff_between(
 ) -> Result<Vec<FileDiff>, String> {
     let r = open(&repo_path)?;
     repo::diff_commits(&r, from_oid.as_deref(), &to_oid).map_err(|e| e.to_string())
+}
+
+/// 指定ファイルの blame（各行を最後に変更したコミット）を返す。
+#[tauri::command]
+fn get_blame(repo_path: String, path: String) -> Result<Vec<BlameHunk>, String> {
+    let r = open(&repo_path)?;
+    repo::blame_file(&r, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -266,6 +274,7 @@ pub fn run() {
             get_diff_staged,
             get_diff_conflict,
             get_diff_between,
+            get_blame,
             get_branch_graph,
             explain_operation,
             assess_operation,
