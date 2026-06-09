@@ -275,6 +275,67 @@ fn pick_likely_base(mut candidates: Vec<(String, usize, usize)>) -> Option<Likel
     })
 }
 
+/// コミット履歴の絞り込み条件。すべて任意で、`None` の項目は条件として使わない。
+///
+/// `message` はコミットのメッセージ（件名・本文）への部分一致（大文字小文字無視）、
+/// `author` は author の名前またはメールアドレスへの部分一致（大文字小文字無視）、
+/// `since` / `until` はコミット時刻（Unix エポック秒）の下限・上限（両端を含む）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LogFilter {
+    /// メッセージに含まれていてほしい文字列（部分一致・大文字小文字無視）。
+    pub message: Option<String>,
+    /// author 名またはメールに含まれていてほしい文字列（部分一致・大文字小文字無視）。
+    pub author: Option<String>,
+    /// この時刻（Unix エポック秒）以降のコミットだけを残す（その時刻を含む）。
+    pub since: Option<i64>,
+    /// この時刻（Unix エポック秒）以前のコミットだけを残す（その時刻を含む）。
+    pub until: Option<i64>,
+}
+
+impl LogFilter {
+    /// 条件が一つも設定されていない（＝全件素通し）かどうか。
+    fn is_empty(&self) -> bool {
+        self.message.is_none()
+            && self.author.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
+    }
+
+    /// 与えられたコミットがこの条件をすべて満たすか判定する。
+    fn matches(&self, commit: &git2::Commit) -> bool {
+        if let Some(needle) = &self.message {
+            let needle = needle.to_lowercase();
+            // 件名だけでなく本文も対象にする（message() は件名＋本文を含む）。
+            let haystack = commit.message().unwrap_or("").to_lowercase();
+            if !haystack.contains(&needle) {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.author {
+            let needle = needle.to_lowercase();
+            let author = commit.author();
+            let name = author.name().unwrap_or("").to_lowercase();
+            let email = author.email().unwrap_or("").to_lowercase();
+            if !name.contains(&needle) && !email.contains(&needle) {
+                return false;
+            }
+        }
+        let time = commit.time().seconds();
+        if let Some(since) = self.since {
+            if time < since {
+                return false;
+            }
+        }
+        if let Some(until) = self.until {
+            if time > until {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// 直近 `max` 件のコミット履歴を新しい順に返す。
 pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
     log_paged(repo, 0, max)
@@ -285,6 +346,21 @@ pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
 /// 履歴パネルの「もっと見る」のような追記読み込み（ページング）に使う。
 /// `skip` がコミット総数を超える場合は空のベクタを返す。
 pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<CommitInfo>> {
+    log_filtered(repo, skip, max, &LogFilter::default())
+}
+
+/// 条件で絞り込んだコミット履歴を、新しい順に `skip` 件飛ばして `max` 件返す。
+///
+/// `Revwalk` で履歴を新しい順にたどり、`filter` を通過したコミットだけを対象に
+/// `skip` / `max`（ページング）を適用する（＝クライアント側フィルタ）。`filter` に
+/// 条件が一つも無いときは [`log_paged`] と同じ結果になり、後方互換を保つ。
+/// `skip` が条件通過後の総数を超える場合は空のベクタを返す。
+pub fn log_filtered(
+    repo: &Repository,
+    skip: usize,
+    max: usize,
+    filter: &LogFilter,
+) -> Result<Vec<CommitInfo>> {
     if repo.head().is_err() {
         // コミットが1件も無いリポジトリ。
         return Ok(Vec::new());
@@ -294,10 +370,21 @@ pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<Commi
     revwalk.push_head()?;
     revwalk.set_sorting(git2::Sort::TIME)?;
 
+    let no_filter = filter.is_empty();
     let mut out = Vec::new();
-    for oid in revwalk.skip(skip).take(max) {
+    let mut skipped = 0usize;
+    for oid in revwalk {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
+        // 条件を満たさないコミットは skip にも max にも数えない。
+        if !no_filter && !filter.matches(&commit) {
+            continue;
+        }
+        // 条件通過分のうち、先頭 `skip` 件を読み飛ばす。
+        if skipped < skip {
+            skipped += 1;
+            continue;
+        }
         let author = commit.author();
         out.push(CommitInfo {
             id: oid.to_string(),
@@ -307,6 +394,9 @@ pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<Commi
             author_email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
         });
+        if out.len() >= max {
+            break;
+        }
     }
 
     Ok(out)
@@ -928,6 +1018,115 @@ mod tests {
         let fx = TestRepo::new();
         let repo = fx.open();
         assert!(file_log(&repo, "a.txt", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn log_filtered_empty_matches_log_paged() {
+        // 条件なしのフィルタは log_paged と完全に同じ結果（後方互換）。
+        let fx = TestRepo::new();
+        for i in 0..4 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        let paged: Vec<String> = log_paged(&repo, 0, 100)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let filtered: Vec<String> = log_filtered(&repo, 0, 100, &LogFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(paged, filtered);
+
+        // ページング（skip/max）も条件なしなら一致する。
+        let paged_page: Vec<String> = log_paged(&repo, 1, 2)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let filtered_page: Vec<String> = log_filtered(&repo, 1, 2, &LogFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(paged_page, filtered_page);
+    }
+
+    #[test]
+    fn log_filtered_by_message_substring() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("ログイン画面を追加");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("バグを修正");
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("ログアウト処理を追加");
+
+        let repo = fx.open();
+        // 「ログ」を含む 2 件だけが残る。
+        let filter = LogFilter {
+            message: Some("ログ".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|c| c.summary.contains("ログ")));
+
+        // 大文字小文字を無視して英字も部分一致する。
+        let filter = LogFilter {
+            message: Some("BUG".to_string()),
+            ..Default::default()
+        };
+        // 日本語の件名には "BUG" は無いので 0 件。
+        assert!(log_filtered(&repo, 0, 100, &filter).unwrap().is_empty());
+    }
+
+    #[test]
+    fn log_filtered_by_author() {
+        use crate::ops::{commit, stage_all};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // 既定の author（TestRepo の identity）
+
+        // author を切り替えて 2 件目を積む。
+        let repo = fx.open();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Alice Example").unwrap();
+            cfg.set_str("user.email", "alice@example.com").unwrap();
+        }
+        std::fs::write(fx.path().join("a.txt"), "2").unwrap();
+        stage_all(&repo).unwrap();
+        commit(&repo, "c2").unwrap();
+
+        let repo = fx.open();
+        // 名前の一部「alice」で 1 件に絞れる（大文字小文字無視）。
+        let filter = LogFilter {
+            author: Some("ALICE".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].author_name, "Alice Example");
+
+        // メールアドレスの一部でも絞れる。
+        let filter = LogFilter {
+            author: Some("alice@example".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].author_email, "alice@example.com");
     }
 
     /// upstream を用意してローカルにクローンし、(一時ディレクトリ, クローン先パス) を返す。

@@ -42,6 +42,17 @@ export interface CommitInfo {
   time: number;
 }
 
+// コミット履歴の絞り込み条件。すべて任意で、未指定の項目は条件として使わない。
+// message はメッセージ（件名・本文）への部分一致、author は作者名/メールへの
+// 部分一致（どちらも大文字小文字を無視）、since/until はコミット時刻
+// （Unix エポック秒）の下限・上限（両端を含む）。
+export interface LogFilter {
+  message?: string;
+  author?: string;
+  since?: number;
+  until?: number;
+}
+
 export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
 
 export interface DiffLine {
@@ -179,8 +190,14 @@ export const api = {
     invoke<RepoStatus>("get_status", { repoPath }),
   getBranches: (repoPath: string) =>
     invoke<BranchInfo[]>("get_branches", { repoPath }),
-  getLog: (repoPath: string, skip: number, max: number) =>
-    invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  // filter を省略すると従来どおり全件を対象にする（後方互換）。
+  getLog: (repoPath: string, skip: number, max: number, filter?: LogFilter) =>
+    invoke<CommitInfo[]>("get_log", {
+      repoPath,
+      skip,
+      max,
+      filter: filter ?? null,
+    }),
   getFileLog: (repoPath: string, path: string, max: number) =>
     invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>

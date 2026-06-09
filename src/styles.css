@@ -411,6 +411,26 @@ textarea {
   color: var(--muted);
   margin: 12px 0 6px;
 }
+
+/* 履歴の検索バー（メッセージ・作者の絞り込み）。 */
+.history-search {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.history-search-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+/* 「検索中…」インジケータ。見出し横に小さく出す。 */
+.history-searching {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .empty {
   color: var(--muted);
   font-size: 13px;
