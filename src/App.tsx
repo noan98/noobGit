@@ -916,6 +916,12 @@ export default function App() {
             selection={selectedFile}
             diff={diff}
             loading={diffLoading}
+            onStageHunk={(hunkHeader) =>
+              void exec(
+                () => api.stageHunk(repoPath, selectedFile!.path, hunkHeader),
+                { refresh: REFRESH_BY_OP.stage },
+              )
+            }
           />
 
           <div className="panel commit-box">

@@ -536,6 +536,19 @@ textarea {
 .diff-hunk .diff-content {
   color: var(--accent);
 }
+/* hunk ヘッダー行に「この塊だけステージ」ボタンを並べる。 */
+.diff-hunk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.diff-hunk-header {
+  flex: 1 1 auto;
+}
+.diff-hunk-stage {
+  flex: 0 0 auto;
+}
 .diff-conflict-marker {
   background: var(--caution-bg);
   font-weight: 600;

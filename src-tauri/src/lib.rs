@@ -157,6 +157,13 @@ fn stage_path(repo_path: String, path: String) -> Result<(), String> {
     ops::stage_path(&r, &path).map_err(|e| e.to_string())
 }
 
+/// 指定ファイルの差分のうち、`hunk_header` に一致する塊（hunk）だけをステージする。
+#[tauri::command]
+fn stage_hunk(repo_path: String, file_path: String, hunk_header: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::stage_hunk(&r, &file_path, &hunk_header).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn unstage(repo_path: String, path: String) -> Result<(), String> {
     let r = open(&repo_path)?;
@@ -314,6 +321,7 @@ pub fn run() {
             assess_operation,
             stage_all,
             stage_path,
+            stage_hunk,
             unstage,
             commit,
             amend_commit,

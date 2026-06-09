@@ -26,6 +26,9 @@ pub enum UndoAction {
     /// 退避（stash）を取り消す。記録時の退避コミットを `id` で探して pop（取り出し）する。
     /// 該当 id が見つからない（すでに取り出し済み）なら何もしない（冪等）。
     PopStash { id: String },
+    /// 指定パスのステージを解除する（変更内容は保持）。hunk 単位のステージの取り消しに使う。
+    /// HEAD があれば HEAD からそのパスを index に戻し、無ければ index から取り除く（冪等）。
+    UnstagePath { path: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -158,6 +161,25 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             // 見つかったときだけ pop する。無ければ取り出し済みとみなし何もしない（冪等）。
             if let Some(index) = found {
                 r.stash_pop(index, None)?;
+            }
+        }
+        UndoAction::UnstagePath { path } => {
+            // ops::unstage と同じロジックを undo 側で再現する（冪等）。
+            // HEAD があればそのパスを HEAD の内容で index に戻し、無ければ index から取り除く。
+            let p = std::path::Path::new(path);
+            match repo.head() {
+                Ok(head) => {
+                    let commit = head.peel_to_commit()?;
+                    repo.reset_default(Some(commit.as_object()), [p])?;
+                }
+                Err(_) => {
+                    // まだコミットが無い（未誕生ブランチ）。index に載っていれば外す。
+                    let mut index = repo.index()?;
+                    if index.get_path(p, 0).is_some() {
+                        index.remove_path(p)?;
+                        index.write()?;
+                    }
+                }
             }
         }
     }
