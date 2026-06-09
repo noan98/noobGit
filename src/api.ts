@@ -169,6 +169,8 @@ export const api = {
     invoke<BranchInfo[]>("get_branches", { repoPath }),
   getLog: (repoPath: string, skip: number, max: number) =>
     invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  getFileLog: (repoPath: string, path: string, max: number) =>
+    invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
   getDiffStaged: (repoPath: string, path: string) =>

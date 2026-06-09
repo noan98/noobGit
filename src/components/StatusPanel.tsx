@@ -27,6 +27,8 @@ interface Props {
   onUnstage: (path: string) => void;
   onDiscard: (path: string) => void;
   onSelect: (path: string, source: DiffSource) => void;
+  // このファイルの変更履歴（ファイル別 log）を表示する。
+  onShowHistory: (path: string) => void;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -218,6 +220,7 @@ export function StatusPanel({
   onUnstage,
   onDiscard,
   onSelect,
+  onShowHistory,
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -263,6 +266,17 @@ export function StatusPanel({
                     className="link"
                     onClick={(e) => {
                       e.stopPropagation();
+                      onShowHistory(f.path);
+                    }}
+                    title="このファイルを変更したコミットの履歴を表示します"
+                    style={{ marginLeft: "6px" }}
+                  >
+                    変更履歴
+                  </button>
+                  <button
+                    className="link"
+                    onClick={(e) => {
+                      e.stopPropagation();
                       onUnstage(f.path);
                     }}
                     title="コミット対象から外します（変更は残ります）"
@@ -289,6 +303,17 @@ export function StatusPanel({
               actions={
                 <>
                   <StatusBadge kind={f.kind} />
+                  <button
+                    className="link"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onShowHistory(f.path);
+                    }}
+                    title="このファイルを変更したコミットの履歴を表示します"
+                    style={{ marginLeft: "6px" }}
+                  >
+                    変更履歴
+                  </button>
                   <button
                     className="link"
                     onClick={(e) => {

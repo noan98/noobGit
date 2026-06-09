@@ -36,6 +36,13 @@ fn get_log(repo_path: String, skip: usize, max: usize) -> Result<Vec<CommitInfo>
     repo::log_paged(&r, skip, max).map_err(|e| e.to_string())
 }
 
+/// 指定ファイルを変更したコミットを新しい順に最大 `max` 件返す（ファイル別履歴）。
+#[tauri::command]
+fn get_file_log(repo_path: String, path: String, max: usize) -> Result<Vec<CommitInfo>, String> {
+    let r = open(&repo_path)?;
+    repo::file_log(&r, &path, max).map_err(|e| e.to_string())
+}
+
 /// 指定ファイルの未ステージ差分（インデックス↔作業ツリー）を返す。
 #[tauri::command]
 fn get_diff_unstaged(repo_path: String, path: String) -> Result<FileDiff, String> {
@@ -241,6 +248,7 @@ pub fn run() {
             get_status,
             get_branches,
             get_log,
+            get_file_log,
             get_diff_unstaged,
             get_diff_staged,
             get_diff_conflict,
