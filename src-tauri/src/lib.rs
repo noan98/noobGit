@@ -8,8 +8,8 @@ use git2::Repository;
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BlameHunk, BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileDiff, PullOutcome,
-    RepoStatus, StashInfo,
+    BlameHunk, BranchGraph, BranchInfo, CommitInfo, FetchOutcome, FileChange, FileDiff,
+    PullOutcome, RepoStatus, StashInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -197,6 +197,13 @@ fn get_stashes(repo_path: String) -> Result<Vec<StashInfo>, String> {
     ops::stash_list(&mut r).map_err(|e| e.to_string())
 }
 
+/// 指定 index の退避に含まれる変更ファイル一覧を返す（退避は適用しない安全な操作）。
+#[tauri::command]
+fn stash_diff(repo_path: String, index: usize) -> Result<Vec<FileChange>, String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_diff(&mut r, index).map_err(|e| e.to_string())
+}
+
 /// 現在の identity（user.name / user.email）を取得する。初回セットアップ案内に使う。
 #[tauri::command]
 fn get_identity(repo_path: String) -> Result<Identity, String> {
@@ -299,6 +306,7 @@ pub fn run() {
             stash_apply,
             stash_pop,
             get_stashes,
+            stash_diff,
             get_identity,
             set_identity,
             create_branch,

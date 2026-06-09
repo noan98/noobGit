@@ -8,7 +8,7 @@ use git2::{
 };
 
 use crate::error::{CoreError, Result};
-use crate::model::{CommitInfo, FetchOutcome, PullOutcome, StashInfo};
+use crate::model::{ChangeKind, CommitInfo, FetchOutcome, FileChange, PullOutcome, StashInfo};
 use crate::repo::current_branch;
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
@@ -295,18 +295,111 @@ pub fn stash_pop(repo: &mut Repository, index: usize) -> Result<()> {
     repo.stash_pop(index, None).map_err(map_stash_restore_err)
 }
 
-/// 退避の一覧を返す（0 がいちばん新しい退避）。
+/// 退避の一覧を返す（0 がいちばん新しい退避）。各退避の変更ファイル数も付ける。
 pub fn stash_list(repo: &mut Repository) -> Result<Vec<StashInfo>> {
-    let mut out = Vec::new();
+    // stash_foreach の最中は repo を借用するため、まず (index, message, id) を集める。
+    let mut raw = Vec::new();
     repo.stash_foreach(|index, message, id| {
-        out.push(StashInfo {
-            index,
-            message: message.to_string(),
-            id: id.to_string(),
-        });
+        raw.push((index, message.to_string(), *id));
         true
     })?;
+
+    // 退避ごとに、退避コミットと base（第1親）のツリーを比較して変更ファイル数を数える。
+    let mut out = Vec::with_capacity(raw.len());
+    for (index, message, id) in raw {
+        let file_count = stash_changed_files(repo, id)?.len();
+        out.push(StashInfo {
+            index,
+            message,
+            id: id.to_string(),
+            file_count,
+        });
+    }
     Ok(out)
+}
+
+/// 指定 index の退避に含まれる変更ファイルの一覧（パスと変更種別）を返す。
+///
+/// 退避コミットのツリーと base（第1親）のツリーを比較して求めるだけで、退避を作業ツリーへ
+/// 適用しない非破壊・安全な操作。
+pub fn stash_diff(repo: &mut Repository, stash_index: usize) -> Result<Vec<FileChange>> {
+    // index から退避コミットの OID を引く。
+    let mut found: Option<git2::Oid> = None;
+    repo.stash_foreach(|index, _message, id| {
+        if index == stash_index {
+            found = Some(*id);
+            false // 見つかったので走査を止める。
+        } else {
+            true
+        }
+    })?;
+    let oid = found.ok_or_else(|| {
+        CoreError::InvalidInput("指定した退避が見つかりませんでした。".to_string())
+    })?;
+
+    stash_changed_files(repo, oid)
+}
+
+/// 退避コミット（`oid`）の変更ファイル一覧を返す。
+///
+/// stash コミットの第1親が base（退避時点の HEAD）。退避コミットのツリーと base のツリーを
+/// 比較して、追跡ファイルの変更を求める。未追跡ファイルを含めて退避した場合は、それらは
+/// 第3親（untracked コミット）のツリーに収まっているので、空ツリーとの比較で「追加」として
+/// 拾う。いずれもツリー比較だけで求め、退避を作業ツリーへ適用しない非破壊な操作。
+fn stash_changed_files(repo: &Repository, oid: git2::Oid) -> Result<Vec<FileChange>> {
+    let stash_commit = repo.find_commit(oid)?;
+    let stash_tree = stash_commit.tree()?;
+    // 第1親が base（退避時点の HEAD）。親が無い（未誕生 base）場合は空ツリーと比較する。
+    let base_tree = match stash_commit.parent(0) {
+        Ok(parent) => Some(parent.tree()?),
+        Err(_) => None,
+    };
+
+    let mut out = Vec::new();
+
+    // 追跡ファイルの変更（base ↔ 退避ツリー）。
+    let diff = repo.diff_tree_to_tree(base_tree.as_ref(), Some(&stash_tree), None)?;
+    for delta in diff.deltas() {
+        out.push(delta_to_file_change(&delta));
+    }
+
+    // 未追跡ファイル: INCLUDE_UNTRACKED で退避すると第3親（index 2）に untracked コミットが
+    // 付く。その内容（空ツリーとの差分＝すべて追加）を拾う。第3親が無ければ未追跡は無い。
+    if let Ok(untracked_commit) = stash_commit.parent(2) {
+        let untracked_tree = untracked_commit.tree()?;
+        let diff = repo.diff_tree_to_tree(None, Some(&untracked_tree), None)?;
+        for delta in diff.deltas() {
+            out.push(delta_to_file_change(&delta));
+        }
+    }
+
+    Ok(out)
+}
+
+/// diff の1デルタを [`FileChange`] に変換する（新パス優先、無ければ旧パス）。
+fn delta_to_file_change(delta: &git2::DiffDelta) -> FileChange {
+    let path = delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    FileChange {
+        path,
+        kind: delta_change_kind(delta.status()),
+    }
+}
+
+/// `git2::Delta` を [`ChangeKind`] に変換する。
+fn delta_change_kind(status: git2::Delta) -> ChangeKind {
+    use git2::Delta;
+    match status {
+        Delta::Added | Delta::Untracked | Delta::Copied => ChangeKind::Added,
+        Delta::Deleted => ChangeKind::Deleted,
+        Delta::Renamed => ChangeKind::Renamed,
+        Delta::Typechange => ChangeKind::TypeChange,
+        _ => ChangeKind::Modified,
+    }
 }
 
 /// stash の取り出し（apply / pop）のエラーを初学者向けの日本語に変換する。
@@ -1523,6 +1616,124 @@ mod tests {
         assert!(matches!(
             stash_save(&mut repo, "x").unwrap_err(),
             CoreError::Blocked(_)
+        ));
+    }
+
+    // 名前付きで退避すると、そのメッセージが一覧に反映されること（#110）。
+    #[test]
+    fn stash_save_with_message_is_listed() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+
+        let mut repo = fx.open();
+        stash_save(&mut repo, "作業中の覚え書き").unwrap();
+
+        let list = stash_list(&mut repo).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(
+            list[0].message.contains("作業中の覚え書き"),
+            "メッセージに名前が反映されること: {}",
+            list[0].message
+        );
+    }
+
+    // 空メッセージのときは git の自動メッセージ（WIP on ...）にフォールバックすること（#110）。
+    #[test]
+    fn stash_save_empty_message_uses_auto_name() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+
+        let mut repo = fx.open();
+        stash_save(&mut repo, "").unwrap();
+
+        let list = stash_list(&mut repo).unwrap();
+        assert_eq!(list.len(), 1);
+        // libgit2 の自動メッセージは "WIP on <branch>: ..." の形になる。
+        assert!(
+            list[0].message.contains("WIP on") || list[0].message.contains("On "),
+            "自動命名のメッセージになること: {}",
+            list[0].message
+        );
+    }
+
+    // stash_list が各退避の変更ファイル数を正しく数えること（#110）。
+    #[test]
+    fn stash_list_reports_file_count() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 追跡ファイルの変更 + 未追跡ファイルの追加 → 2 ファイル。
+        fx.write_file("a.txt", "2");
+        fx.write_file("new.txt", "fresh");
+
+        let mut repo = fx.open();
+        stash_save(&mut repo, "wip").unwrap();
+
+        let list = stash_list(&mut repo).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].file_count, 2);
+    }
+
+    // stash_diff が変更ファイル一覧（パスと変更種別）を返し、退避を適用しないこと（#110）。
+    #[test]
+    fn stash_diff_returns_changed_files_without_applying() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "original\n");
+        fx.write_file("gone.txt", "delete me\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // a.txt を変更、gone.txt を削除、new.txt を新規追加。
+        fx.write_file("a.txt", "changed\n");
+        std::fs::remove_file(fx.path().join("gone.txt")).unwrap();
+        fx.write_file("new.txt", "fresh\n");
+
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        // 退避後は作業ツリーがクリーンであること（diff は適用しない前提）。
+        {
+            let repo = fx.open();
+            assert!(status(&repo).unwrap().is_clean);
+        }
+
+        let mut repo = fx.open();
+        let mut changes = stash_diff(&mut repo, 0).unwrap();
+        changes.sort_by(|x, y| x.path.cmp(&y.path));
+
+        assert_eq!(changes.len(), 3);
+        let find = |p: &str| changes.iter().find(|c| c.path == p).map(|c| c.kind);
+        assert_eq!(find("a.txt"), Some(crate::model::ChangeKind::Modified));
+        assert_eq!(find("gone.txt"), Some(crate::model::ChangeKind::Deleted));
+        assert_eq!(find("new.txt"), Some(crate::model::ChangeKind::Added));
+
+        // stash_diff を呼んでも退避は一覧に残り、作業ツリーは変わらない。
+        assert_eq!(stash_list(&mut repo).unwrap().len(), 1);
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    // 存在しない index への stash_diff は入力エラーになること（#110）。
+    #[test]
+    fn stash_diff_unknown_index_is_rejected() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let mut repo = fx.open();
+        assert!(matches!(
+            stash_diff(&mut repo, 0).unwrap_err(),
+            CoreError::InvalidInput(_)
         ));
     }
 

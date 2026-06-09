@@ -148,6 +148,8 @@ export interface StashInfo {
   index: number;
   message: string;
   id: string;
+  // この退避に含まれる変更ファイル数（一覧表示用の概要）。
+  file_count: number;
 }
 
 // fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
@@ -243,6 +245,9 @@ export const api = {
     invoke<void>("stash_apply", { repoPath, index }),
   stashPop: (repoPath: string, index: number) =>
     invoke<void>("stash_pop", { repoPath, index }),
+  // 指定退避の変更ファイル一覧を返す（退避は適用しない安全な操作）。
+  stashDiff: (repoPath: string, index: number) =>
+    invoke<FileChange[]>("stash_diff", { repoPath, index }),
 
   getIdentity: (repoPath: string) =>
     invoke<Identity>("get_identity", { repoPath }),
