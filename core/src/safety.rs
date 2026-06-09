@@ -20,6 +20,8 @@ pub enum OperationKind {
     Pull,
     Push,
     ForcePush,
+    CreateTag,
+    DeleteTag,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -301,6 +303,22 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
+        OperationKind::CreateTag => RiskAssessment::safe(
+            "コミットに「目印（タグ）」を付けるだけで、ファイルの中身や履歴は変わりません。",
+        ),
+
+        OperationKind::DeleteTag => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "タグ（目印）を削除します。コミットそのものは消えません。".to_string(),
+                "そのタグを使っている場所（リリースの参照など）があると、見つけにくくなることがあります。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "直後なら Undo で同じタグを作り直して復元できます。".to_string(),
+            ),
+        },
     }
 }
 
@@ -432,6 +450,20 @@ mod tests {
             assess(OperationKind::StashPop, &ctx).level,
             RiskLevel::Caution
         );
+    }
+
+    #[test]
+    fn create_tag_is_safe_and_delete_tag_is_caution() {
+        let ctx = SafetyContext::default();
+        assert_eq!(
+            assess(OperationKind::CreateTag, &ctx).level,
+            RiskLevel::Safe
+        );
+        let del = assess(OperationKind::DeleteTag, &ctx);
+        assert_eq!(del.level, RiskLevel::Caution);
+        // 削除は Undo で戻せる。
+        assert!(del.reversible);
+        assert!(!del.permanent_data_loss);
     }
 
     #[test]

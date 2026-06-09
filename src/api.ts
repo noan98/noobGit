@@ -96,7 +96,9 @@ export type OperationKind =
   | "fetch"
   | "pull"
   | "push"
-  | "force_push";
+  | "force_push"
+  | "create_tag"
+  | "delete_tag";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -125,6 +127,14 @@ export interface StashInfo {
   index: number;
   message: string;
   id: string;
+}
+
+// タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
+export interface TagInfo {
+  name: string;
+  target_id: string;
+  target_short_id: string;
+  message: string | null;
 }
 
 // fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
@@ -235,6 +245,22 @@ export const api = {
     refspec: string,
     force: boolean,
   ) => invoke<void>("push", { repoPath, remote, refspec, force }),
+
+  listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
+  createTag: (
+    repoPath: string,
+    name: string,
+    target?: string,
+    message?: string,
+  ) =>
+    invoke<void>("create_tag", {
+      repoPath,
+      name,
+      target: target ?? null,
+      message: message ?? null,
+    }),
+  deleteTag: (repoPath: string, name: string) =>
+    invoke<void>("delete_tag", { repoPath, name }),
 
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),

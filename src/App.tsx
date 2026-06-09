@@ -14,6 +14,7 @@ import {
   type RepoStatus,
   type RiskAssessment,
   type StashInfo,
+  type TagInfo,
   type UndoEntry,
 } from "./api";
 import { showToast } from "./components/Toaster";
@@ -21,6 +22,7 @@ import { StatusPanel } from "./components/StatusPanel";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
+import { TagPanel } from "./components/TagPanel";
 import {
   StatusPanelSkeleton,
   HistoryPanelSkeleton,
@@ -66,6 +68,7 @@ interface RefreshParts {
   log?: boolean;
   undo?: boolean;
   stash?: boolean;
+  tags?: boolean;
 }
 
 // リポジトリを開いた直後や手動更新で使う全件再取得。
@@ -75,6 +78,7 @@ const FULL_REFRESH: RefreshParts = {
   log: true,
   undo: true,
   stash: true,
+  tags: true,
 };
 
 // 各操作が画面のどの部分に影響するか。これに載っていない部分は再取得しない。
@@ -112,6 +116,9 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
   push: { branches: true },
   force_push: { branches: true },
+  // タグ作成・削除はタグ一覧だけを取り直す。削除は undo も積まれる。
+  create_tag: { tags: true, undo: true },
+  delete_tag: { tags: true, undo: true },
 };
 
 interface Guard {
@@ -140,6 +147,7 @@ export default function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
+  const [tags, setTags] = useState<TagInfo[]>([]);
 
   // 現在読み込み済みのコミット件数。再取得時に「もっと見る」で広げた範囲を保つため、
   // クロージャの陳腐化を避けて常に最新値を参照できるよう ref で持つ。
@@ -190,6 +198,7 @@ export default function App() {
         }
         if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
+        if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
         await Promise.all(tasks);
         setError(null);
         return true;
@@ -508,6 +517,22 @@ export default function App() {
     });
   }
 
+  // タグの作成。安全操作なので guarded はダイアログを出さずそのまま実行する。
+  function doCreateTag(name: string, message?: string) {
+    void guarded("タグを作成", "create_tag", async () => {
+      await api.createTag(repoPath, name, undefined, message);
+      showToast(`タグ「${name}」を作成しました。`, "success");
+    });
+  }
+
+  // タグの削除。注意操作なので guarded を通す（直後に Undo で復元できる）。
+  function doDeleteTag(name: string) {
+    void guarded(`タグ「${name}」の削除`, "delete_tag", async () => {
+      await api.deleteTag(repoPath, name);
+      showToast(`タグ「${name}」を削除しました。`, "success");
+    });
+  }
+
   if (!opened) {
     return (
       <div className="welcome">
@@ -593,6 +618,7 @@ export default function App() {
               setCommits([]);
               setHasMoreCommits(false);
               setStashes([]);
+              setTags([]);
               setSelectedFile(null);
               setDiff(null);
             }}
@@ -868,6 +894,12 @@ export default function App() {
                       true, // networkOp
                     )
                   }
+                />
+                <TagPanel
+                  tags={tags}
+                  canTag={commits.length > 0}
+                  onCreate={doCreateTag}
+                  onDelete={doDeleteTag}
                 />
               </motion.div>
             )}

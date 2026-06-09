@@ -175,6 +175,20 @@ pub struct StashInfo {
     pub id: String,
 }
 
+/// タグ1件の情報。
+///
+/// 軽量タグ（参照だけ）と注釈付きタグ（メッセージ・作成者を持つ）の両方を表す。
+/// `message` は注釈付きタグのときだけ `Some`。`target_id` はタグが指す対象（多くは
+/// コミット）の完全な oid で、`target_short_id` はその先頭7文字。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagInfo {
+    pub name: String,
+    pub target_id: String,
+    pub target_short_id: String,
+    /// 注釈付きタグのメッセージ。軽量タグのときは None。
+    pub message: Option<String>,
+}
+
 /// fetch（リモートの取得）の結果サマリ。
 ///
 /// fetch はリモート追跡ブランチ（例: `origin/main`）を最新化するだけで、作業中の

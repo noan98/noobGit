@@ -26,6 +26,13 @@ pub enum UndoAction {
     /// 退避（stash）を取り消す。記録時の退避コミットを `id` で探して pop（取り出し）する。
     /// 該当 id が見つからない（すでに取り出し済み）なら何もしない（冪等）。
     PopStash { id: String },
+    /// 削除したタグを再作成する。`message` が Some なら注釈付き、None なら軽量タグ。
+    /// 既に同名タグがあれば何もしない（冪等）。
+    RecreateTag {
+        name: String,
+        target: String,
+        message: Option<String>,
+    },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -158,6 +165,30 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             // 見つかったときだけ pop する。無ければ取り出し済みとみなし何もしない（冪等）。
             if let Some(index) = found {
                 r.stash_pop(index, None)?;
+            }
+        }
+        UndoAction::RecreateTag {
+            name,
+            target,
+            message,
+        } => {
+            // 既に同名タグがあれば何もしない（冪等）。
+            if repo.find_reference(&format!("refs/tags/{name}")).is_err() {
+                let oid = git2::Oid::from_str(target)?;
+                let obj = repo.find_object(oid, None)?;
+                match message {
+                    Some(msg) if !msg.trim().is_empty() => {
+                        // 注釈付きタグの再作成には署名が要る。取れなければ軽量タグで復元する。
+                        if let Ok(sig) = repo.signature() {
+                            repo.tag(name, &obj, &sig, msg, false)?;
+                        } else {
+                            repo.tag_lightweight(name, &obj, false)?;
+                        }
+                    }
+                    _ => {
+                        repo.tag_lightweight(name, &obj, false)?;
+                    }
+                }
             }
         }
     }

@@ -131,6 +131,22 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
                 .into(),
         },
+        OperationKind::CreateTag => Explanation {
+            title: "タグを付ける".into(),
+            what: "特定のコミットに、覚えやすい名前の「目印（タグ）」を付けます。リリースの地点（例: v1.0.0）を示すのによく使います。"
+                .into(),
+            why: "目印を付けるだけで、ファイルの中身や履歴は何も変わりません。安全な操作です。"
+                .into(),
+            on_trouble: "名前を間違えたら、そのタグを削除して付け直せます。コミットには影響しません。"
+                .into(),
+        },
+        OperationKind::DeleteTag => Explanation {
+            title: "タグを削除".into(),
+            what: "コミットに付けた目印（タグ）を外します。コミットそのものは消えません。".into(),
+            why: "目印が消えるだけなので比較的安全ですが、そのタグを参照していた場所からは見えなくなります。"
+                .into(),
+            on_trouble: "直後なら Undo で、同じ名前・同じ対象のタグを作り直して復元できます。".into(),
+        },
     }
 }
 
@@ -157,6 +173,8 @@ mod tests {
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
+            OperationKind::CreateTag,
+            OperationKind::DeleteTag,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty());
