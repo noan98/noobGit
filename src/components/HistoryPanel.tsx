@@ -11,6 +11,10 @@ interface Props {
   onLoadMore: () => void;
   // コミット入力欄へ誘導する（Empty State の「コミットへ」ボタン用）。
   onGoToCommit: () => void;
+  // 差分比較で選んだコミット。最初のクリックで base、2 つ目で target になる。
+  onCompareSelect: (commit: CommitInfo) => void;
+  // 比較で選択中のコミット ID（最初に選んだ base 側）。ハイライト表示に使う。
+  compareBaseId: string | null;
 }
 
 // Unix 秒を「N分前」「N時間前」などの相対表記に変換する。
@@ -87,11 +91,18 @@ export function HistoryPanel({
   loadingMore,
   onLoadMore,
   onGoToCommit,
+  onCompareSelect,
+  compareBaseId,
 }: Props) {
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
+        {compareBaseId && (
+          <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
+            比較対象を選択中…
+          </span>
+        )}
       </div>
 
       {commits.length === 0 ? (
@@ -108,8 +119,12 @@ export function HistoryPanel({
               const isHead = idx === 0;
               const palette = authorPalette(c.author_name);
               const initials = authorInitials(c.author_name);
+              const isCompareBase = compareBaseId === c.id;
               return (
-                <li key={c.id} className="commit-row">
+                <li
+                  key={c.id}
+                  className={`commit-row${isCompareBase ? " compare-base" : ""}`}
+                >
                   {/* 著者アバター */}
                   <div
                     className="commit-avatar"
@@ -141,6 +156,21 @@ export function HistoryPanel({
                       <CopyHashButton shortId={c.short_id} />
                     </div>
                   </div>
+
+                  {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
+                  <button
+                    className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
+                    title={
+                      isCompareBase
+                        ? "比較対象（基準）に選択中。もう一度押すと解除します"
+                        : compareBaseId
+                          ? "このコミットとの差分を表示します"
+                          : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
+                    }
+                    onClick={() => onCompareSelect(c)}
+                  >
+                    {isCompareBase ? "基準" : "比較"}
+                  </button>
 
                   {/* ハードリセットボタン */}
                   <button

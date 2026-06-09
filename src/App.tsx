@@ -33,6 +33,7 @@ import {
   type DiffSource,
 } from "./components/DiffPanel";
 import { IdentityDialog } from "./components/IdentityDialog";
+import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { ThemeToggle } from "./components/ThemeToggle";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -163,6 +164,13 @@ export default function App() {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
+  // コミット間差分ビューアー: 比較の基準（base）と対象（target）、取得した差分。
+  // base のみ選択中は target が null（2 つ目の選択待ち）。両方揃うと差分を表示する。
+  const [compareBase, setCompareBase] = useState<CommitInfo | null>(null);
+  const [compareTarget, setCompareTarget] = useState<CommitInfo | null>(null);
+  const [commitDiffs, setCommitDiffs] = useState<FileDiff[] | null>(null);
+  const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [showIdentity, setShowIdentity] = useState(false);
@@ -258,6 +266,59 @@ export default function App() {
         ? null
         : { path, source },
     );
+  }, []);
+
+  // コミット間差分の取得。base が null のときは target の親との比較になる。
+  const loadCommitDiff = useCallback(
+    async (base: CommitInfo | null, target: CommitInfo) => {
+      if (!repoPath) return;
+      setCommitDiffLoading(true);
+      try {
+        const ds = await api.getDiffBetween(
+          repoPath,
+          base?.id ?? null,
+          target.id,
+        );
+        setCommitDiffs(ds);
+        setError(null);
+      } catch (e) {
+        setCommitDiffs([]);
+        setError(String(e));
+      } finally {
+        setCommitDiffLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  // 履歴から比較対象を選ぶ。1 つ目で base を選択（target 待ち）、2 つ目で target を
+  // 確定して差分を取得する。base をもう一度押すと選択を解除する。
+  const onCompareSelect = useCallback(
+    (commit: CommitInfo) => {
+      if (compareBase && compareBase.id === commit.id) {
+        // 基準を取り消す。
+        setCompareBase(null);
+        return;
+      }
+      if (!compareBase) {
+        // 1 つ目の選択 = 基準。差分はまだ表示しない。
+        setCompareBase(commit);
+        setCompareTarget(null);
+        setCommitDiffs(null);
+        return;
+      }
+      // 2 つ目の選択 = 比較対象。base→target の差分を取得して表示する。
+      setCompareTarget(commit);
+      void loadCommitDiff(compareBase, commit);
+    },
+    [compareBase, loadCommitDiff],
+  );
+
+  // コミット間差分の表示を閉じ、選択状態もリセットする。
+  const closeCommitDiff = useCallback(() => {
+    setCompareBase(null);
+    setCompareTarget(null);
+    setCommitDiffs(null);
   }, []);
 
   async function openRepo() {
@@ -595,6 +656,9 @@ export default function App() {
               setStashes([]);
               setSelectedFile(null);
               setDiff(null);
+              setCompareBase(null);
+              setCompareTarget(null);
+              setCommitDiffs(null);
             }}
           >
             別のリポジトリ
@@ -788,10 +852,22 @@ export default function App() {
                       () => api.resetHard(repoPath, c.id),
                     )
                   }
+                  onCompareSelect={onCompareSelect}
+                  compareBaseId={compareBase?.id ?? null}
                 />
               </motion.div>
             )}
           </AnimatePresence>
+
+          {compareTarget && (
+            <CommitDiffViewer
+              base={compareBase}
+              target={compareTarget}
+              diffs={commitDiffs}
+              loading={commitDiffLoading}
+              onClose={closeCommitDiff}
+            />
+          )}
         </section>
 
         <section className="col">

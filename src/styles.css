@@ -756,6 +756,33 @@ textarea {
   align-self: center;
   font-size: 12px;
 }
+.commit-compare-btn {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 12px;
+  color: var(--accent);
+}
+.commit-compare-btn.active {
+  font-weight: 700;
+}
+.commit-row.compare-base {
+  background: var(--diff-hunk-bg);
+}
+.compare-hint {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ---- commit-diff viewer ---- */
+.commit-diff-viewer .commit-diff-file {
+  margin-top: 12px;
+}
+.commit-diff-filename {
+  font-size: 13px;
+  margin: 0 0 6px;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 
 /* ---- stash ---- */
 .hint {
