@@ -190,6 +190,8 @@ export const api = {
   stageAll: (repoPath: string) => invoke<void>("stage_all", { repoPath }),
   stagePath: (repoPath: string, path: string) =>
     invoke<void>("stage_path", { repoPath, path }),
+  stageHunk: (repoPath: string, filePath: string, hunkHeader: string) =>
+    invoke<void>("stage_hunk", { repoPath, filePath, hunkHeader }),
   unstage: (repoPath: string, path: string) =>
     invoke<void>("unstage", { repoPath, path }),
   commit: (repoPath: string, message: string) =>

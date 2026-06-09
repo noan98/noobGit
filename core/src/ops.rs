@@ -56,6 +56,95 @@ pub fn unstage(repo: &Repository, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// 指定ファイルの差分のうち、`hunk_header` に一致する hunk（変更の塊）だけをステージする。
+///
+/// `file_path` の未ステージ差分（index と作業ツリーの差分）を取り、`hunk_header`
+/// （例 `@@ -1,3 +1,4 @@`）に一致する hunk だけをインデックスへ適用する。ほかの hunk は
+/// 未ステージのまま残る。該当 hunk が見つからなければ入力エラーにする。
+///
+/// 取り消し用に、そのパスのステージ解除（`UnstagePath`）を undo に記録する。
+pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Result<()> {
+    let file_path = file_path.trim();
+    let hunk_header = hunk_header.trim();
+    if file_path.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "ステージするファイルを指定してください。".to_string(),
+        ));
+    }
+    if hunk_header.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "ステージする変更の塊（hunk）を指定してください。".to_string(),
+        ));
+    }
+
+    // 対象パスだけの未ステージ差分（index → 作業ツリー）を取る。
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.pathspec(file_path).context_lines(3);
+    let diff = repo.diff_index_to_workdir(None, Some(&mut diff_opts))?;
+
+    // 指定された hunk が差分に含まれるか先に確認する（無ければ入力エラー）。
+    let matched = Cell::new(false);
+    diff.foreach(
+        &mut |_delta, _progress| true,
+        None,
+        Some(&mut |_delta, hunk| {
+            if normalize_hunk_header(hunk.header()) == hunk_header {
+                matched.set(true);
+            }
+            true
+        }),
+        None,
+    )?;
+    if !matched.get() {
+        return Err(CoreError::InvalidInput(format!(
+            "指定した変更の塊（hunk）が見つかりませんでした: {hunk_header}"
+        )));
+    }
+
+    // 一致する hunk だけを index へ適用する。
+    let mut apply_opts = git2::ApplyOptions::new();
+    // 対象パス以外は触らない。
+    apply_opts.delta_callback(move |delta| {
+        delta
+            .and_then(|d| d.new_file().path())
+            .map(|p| p.to_string_lossy() == file_path)
+            .unwrap_or(false)
+    });
+    // ヘッダーが一致する hunk だけ true を返して選択適用する。
+    apply_opts.hunk_callback(move |hunk| {
+        hunk.map(|h| normalize_hunk_header(h.header()) == hunk_header)
+            .unwrap_or(false)
+    });
+
+    repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut apply_opts))
+        .map_err(|e| {
+            CoreError::Git(format!(
+                "変更の塊（hunk）のステージに失敗しました: {}",
+                e.message()
+            ))
+        })?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Stage,
+            description: format!("「{file_path}」の一部（hunk）のステージを取り消す"),
+            action: UndoAction::UnstagePath {
+                path: file_path.to_string(),
+            },
+        },
+    );
+    Ok(())
+}
+
+/// hunk ヘッダー文字列を比較用に整える（末尾の改行を落とす）。
+///
+/// git2 の hunk ヘッダーは `@@ -1,3 +1,4 @@\n` のように末尾に改行を含むことがあるため、
+/// 呼び出し側から渡される `@@ -1,3 +1,4 @@`（改行なし）と比較できるよう揃える。
+fn normalize_hunk_header(header: &[u8]) -> String {
+    String::from_utf8_lossy(header).trim_end().to_string()
+}
+
 /// ステージされた変更をコミットする。直後に Undo で取り消せる。
 pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     if message.trim().is_empty() {
@@ -1601,6 +1690,127 @@ mod tests {
             msg.contains("チェックアウト") || msg.contains("削除できません"),
             "日本語メッセージがチェックアウト中を説明すること: {msg}"
         );
+    }
+
+    /// 指定パスの未ステージ差分から hunk ヘッダー文字列を集める（テスト用ヘルパー）。
+    fn collect_hunk_headers(repo: &Repository, path: &str) -> Vec<String> {
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path).context_lines(3);
+        let diff = repo.diff_index_to_workdir(None, Some(&mut opts)).unwrap();
+        let headers = RefCell::new(Vec::new());
+        diff.foreach(
+            &mut |_d, _p| true,
+            None,
+            Some(&mut |_d, hunk| {
+                headers.borrow_mut().push(
+                    String::from_utf8_lossy(hunk.header())
+                        .trim_end()
+                        .to_string(),
+                );
+                true
+            }),
+            None,
+        )
+        .unwrap();
+        headers.into_inner()
+    }
+
+    #[test]
+    fn stage_hunk_stages_only_matching_hunk_then_undo_restores() {
+        let fx = TestRepo::new();
+        // 10 行のファイルを用意してコミットする。離れた 2 箇所を変えて 2 つの hunk を作る。
+        fx.write_file("f.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 先頭付近（1行目）と末尾付近（10行目）をそれぞれ変える → 2 つの hunk になる。
+        fx.write_file("f.txt", "1-changed\n2\n3\n4\n5\n6\n7\n8\n9\n10-changed\n");
+
+        let repo = fx.open();
+        let headers = collect_hunk_headers(&repo, "f.txt");
+        assert_eq!(
+            headers.len(),
+            2,
+            "離れた 2 箇所の変更で 2 hunk になること: {headers:?}"
+        );
+
+        // 1 つ目の hunk だけをステージする。
+        stage_hunk(&repo, "f.txt", &headers[0]).unwrap();
+
+        // ステージ済みに f.txt が現れ、未ステージにも f.txt が残る（もう片方の hunk）。
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.iter().any(|c| c.path == "f.txt"),
+            "片方の hunk がステージされること: {st:?}"
+        );
+        assert!(
+            st.unstaged.iter().any(|c| c.path == "f.txt"),
+            "もう片方の hunk は未ステージのまま残ること: {st:?}"
+        );
+
+        // ステージ済み差分には 1 hunk だけ入っている（1 つ目の hunk）。
+        let mut sopts = git2::DiffOptions::new();
+        sopts.pathspec("f.txt").context_lines(3);
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let staged_diff = repo
+            .diff_tree_to_index(Some(&head_tree), None, Some(&mut sopts))
+            .unwrap();
+        let mut staged_hunks = 0usize;
+        staged_diff
+            .foreach(
+                &mut |_d, _p| true,
+                None,
+                Some(&mut |_d, _h| {
+                    staged_hunks += 1;
+                    true
+                }),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            staged_hunks, 1,
+            "ステージされた hunk はちょうど 1 つであること"
+        );
+
+        // Undo でステージ前に戻る（f.txt は未ステージのみになる）。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.is_empty(),
+            "undo でステージが空に戻ること: {st:?}"
+        );
+        assert!(
+            st.unstaged.iter().any(|c| c.path == "f.txt"),
+            "変更内容は未ステージとして保持されること: {st:?}"
+        );
+    }
+
+    #[test]
+    fn stage_hunk_with_unknown_header_is_rejected() {
+        let fx = TestRepo::new();
+        fx.write_file("f.txt", "a\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("f.txt", "b\n");
+
+        let repo = fx.open();
+        let err = stage_hunk(&repo, "f.txt", "@@ -999,0 +999,0 @@").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn stage_hunk_rejects_empty_arguments() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(matches!(
+            stage_hunk(&repo, "  ", "@@ -1 +1 @@").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            stage_hunk(&repo, "f.txt", "   ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
     }
 
     #[test]
