@@ -839,6 +839,98 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
     Ok(())
 }
 
+/// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
+///
+/// `oid` はコピー元コミットのハッシュ。元のコミットはそのまま残り、現在ブランチに
+/// 同じ変更を持つ新しいコミットを 1 つ積む。author は元コミットを引き継ぎ、committer は
+/// 現在の identity に更新する（git の cherry-pick と同じ）。メッセージも元コミットを引き継ぐ。
+///
+/// コンフリクト（競合）が起きた場合は、作業ツリー・インデックスを元の HEAD 状態へ
+/// 強制的に戻してから [`CoreError::Blocked`] を返す。状態は必ず保全する。
+/// 成功時は、コピー直前の HEAD への soft reset を undo に記録する。
+pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
+    let target = git2::Oid::from_str(oid.trim())
+        .map_err(|_| CoreError::InvalidInput(format!("コミットの指定が不正です: {oid}")))?;
+    let commit = repo.find_commit(target).map_err(|_| {
+        CoreError::InvalidInput(format!("指定したコミットが見つかりませんでした: {oid}"))
+    })?;
+
+    // コピー先となる現在の HEAD コミット。これが無ければまだ何もコミットしていない。
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、コピー（cherry-pick）できません。先に最初のコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let previous = head_commit.id();
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "コピー（cherry-pick）には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // HEAD を土台に、コピー元コミットの変更を当てたインデックスをメモリ上に作る
+    // （作業ツリー・実インデックスにはまだ触れない）。
+    let mut merged = repo
+        .cherrypick_commit(&commit, &head_commit, 0, None)
+        .map_err(|e| {
+            CoreError::Git(format!(
+                "コピー（cherry-pick）に失敗しました: {}",
+                e.message()
+            ))
+        })?;
+
+    // コンフリクトがあれば、何も変えずに中断する（作業ツリーは元から触れていない）。
+    if merged.has_conflicts() {
+        return Err(CoreError::Blocked(
+            "コンフリクト（競合）のため取り込めませんでした。状態は元に戻しました。先にいまの変更を整理してから、もう一度お試しください。"
+                .to_string(),
+        ));
+    }
+
+    // コンフリクトなし: 合成したインデックスからツリーを作り、新しいコミットを積む。
+    let tree_id = merged.write_tree_to(repo)?;
+    let tree = repo.find_tree(tree_id)?;
+    let message = commit.message().unwrap_or("");
+
+    // author は元コミットのまま、committer を現在の identity にして新コミットを作る。
+    let new_oid = repo.commit(
+        Some("HEAD"),
+        &commit.author(),
+        &sig,
+        message,
+        &tree,
+        &[&head_commit],
+    )?;
+
+    // commit は HEAD を進めるだけなので、作業ツリーとインデックスを新コミットの内容へ合わせる。
+    let mut co = CheckoutBuilder::new();
+    co.force();
+    repo.checkout_tree(tree.as_object(), Some(&mut co))?;
+
+    // 念のため CHERRY_PICK_HEAD 等の途中状態を片付ける（メモリ index 方式では通常付かない）。
+    let _ = repo.cleanup_state();
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::CherryPick,
+            description: format!(
+                "コミット「{}」のコピー（cherry-pick）を取り消す",
+                first_line(message)
+            ),
+            action: UndoAction::SoftResetTo {
+                previous: previous.to_string(),
+            },
+        },
+    );
+
+    let new_commit = repo.find_commit(new_oid)?;
+    Ok(commit_info(&new_commit))
+}
+
 /// ローカルのコミットをリモートへ送信（push）する。
 ///
 /// `remote` はリモート名（例: `origin`）、`refspec` は送信するブランチの指定
@@ -2121,5 +2213,112 @@ mod tests {
         let st = status(&repo).unwrap();
         assert!(st.conflicted.is_empty());
         assert!(st.staged.iter().any(|f| f.path == "a.txt"));
+    }
+
+    // 別ブランチのコミットを cherry-pick すると、その変更が現在ブランチに入り、
+    // undo で取り消せること（#82）。
+    #[test]
+    fn cherry_pick_copies_commit_then_undo_restores() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // feature ブランチを作り、そこに b.txt を追加するコミットを積む。
+        {
+            let repo = fx.open();
+            create_branch(&repo, "feature").unwrap();
+            switch_branch(&repo, "feature").unwrap();
+        }
+        fx.write_file("b.txt", "feature work\n");
+        fx.stage_all();
+        let feature_oid = fx.commit("feature: b.txt を追加");
+
+        // main に戻り、main 側を 1 つ進めて feature と分岐させる（コピー先の親を変える）。
+        {
+            let repo = fx.open();
+            switch_branch(&repo, "main").unwrap();
+        }
+        assert!(!fx.path().join("b.txt").exists());
+        fx.write_file("c.txt", "main work\n");
+        fx.stage_all();
+        fx.commit("main: c.txt を追加");
+        assert_eq!(log(&fx.open(), 10).unwrap().len(), 2);
+
+        // feature のコミットを main へ cherry-pick する。
+        let repo = fx.open();
+        let info = cherry_pick(&repo, &feature_oid.to_string()).unwrap();
+        assert_eq!(info.summary, "feature: b.txt を追加");
+
+        // main に b.txt がコピーされ、コミット数が 1 増えている（c1 + c.txt + コピー）。
+        let repo = fx.open();
+        assert!(fx.path().join("b.txt").exists());
+        assert_eq!(log(&repo, 10).unwrap().len(), 3);
+        // 別のコミットになっている（親が違うので元のコミットとは ID が異なる）。
+        assert_ne!(info.id, feature_oid.to_string());
+
+        // Undo でコピーを取り消すと、main は元の 2 コミットに戻る。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 2);
+    }
+
+    // 不正なコミット指定は InvalidInput になること（#82）。
+    #[test]
+    fn cherry_pick_invalid_oid_is_input_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        assert!(matches!(
+            cherry_pick(&repo, "not-a-valid-oid").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    // 同じ箇所を変更したコミットの cherry-pick はコンフリクトで Blocked になり、
+    // 作業ツリーの状態が保全されること（#82）。
+    #[test]
+    fn cherry_pick_conflict_is_blocked_and_preserves_state() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // feature で a.txt を別内容に変更するコミットを作る。
+        {
+            let repo = fx.open();
+            create_branch(&repo, "feature").unwrap();
+            switch_branch(&repo, "feature").unwrap();
+        }
+        fx.write_file("a.txt", "feature change\n");
+        fx.stage_all();
+        let feature_oid = fx.commit("feature: a.txt を変更");
+
+        // main に戻り、a.txt を別の内容に変更して分岐させる。
+        {
+            let repo = fx.open();
+            switch_branch(&repo, "main").unwrap();
+        }
+        fx.write_file("a.txt", "main change\n");
+        fx.stage_all();
+        fx.commit("main: a.txt を変更");
+        let main_head_before = fx.head_oid();
+
+        // 同じ行を触るのでコンフリクトになり、Blocked エラーになる。
+        let repo = fx.open();
+        let err = cherry_pick(&repo, &feature_oid.to_string()).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+
+        // 状態保全: HEAD も作業ツリーも変わっていない。
+        let repo = fx.open();
+        assert_eq!(fx.head_oid(), main_head_before);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "main change\n"
+        );
+        assert!(status(&repo).unwrap().is_clean);
     }
 }

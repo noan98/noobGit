@@ -6,6 +6,7 @@ interface Props {
   commits: CommitInfo[];
   currentBranch: string | null;
   onReset: (commit: CommitInfo) => void;
+  onCherryPick: (commit: CommitInfo) => void;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -95,6 +96,7 @@ export function HistoryPanel({
   commits,
   currentBranch,
   onReset,
+  onCherryPick,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -225,29 +227,37 @@ export function HistoryPanel({
                     </div>
                   </div>
 
-                  {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
-                  <button
-                    className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
-                    title={
-                      isCompareBase
-                        ? "比較対象（基準）に選択中。もう一度押すと解除します"
-                        : compareBaseId
-                          ? "このコミットとの差分を表示します"
-                          : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
-                    }
-                    onClick={() => onCompareSelect(c)}
-                  >
-                    {isCompareBase ? "基準" : "比較"}
-                  </button>
-
-                  {/* ハードリセットボタン */}
-                  <button
-                    className="link danger commit-reset-btn"
-                    title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
-                    onClick={() => onReset(c)}
-                  >
-                    戻す
-                  </button>
+                  {/* 操作ボタン */}
+                  <div className="commit-actions-inline">
+                    {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
+                    <button
+                      className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
+                      title={
+                        isCompareBase
+                          ? "比較対象（基準）に選択中。もう一度押すと解除します"
+                          : compareBaseId
+                            ? "このコミットとの差分を表示します"
+                            : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
+                      }
+                      onClick={() => onCompareSelect(c)}
+                    >
+                      {isCompareBase ? "基準" : "比較"}
+                    </button>
+                    <button
+                      className="link commit-cherry-pick-btn"
+                      title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
+                      onClick={() => onCherryPick(c)}
+                    >
+                      コピー
+                    </button>
+                    <button
+                      className="link danger commit-reset-btn"
+                      title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                      onClick={() => onReset(c)}
+                    >
+                      戻す
+                    </button>
+                  </div>
                 </li>
               );
             })}

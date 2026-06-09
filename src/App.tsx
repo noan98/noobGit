@@ -119,6 +119,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
   push: { branches: true },
   force_push: { branches: true },
+  // cherry-pick は HEAD に新しいコミットを積む。status・log・ブランチ関係が変わり、undo も積まれる。
+  cherry_pick: { status: true, branches: true, log: true, undo: true },
 };
 
 interface Guard {
@@ -667,6 +669,19 @@ export default function App() {
     );
   }
 
+  // コミットのコピー（cherry-pick）。コンフリクトの可能性があるため guarded を通す。
+  function doCherryPick(commit: CommitInfo) {
+    void guarded(
+      "コミットをコピー（cherry-pick）",
+      "cherry_pick",
+      async () => {
+        await api.cherryPick(repoPath, commit.id);
+        showToast(`コミット ${commit.short_id} をコピーしました`, "success");
+      },
+      undefined,
+    );
+  }
+
   // 変更の破棄。元に戻せない破壊的操作なので必ず guarded を通す。
   function doDiscard(path: string) {
     void guarded(`「${path}」の変更を破棄`, "discard", () =>
@@ -1038,6 +1053,7 @@ export default function App() {
                   }
                   onCompareSelect={onCompareSelect}
                   compareBaseId={compareBase?.id ?? null}
+                  onCherryPick={doCherryPick}
                 />
               </motion.div>
             )}

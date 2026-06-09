@@ -126,7 +126,8 @@ export type OperationKind =
   | "fetch"
   | "pull"
   | "push"
-  | "force_push";
+  | "force_push"
+  | "cherry_pick";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -289,6 +290,9 @@ export const api = {
     refspec: string,
     force: boolean,
   ) => invoke<void>("push", { repoPath, remote, refspec, force }),
+
+  cherryPick: (repoPath: string, oid: string) =>
+    invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
 
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),

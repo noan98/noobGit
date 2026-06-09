@@ -20,6 +20,7 @@ pub enum OperationKind {
     Pull,
     Push,
     ForcePush,
+    CherryPick,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -301,6 +302,16 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
+        OperationKind::CherryPick => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "別の場所にあるコミットの変更を、いまのブランチにコピーして取り込みます（cherry-pick）。".to_string(),
+                "いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
     }
 }
 
@@ -432,6 +443,42 @@ mod tests {
             assess(OperationKind::StashPop, &ctx).level,
             RiskLevel::Caution
         );
+    }
+
+    #[test]
+    fn cherry_pick_is_caution_and_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::CherryPick, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(a.reversible);
+        assert!(!a.permanent_data_loss);
+    }
+
+    // すべての操作種別がパニックせずに評価でき、理由が空でないことを網羅的に確認する。
+    #[test]
+    fn assess_covers_all_operation_kinds() {
+        let ctx = SafetyContext::default();
+        for op in [
+            OperationKind::Stage,
+            OperationKind::Unstage,
+            OperationKind::Commit,
+            OperationKind::AmendCommit,
+            OperationKind::Discard,
+            OperationKind::StashSave,
+            OperationKind::StashApply,
+            OperationKind::StashPop,
+            OperationKind::CreateBranch,
+            OperationKind::SwitchBranch,
+            OperationKind::DeleteBranch,
+            OperationKind::ResetHard,
+            OperationKind::Fetch,
+            OperationKind::Pull,
+            OperationKind::Push,
+            OperationKind::ForcePush,
+            OperationKind::CherryPick,
+        ] {
+            assert!(!assess(op, &ctx).reasons.is_empty());
+        }
     }
 
     #[test]

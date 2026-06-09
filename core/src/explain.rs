@@ -131,6 +131,16 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
                 .into(),
         },
+        OperationKind::CherryPick => Explanation {
+            title: "コミットをコピー（cherry-pick）".into(),
+            what: "選んだコミットが加えた変更を、いまのブランチの先頭に新しいコミットとしてコピーします。元のコミットはそのまま残ります。"
+                .into(),
+            why: "ほかのブランチにある修正だけを、ブランチ全体をマージせずに取り込みたいときに便利です。いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。"
+                .into(),
+            on_trouble:
+                "コンフリクトが起きた場合は、取り込みを中止して作業ツリーを元の状態に戻します。直後なら Undo で、コピーしたコミットを取り消せます。"
+                    .into(),
+        },
     }
 }
 
@@ -157,6 +167,7 @@ mod tests {
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
+            OperationKind::CherryPick,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty());
