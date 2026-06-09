@@ -757,6 +757,19 @@ textarea {
   font-size: 12px;
 }
 
+/* 履歴コミット行の操作ボタン（コピー・戻す）を縦並びにまとめる。 */
+.commit-actions-inline {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.commit-cherry-pick-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
 /* ---- stash ---- */
 .hint {
   color: var(--muted);

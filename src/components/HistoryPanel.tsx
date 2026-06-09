@@ -6,6 +6,7 @@ interface Props {
   commits: CommitInfo[];
   currentBranch: string | null;
   onReset: (commit: CommitInfo) => void;
+  onCherryPick: (commit: CommitInfo) => void;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -83,6 +84,7 @@ export function HistoryPanel({
   commits,
   currentBranch,
   onReset,
+  onCherryPick,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -142,14 +144,23 @@ export function HistoryPanel({
                     </div>
                   </div>
 
-                  {/* ハードリセットボタン */}
-                  <button
-                    className="link danger commit-reset-btn"
-                    title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
-                    onClick={() => onReset(c)}
-                  >
-                    戻す
-                  </button>
+                  {/* 操作ボタン */}
+                  <div className="commit-actions-inline">
+                    <button
+                      className="link commit-cherry-pick-btn"
+                      title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
+                      onClick={() => onCherryPick(c)}
+                    >
+                      コピー
+                    </button>
+                    <button
+                      className="link danger commit-reset-btn"
+                      title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                      onClick={() => onReset(c)}
+                    >
+                      戻す
+                    </button>
+                  </div>
                 </li>
               );
             })}

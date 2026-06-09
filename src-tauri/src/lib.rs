@@ -222,6 +222,13 @@ fn push(repo_path: String, remote: String, refspec: String, force: bool) -> Resu
     ops::push(&r, &remote, &refspec, force).map_err(|e| e.to_string())
 }
 
+/// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
+#[tauri::command]
+fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
+    let r = open(&repo_path)?;
+    ops::cherry_pick(&r, &oid).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
@@ -266,6 +273,7 @@ pub fn run() {
             pull,
             reset_hard,
             push,
+            cherry_pick,
             peek_undo,
             undo_last,
         ])
