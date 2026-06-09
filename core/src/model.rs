@@ -35,6 +35,18 @@ pub struct FileChange {
     pub kind: ChangeKind,
 }
 
+/// コンフリクト中のファイル1件。
+///
+/// マージや stash の取り出しで競合したファイルを、解消ウィザードで一覧表示するための情報。
+/// `has_ancestor` は共通祖先（3-way マージの基準）側のエントリがあるかを表す簡易情報で、
+/// 真なら「共通の元」と両側の変更がそろった通常のマージ競合、偽なら追加同士の競合など。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictFile {
+    pub path: String,
+    /// 共通祖先側のエントリがあるか（3-way マージか否かの簡易情報）。
+    pub has_ancestor: bool,
+}
+
 /// リポジトリの現在状態（status相当）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoStatus {

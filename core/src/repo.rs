@@ -2,8 +2,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, DiffLine,
-    DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus,
+    BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus,
 };
 use crate::safety::is_protected;
 
@@ -865,6 +865,48 @@ pub fn blame_file(repo: &Repository, path: &str) -> Result<Vec<BlameHunk>> {
             message_short: commit.summary().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("").to_string(),
             time: commit.time().seconds(),
+        });
+    }
+
+    Ok(out)
+}
+
+/// コンフリクト中のファイル一覧を返す。
+///
+/// インデックスの conflict エントリ（stage 1=共通祖先 / 2=our / 3=their）を走査し、
+/// ファイルごとに 1 件へまとめる。パスは `our`→`their`→`ancestor` の順で取れたものを採用し、
+/// `String::from_utf8_lossy` で文字列化する。同じパスが重複しないようにする。
+/// コンフリクトが無ければ空のベクタを返す。
+pub fn get_conflicts(repo: &Repository) -> Result<Vec<ConflictFile>> {
+    let index = repo.index()?;
+    // conflicts() はコンフリクトが無いリポジトリでも空イテレータを返す。
+    let conflicts = match index.conflicts() {
+        Ok(c) => c,
+        // index にコンフリクトの仕組みが無い等の場合は「競合なし」として扱う。
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut out: Vec<ConflictFile> = Vec::new();
+    for item in conflicts {
+        let c = item?;
+        // パスは our → their → ancestor の順に、最初に取れたものを使う。
+        let path = c
+            .our
+            .as_ref()
+            .or(c.their.as_ref())
+            .or(c.ancestor.as_ref())
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned());
+        let path = match path {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+        // 同じパスが複数回出ても 1 件にまとめる。
+        if out.iter().any(|f| f.path == path) {
+            continue;
+        }
+        out.push(ConflictFile {
+            has_ancestor: c.ancestor.is_some(),
+            path,
         });
     }
 
@@ -1765,5 +1807,28 @@ mod tests {
         let repo = fx.open();
         assert!(blame_file(&repo, "../secret.txt").is_err());
         assert!(blame_file(&repo, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn get_conflicts_lists_conflicted_path_with_ancestor() {
+        let fx = repo_with_conflict();
+        let repo = fx.open();
+        let conflicts = get_conflicts(&repo).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].path, "a.txt");
+        // base からの 3-way マージなので共通祖先側のエントリがある。
+        assert!(conflicts[0].has_ancestor);
+    }
+
+    #[test]
+    fn get_conflicts_empty_when_no_conflict() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // コンフリクトを作っていないリポジトリでは空のベクタが返る。
+        assert!(get_conflicts(&repo).unwrap().is_empty());
     }
 }

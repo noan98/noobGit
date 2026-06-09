@@ -82,6 +82,13 @@ export interface BlameHunk {
   time: number;
 }
 
+// コンフリクト中のファイル1件（解消ウィザード用）。
+// has_ancestor は共通祖先側エントリの有無（3-way マージか否かの簡易情報）。
+export interface ConflictFile {
+  path: string;
+  has_ancestor: boolean;
+}
+
 export interface BranchRelation {
   name: string;
   is_current: boolean;
@@ -213,6 +220,10 @@ export const api = {
     invoke<FileDiff[]>("get_diff_between", { repoPath, fromOid, toOid }),
   getBlame: (repoPath: string, path: string) =>
     invoke<BlameHunk[]>("get_blame", { repoPath, path }),
+  getConflicts: (repoPath: string) =>
+    invoke<ConflictFile[]>("get_conflicts", { repoPath }),
+  markResolved: (repoPath: string, path: string) =>
+    invoke<void>("mark_resolved", { repoPath, path }),
   getBranchGraph: (repoPath: string) =>
     invoke<BranchGraph>("get_branch_graph", { repoPath }),
 
