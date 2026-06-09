@@ -9,7 +9,7 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, PullOutcome, RepoStatus, StashInfo,
+    FileDiff, PullOutcome, RepoStatus, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -296,6 +296,32 @@ fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
     ops::cherry_pick(&r, &oid).map_err(|e| e.to_string())
 }
 
+/// タグの一覧を返す（名前順）。
+#[tauri::command]
+fn list_tags(repo_path: String) -> Result<Vec<TagInfo>, String> {
+    let r = open(&repo_path)?;
+    repo::list_tags(&r).map_err(|e| e.to_string())
+}
+
+/// コミットに目印（タグ）を付ける。`target` 省略時は HEAD、`message` 省略時は軽量タグ。
+#[tauri::command]
+fn create_tag(
+    repo_path: String,
+    name: String,
+    target: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::create_tag(&r, &name, target.as_deref(), message.as_deref()).map_err(|e| e.to_string())
+}
+
+/// タグ（目印）を削除する。直後に Undo で復元できる。
+#[tauri::command]
+fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::delete_tag(&r, &name).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
@@ -348,6 +374,9 @@ pub fn run() {
             reset_hard,
             push,
             cherry_pick,
+            list_tags,
+            create_tag,
+            delete_tag,
             peek_undo,
             undo_last,
         ])

@@ -3,7 +3,7 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -185,6 +185,50 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
         }
     }
 
+    Ok(out)
+}
+
+/// タグの一覧を返す（名前順）。
+///
+/// 軽量タグ・注釈付きタグの両方を扱う。注釈付きタグは `repo.find_tag` で解決でき、
+/// メッセージと指す対象（多くはコミット）を持つ。軽量タグは参照が直接コミットを指す。
+/// `target_id` には最終的に指すコミット等の oid を入れ、`target_short_id` はその先頭7文字。
+pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
+    let mut out = Vec::new();
+
+    let names = repo.tag_names(None)?;
+    for name in names.iter().flatten() {
+        // タグ参照（refs/tags/<name>）を解決する。
+        let refname = format!("refs/tags/{name}");
+        let reference = match repo.find_reference(&refname) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let oid = match reference.target() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        // 注釈付きタグなら、その oid から Tag オブジェクトを取得できる。
+        let (target_oid, message) = match repo.find_tag(oid) {
+            Ok(tag) => {
+                let msg = tag.message().map(|m| m.trim_end().to_string());
+                (tag.target_id(), msg)
+            }
+            // 軽量タグ: 参照が直接対象（コミット等）を指す。
+            Err(_) => (oid, None),
+        };
+
+        let id = target_oid.to_string();
+        out.push(TagInfo {
+            target_short_id: id.chars().take(7).collect(),
+            target_id: id,
+            name: name.to_string(),
+            message,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
@@ -1425,6 +1469,47 @@ mod tests {
         // 既定ブランチ名(main)は保護対象。
         assert!(head.is_protected);
         assert!(!head.is_remote);
+    }
+
+    #[test]
+    fn list_tags_returns_lightweight_and_annotated() {
+        use crate::ops::create_tag;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let head = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // 軽量タグと注釈付きタグを1つずつ作る。
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        create_tag(&repo, "v1.1.0", None, Some("リリース 1.1.0")).unwrap();
+
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 2);
+        // 名前順に並ぶ。
+        assert_eq!(tags[0].name, "v1.0.0");
+        assert_eq!(tags[1].name, "v1.1.0");
+
+        // 軽量タグはメッセージ無し・HEAD を指す。
+        assert!(tags[0].message.is_none());
+        assert_eq!(tags[0].target_id, head);
+        assert_eq!(tags[0].target_short_id, &head[..7]);
+
+        // 注釈付きタグはメッセージを持ち、対象は HEAD。
+        assert_eq!(tags[1].message.as_deref(), Some("リリース 1.1.0"));
+        assert_eq!(tags[1].target_id, head);
+    }
+
+    #[test]
+    fn list_tags_empty_when_no_tags() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        assert!(list_tags(&repo).unwrap().is_empty());
     }
 
     #[test]

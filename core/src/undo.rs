@@ -29,6 +29,13 @@ pub enum UndoAction {
     /// 指定パスのステージを解除する（変更内容は保持）。hunk 単位のステージの取り消しに使う。
     /// HEAD があれば HEAD からそのパスを index に戻し、無ければ index から取り除く（冪等）。
     UnstagePath { path: String },
+    /// 削除したタグを再作成する。`message` が Some なら注釈付き、None なら軽量タグ。
+    /// 既に同名タグがあれば何もしない（冪等）。
+    RecreateTag {
+        name: String,
+        target: String,
+        message: Option<String>,
+    },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -178,6 +185,30 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                     if index.get_path(p, 0).is_some() {
                         index.remove_path(p)?;
                         index.write()?;
+                    }
+                }
+            }
+        }
+        UndoAction::RecreateTag {
+            name,
+            target,
+            message,
+        } => {
+            // 既に同名タグがあれば何もしない（冪等）。
+            if repo.find_reference(&format!("refs/tags/{name}")).is_err() {
+                let oid = git2::Oid::from_str(target)?;
+                let obj = repo.find_object(oid, None)?;
+                match message {
+                    Some(msg) if !msg.trim().is_empty() => {
+                        // 注釈付きタグの再作成には署名が要る。取れなければ軽量タグで復元する。
+                        if let Ok(sig) = repo.signature() {
+                            repo.tag(name, &obj, &sig, msg, false)?;
+                        } else {
+                            repo.tag_lightweight(name, &obj, false)?;
+                        }
+                    }
+                    _ => {
+                        repo.tag_lightweight(name, &obj, false)?;
                     }
                 }
             }

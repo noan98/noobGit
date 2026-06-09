@@ -127,7 +127,9 @@ export type OperationKind =
   | "pull"
   | "push"
   | "force_push"
-  | "cherry_pick";
+  | "cherry_pick"
+  | "create_tag"
+  | "delete_tag";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -158,6 +160,14 @@ export interface StashInfo {
   id: string;
   // この退避に含まれる変更ファイル数（一覧表示用の概要）。
   file_count: number;
+}
+
+// タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
+export interface TagInfo {
+  name: string;
+  target_id: string;
+  target_short_id: string;
+  message: string | null;
 }
 
 // fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
@@ -293,6 +303,21 @@ export const api = {
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
+  createTag: (
+    repoPath: string,
+    name: string,
+    target?: string,
+    message?: string,
+  ) =>
+    invoke<void>("create_tag", {
+      repoPath,
+      name,
+      target: target ?? null,
+      message: message ?? null,
+    }),
+  deleteTag: (repoPath: string, name: string) =>
+    invoke<void>("delete_tag", { repoPath, name }),
 
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),

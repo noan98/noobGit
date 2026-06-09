@@ -618,6 +618,112 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// コミットに目印（タグ）を付ける。
+///
+/// `target` が `None` なら HEAD のコミットに付ける。`Some` なら revparse で解決した対象に
+/// 付ける（コミットの短縮 oid やブランチ名など）。`message` が空でなければ注釈付きタグ
+/// （作成者・メッセージを持つ）、空または `None` なら軽量タグ（参照だけ）を作る。
+/// 同名タグが既にあれば日本語エラーで案内する。タグ作成は undo を記録しない（安全操作）。
+pub fn create_tag(
+    repo: &Repository,
+    name: &str,
+    target: Option<&str>,
+    message: Option<&str>,
+) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "タグ名を入力してください（例: v1.0.0）。".to_string(),
+        ));
+    }
+
+    // 既に同名タグがあれば案内する。
+    if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+        return Err(CoreError::InvalidInput(format!(
+            "タグ「{name}」はすでに存在します。別の名前を使ってください。"
+        )));
+    }
+
+    // 付ける対象（オブジェクト）を決める。
+    let obj = match target {
+        Some(rev) => repo.revparse_single(rev.trim()).map_err(|_| {
+            CoreError::InvalidInput(format!("対象「{rev}」を特定できませんでした。"))
+        })?,
+        None => repo
+            .head()
+            .and_then(|h| h.peel_to_commit())
+            .map_err(|_| {
+                CoreError::Blocked(
+                    "まだコミットが無いため、タグを付けられません。先に最初のコミットをしてください。"
+                        .to_string(),
+                )
+            })?
+            .into_object(),
+    };
+
+    let annotated = message.map(|m| m.trim()).filter(|m| !m.is_empty());
+    match annotated {
+        Some(msg) => {
+            let sig = repo.signature().map_err(|_| {
+                CoreError::InvalidInput(
+                    "注釈付きタグには名前とメールの設定が必要です（git config user.name / user.email）。"
+                        .to_string(),
+                )
+            })?;
+            repo.tag(name, &obj, &sig, msg, false)?;
+        }
+        None => {
+            repo.tag_lightweight(name, &obj, false)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// タグ（目印）を削除する。直後に Undo で同じタグを作り直して復元できる。
+///
+/// 削除前に対象 oid と（注釈付きなら）メッセージを控え、`RecreateTag` の undo を記録する。
+pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "タグ名を入力してください。".to_string(),
+        ));
+    }
+
+    let refname = format!("refs/tags/{name}");
+    let reference = repo
+        .find_reference(&refname)
+        .map_err(|_| CoreError::InvalidInput(format!("タグ「{name}」が見つかりません。")))?;
+    let ref_oid = reference
+        .target()
+        .ok_or_else(|| CoreError::Git("タグの参照先を取得できませんでした。".to_string()))?;
+
+    // 注釈付きタグなら対象 oid とメッセージを控える。軽量タグは参照 oid が対象。
+    let (target_oid, message) = match repo.find_tag(ref_oid) {
+        Ok(tag) => (
+            tag.target_id(),
+            tag.message().map(|m| m.trim_end().to_string()),
+        ),
+        Err(_) => (ref_oid, None),
+    };
+
+    repo.tag_delete(name)?;
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::DeleteTag,
+            description: format!("タグ「{name}」の削除を取り消す"),
+            action: UndoAction::RecreateTag {
+                name: name.to_string(),
+                target: target_oid.to_string(),
+                message,
+            },
+        },
+    );
+    Ok(())
+}
+
 /// リモートから最新を取得し、リモート追跡ブランチ（例: `origin/main`）を更新する。
 ///
 /// 作業ツリー・インデックス・現在ブランチには一切触れない安全操作。取り込む前に
@@ -2136,6 +2242,130 @@ mod tests {
             stage_hunk(&repo, "f.txt", "   ").unwrap_err(),
             CoreError::InvalidInput(_)
         ));
+    }
+
+    #[test]
+    fn create_lightweight_tag_appears_in_list() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "v1.0.0");
+        assert!(tags[0].message.is_none());
+        // 軽量タグの作成は undo を記録しない（安全操作）。
+        assert!(!crate::undo::can_undo(&repo).unwrap());
+    }
+
+    #[test]
+    fn create_annotated_tag_keeps_message() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v2.0.0", None, Some("メジャーリリース")).unwrap();
+
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags[0].message.as_deref(), Some("メジャーリリース"));
+    }
+
+    #[test]
+    fn create_tag_rejects_empty_name_and_duplicate() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // 空名は入力エラー。
+        assert!(matches!(
+            create_tag(&repo, "  ", None, None).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+
+        // 同名タグの再作成は入力エラー。
+        create_tag(&repo, "dup", None, None).unwrap();
+        assert!(matches!(
+            create_tag(&repo, "dup", None, None).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    #[test]
+    fn delete_tag_removes_from_list() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        delete_tag(&repo, "v1.0.0").unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // 存在しないタグの削除は入力エラー。
+        assert!(matches!(
+            delete_tag(&repo, "no-such").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    #[test]
+    fn delete_lightweight_tag_then_undo_restores_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        delete_tag(&repo, "v1.0.0").unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // Undo で軽量タグが復元される（メッセージ無しのまま）。
+        undo_last(&repo).unwrap();
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "v1.0.0");
+        assert!(tags[0].message.is_none());
+    }
+
+    #[test]
+    fn delete_annotated_tag_then_undo_restores_message() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v2.0.0", None, Some("リリース 2.0")).unwrap();
+        delete_tag(&repo, "v2.0.0").unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // Undo で注釈付きタグが復元され、メッセージも戻る。
+        undo_last(&repo).unwrap();
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].message.as_deref(), Some("リリース 2.0"));
     }
 
     #[test]
