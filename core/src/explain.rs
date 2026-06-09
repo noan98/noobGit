@@ -131,6 +131,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
                 .into(),
         },
+        OperationKind::Rebase => Explanation {
+            title: "コミット履歴の整理（リベース）".into(),
+            what: "最近のコミットを作り直して、複数のコミットを1つにまとめたり（squash）、メッセージを書き換えたり（reword）します。".into(),
+            why: "履歴を見やすく整えられますが、コミットそのものを作り直すため、まだ送信（push）していないコミットに対して行うのが安全です。送信済みのコミットを書き換えると、他の人の履歴と食い違うため注意が必要です。".into(),
+            on_trouble: "直後なら Undo で、整理する前の状態に戻せます。送信済みのコミットを整理してしまったときは、慌てず元に戻してチームに相談しましょう。".into(),
+        },
     }
 }
 
@@ -157,6 +163,7 @@ mod tests {
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
+            OperationKind::Rebase,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty());

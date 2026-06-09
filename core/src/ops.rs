@@ -201,6 +201,183 @@ pub fn amend_commit(repo: &Repository, new_message: &str) -> Result<CommitInfo> 
     Ok(commit_info(&commit))
 }
 
+/// HEAD から連続する複数のコミットを1つにまとめる（squash / リベースの一種）。
+///
+/// `commit_oids` は **HEAD から連続する範囲**を **新しい順**（先頭が HEAD、末尾が最古）で渡す。
+/// 例: 履歴が `c3(HEAD) → c2 → c1` のとき `["c3", "c2"]` を渡すと c3 と c2 が1つにまとまり、
+/// 履歴は `(まとめたコミット) → c1` になる。離れたコミットの並び替えはこの関数では扱わない。
+///
+/// 実装方針: 範囲の最古コミット（末尾）の「親」を新しいベースとし、範囲の最新コミット（先頭＝HEAD）の
+/// ツリーをそのまま使って単一のコミットを作り、現在のブランチをそれに向ける。ツリーをそのまま使うため
+/// 通常コンフリクトは起きない。`message` が新しいコミットのメッセージになる。
+///
+/// 取り消し用に、元の HEAD への hard reset を記録する。
+pub fn squash_commits(repo: &Repository, commit_oids: &[&str], message: &str) -> Result<()> {
+    if commit_oids.len() < 2 {
+        return Err(CoreError::InvalidInput(
+            "まとめる（squash）には2つ以上のコミットを選んでください。".to_string(),
+        ));
+    }
+    if message.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "まとめた後のコミットメッセージを入力してください。".to_string(),
+        ));
+    }
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "履歴の整理には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // 渡された各 oid を解析する。
+    let mut oids = Vec::with_capacity(commit_oids.len());
+    for s in commit_oids {
+        let oid = git2::Oid::from_str(s.trim())
+            .map_err(|_| CoreError::InvalidInput(format!("コミットを特定できません: {s}")))?;
+        oids.push(oid);
+    }
+
+    // 範囲が HEAD から連続していることを検証する。
+    // commit_oids は新しい順なので、HEAD から親をたどった列と一致しなければならない。
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、履歴を整理できません。先にコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let original_head = head_commit.id();
+
+    let mut walker = head_commit.clone();
+    for (i, expected) in oids.iter().enumerate() {
+        if walker.id() != *expected {
+            return Err(CoreError::Blocked(
+                "選んだコミットが HEAD から連続していません。まとめられるのは、最新のコミットから続いた範囲だけです。"
+                    .to_string(),
+            ));
+        }
+        if i + 1 < oids.len() {
+            // 次の親へ進む。マージコミット（親が複数）は扱わない。
+            if walker.parent_count() != 1 {
+                return Err(CoreError::Blocked(
+                    "マージコミットを含む範囲はまとめられません。".to_string(),
+                ));
+            }
+            walker = walker.parent(0)?;
+        }
+    }
+
+    // 範囲の最古コミット（oids の末尾 = いま walker が指すコミット）の親を新しいベースにする。
+    let oldest = walker;
+    let new_parents: Vec<Commit> = if oldest.parent_count() == 0 {
+        // 範囲が最初のコミットまで含む場合、ベースは無し（root コミットを作り直す）。
+        Vec::new()
+    } else if oldest.parent_count() == 1 {
+        vec![oldest.parent(0)?]
+    } else {
+        return Err(CoreError::Blocked(
+            "マージコミットを含む範囲はまとめられません。".to_string(),
+        ));
+    };
+    let parent_refs: Vec<&Commit> = new_parents.iter().collect();
+
+    // まとめツリー = 範囲の最新コミット（HEAD）のツリー。中身はそのまま保たれる。
+    let tree = head_commit.tree()?;
+
+    // 単一コミットを作る。参照は update_ref=None で更新せずに作り（libgit2 は HEAD 直更新時に
+    // 「新コミットの第1親が現在の tip であること」を要求するため）、その後で現在ブランチの
+    // 参照を手動で新コミットへ向ける。
+    let new_oid = repo.commit(None, &sig, &sig, message, &tree, &parent_refs)?;
+
+    // HEAD が指すブランチ参照（例: refs/heads/main）を新コミットへ進める。
+    // detached HEAD（ブランチを指していない）の場合は HEAD 自体を直接向ける。
+    match repo.head().ok().and_then(|h| {
+        if h.is_branch() {
+            h.name().map(|s| s.to_string())
+        } else {
+            None
+        }
+    }) {
+        Some(refname) => {
+            repo.reference(&refname, new_oid, true, "noobgit: squash commits")?;
+        }
+        None => {
+            repo.set_head_detached(new_oid)?;
+        }
+    }
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Rebase,
+            description: format!(
+                "コミットの統合（squash）を取り消す（{} 個を1つにまとめる前へ）",
+                oids.len()
+            ),
+            action: UndoAction::HardResetTo {
+                previous: original_head.to_string(),
+            },
+        },
+    );
+
+    Ok(())
+}
+
+/// 最新のコミット（HEAD）のメッセージだけを書き換える（reword / リベースの一種）。
+///
+/// ツリーは現在の HEAD のツリーをそのまま使い、内容は一切変えない。author は据え置き、committer を
+/// 現在の identity に更新する（[`amend_commit`] のメッセージ特化版）。`message` は非空であること。
+///
+/// 取り消し用に、書き換え前のコミットへ戻す soft reset を記録する。
+pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
+    if message.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "コミットメッセージを入力してください。".to_string(),
+        ));
+    }
+
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、メッセージを書き換えられません。先にコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let original = head_commit.id();
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "コミットの書き換えには名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // ツリーは HEAD のものをそのまま使う（内容は変えない）。author は据え置き、committer を更新。
+    let tree = head_commit.tree()?;
+    let new_oid = head_commit.amend(
+        Some("HEAD"),
+        None,
+        Some(&sig),
+        None,
+        Some(message),
+        Some(&tree),
+    )?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Rebase,
+            description: "コミットメッセージの書き換え（reword）を取り消す".to_string(),
+            action: UndoAction::SoftResetTo {
+                previous: original.to_string(),
+            },
+        },
+    );
+
+    let commit = repo.find_commit(new_oid)?;
+    Ok(commit_info(&commit))
+}
+
 /// 指定パスの、まだコミットしていない変更を捨てる（破棄）。
 ///
 /// - HEAD にあるファイル: 最後にコミットした状態へ強制的に戻す（ステージ済み・未ステージの
@@ -1224,6 +1401,132 @@ mod tests {
         assert_eq!(repo.head().unwrap().target().unwrap(), original);
         assert_eq!(log(&repo, 10).unwrap().len(), 1);
         assert_eq!(status(&repo).unwrap().staged.len(), 1);
+    }
+
+    #[test]
+    fn squash_combines_commits_and_undo_restores() {
+        let fx = TestRepo::new();
+        // 連続する3コミットを作る（c1 → c2 → c3）。
+        fx.write_file("a.txt", "1\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2\n");
+        fx.stage_all();
+        fx.commit("c2");
+        fx.write_file("b.txt", "new\n");
+        fx.stage_all();
+        fx.commit("c3");
+
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 3);
+        let head_before = repo.head().unwrap().peel_to_commit().unwrap();
+        let c3 = head_before.id();
+        let c2 = head_before.parent(0).unwrap().id();
+        // まとめ後のツリー内容（= HEAD のツリー）を控える。
+        let tree_before = head_before.tree().unwrap().id();
+
+        // 上位2つ（c3, c2）を1つにまとめる。
+        squash_commits(&repo, &[&c3.to_string(), &c2.to_string()], "まとめた").unwrap();
+
+        // 履歴は2件（まとめたコミット → c1）に減る。
+        let repo = fx.open();
+        let logged = log(&repo, 10).unwrap();
+        assert_eq!(logged.len(), 2);
+        assert_eq!(logged[0].summary, "まとめた");
+        // ツリー内容（ファイルの中身）は保たれている。
+        let head_after = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head_after.tree().unwrap().id(), tree_before);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "2\n"
+        );
+        assert!(fx.path().join("b.txt").exists());
+
+        // Undo で元の3コミットに戻る。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 3);
+        assert_eq!(repo.head().unwrap().peel_to_commit().unwrap().id(), c3);
+    }
+
+    #[test]
+    fn squash_rejects_non_contiguous_or_too_few() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2\n");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let repo = fx.open();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let c2 = head.id();
+        let c1 = head.parent(0).unwrap().id();
+
+        // 1つだけでは squash できない。
+        assert!(matches!(
+            squash_commits(&repo, &[&c2.to_string()], "x").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        // 空メッセージは拒否。
+        assert!(matches!(
+            squash_commits(&repo, &[&c2.to_string(), &c1.to_string()], "  ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        // HEAD から連続していない（先頭が HEAD でない）と拒否。
+        assert!(matches!(
+            squash_commits(&repo, &[&c1.to_string(), &c2.to_string()], "x").unwrap_err(),
+            CoreError::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn reword_changes_message_and_undo_restores() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2\n");
+        fx.stage_all();
+        fx.commit("typo");
+
+        let repo = fx.open();
+        let before = repo.head().unwrap().peel_to_commit().unwrap();
+        let original = before.id();
+        let tree_before = before.tree().unwrap().id();
+
+        let info = reword_commit(&repo, "fixed message").unwrap();
+        assert_eq!(info.summary, "fixed message");
+
+        // コミット数は変わらず、ツリー内容も保たれる（メッセージだけが変わる）。
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 2);
+        let after = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(after.tree().unwrap().id(), tree_before);
+        assert_ne!(after.id(), original);
+
+        // Undo で書き換え前のコミットに戻る。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(
+            repo.head().unwrap().peel_to_commit().unwrap().id(),
+            original
+        );
+    }
+
+    #[test]
+    fn reword_empty_message_is_rejected() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        assert!(matches!(
+            reword_commit(&repo, "   ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
     }
 
     #[test]

@@ -27,6 +27,7 @@ import {
   BranchPanelSkeleton,
 } from "./components/SkeletonPanels";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { RebaseWizard } from "./components/RebaseWizard";
 import {
   DiffPanel,
   type DiffSelection,
@@ -112,6 +113,9 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
   push: { branches: true },
   force_push: { branches: true },
+  // リベース（squash / reword）は HEAD のコミットを作り直す。status・log・ブランチ関係が
+  // 変わり、undo も積まれる。
+  rebase: { status: true, branches: true, log: true, undo: true },
 };
 
 interface Guard {
@@ -157,6 +161,12 @@ export default function App() {
   const [isNetworkBusy, setIsNetworkBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
+
+  // リベース（squash / reword）で選択中のコミット id 集合と、ウィザードの表示状態。
+  const [selectedCommitIds, setSelectedCommitIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [showRebase, setShowRebase] = useState(false);
 
   // 差分プレビュー: 選択中ファイルと、その差分。
   const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
@@ -508,6 +518,44 @@ export default function App() {
     });
   }
 
+  // リベース対象のチェックボックスを切り替える。
+  function toggleCommitSelect(id: string) {
+    setSelectedCommitIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // 選択を解除する（ウィザードを閉じる・実行後に呼ぶ）。
+  function clearCommitSelection() {
+    setSelectedCommitIds(new Set());
+  }
+
+  // 履歴の表示順（新しい順）で選択中のコミットを取り出す。
+  const selectedCommits = commits.filter((c) => selectedCommitIds.has(c.id));
+
+  // squash: 選んだ連続コミットを1つにまとめる。破壊的なので guarded を通す。
+  function doSquash(commitOids: string[], message: string) {
+    setShowRebase(false);
+    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
+      await api.squashCommits(repoPath, commitOids, message);
+      clearCommitSelection();
+      showToast("選んだコミットを1つにまとめました。", "success");
+    });
+  }
+
+  // reword: 最新コミットのメッセージを書き換える。破壊的なので guarded を通す。
+  function doReword(message: string) {
+    setShowRebase(false);
+    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
+      await api.rewordCommit(repoPath, message);
+      clearCommitSelection();
+      showToast("コミットメッセージを書き換えました。", "success");
+    });
+  }
+
   if (!opened) {
     return (
       <div className="welcome">
@@ -788,6 +836,9 @@ export default function App() {
                       () => api.resetHard(repoPath, c.id),
                     )
                   }
+                  selectedIds={selectedCommitIds}
+                  onToggleSelect={toggleCommitSelect}
+                  onStartRebase={() => setShowRebase(true)}
                 />
               </motion.div>
             )}
@@ -883,6 +934,15 @@ export default function App() {
           affectedFiles={guard.affectedFiles}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {showRebase && (
+        <RebaseWizard
+          selected={selectedCommits}
+          onSquash={doSquash}
+          onReword={doReword}
+          onCancel={() => setShowRebase(false)}
         />
       )}
 

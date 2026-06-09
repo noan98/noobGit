@@ -11,6 +11,12 @@ interface Props {
   onLoadMore: () => void;
   // コミット入力欄へ誘導する（Empty State の「コミットへ」ボタン用）。
   onGoToCommit: () => void;
+  // リベース（squash / reword）対象に選んだコミット id の集合。
+  selectedIds: Set<string>;
+  // チェックボックスの切り替え。
+  onToggleSelect: (id: string) => void;
+  // 選択済みコミットでリベースウィザードを開く。
+  onStartRebase: () => void;
 }
 
 // Unix 秒を「N分前」「N時間前」などの相対表記に変換する。
@@ -87,11 +93,24 @@ export function HistoryPanel({
   loadingMore,
   onLoadMore,
   onGoToCommit,
+  selectedIds,
+  onToggleSelect,
+  onStartRebase,
 }: Props) {
+  const selectedCount = selectedIds.size;
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
+        {selectedCount > 0 && (
+          <button
+            className="btn btn-small"
+            onClick={onStartRebase}
+            title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
+          >
+            🧹 整理する… ({selectedCount})
+          </button>
+        )}
       </div>
 
       {commits.length === 0 ? (
@@ -110,6 +129,16 @@ export function HistoryPanel({
               const initials = authorInitials(c.author_name);
               return (
                 <li key={c.id} className="commit-row">
+                  {/* リベース対象の選択チェックボックス */}
+                  <input
+                    type="checkbox"
+                    className="commit-select"
+                    checked={selectedIds.has(c.id)}
+                    onChange={() => onToggleSelect(c.id)}
+                    title="このコミットをリベース（整理）の対象に選ぶ"
+                    aria-label={`コミット ${c.short_id} を選択`}
+                  />
+
                   {/* 著者アバター */}
                   <div
                     className="commit-avatar"
