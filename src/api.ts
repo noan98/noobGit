@@ -175,6 +175,9 @@ export const api = {
     invoke<FileDiff>("get_diff_staged", { repoPath, path }),
   getDiffConflict: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_conflict", { repoPath, path }),
+  // 2 つのコミット間の差分。fromOid が null なら toOid の第1親との比較になる。
+  getDiffBetween: (repoPath: string, fromOid: string | null, toOid: string) =>
+    invoke<FileDiff[]>("get_diff_between", { repoPath, fromOid, toOid }),
   getBranchGraph: (repoPath: string) =>
     invoke<BranchGraph>("get_branch_graph", { repoPath }),
 

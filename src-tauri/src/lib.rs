@@ -57,6 +57,19 @@ fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String
     repo::diff_conflict(&r, &path).map_err(|e| e.to_string())
 }
 
+/// 2 つのコミット間（または親コミット↔指定コミット）の全変更ファイルの差分を返す。
+///
+/// `from_oid` が `null` のときは `to_oid` の第1親との比較になる。
+#[tauri::command]
+fn get_diff_between(
+    repo_path: String,
+    from_oid: Option<String>,
+    to_oid: String,
+) -> Result<Vec<FileDiff>, String> {
+    let r = open(&repo_path)?;
+    repo::diff_commits(&r, from_oid.as_deref(), &to_oid).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_branch_graph(repo_path: String) -> Result<BranchGraph, String> {
     let r = open(&repo_path)?;
@@ -244,6 +257,7 @@ pub fn run() {
             get_diff_unstaged,
             get_diff_staged,
             get_diff_conflict,
+            get_diff_between,
             get_branch_graph,
             explain_operation,
             assess_operation,

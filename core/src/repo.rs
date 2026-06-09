@@ -441,6 +441,192 @@ fn build_file_diff(path: &str, diff: &git2::Diff) -> Result<FileDiff> {
     })
 }
 
+/// 2 つのコミット間（または親コミット↔指定コミット）の全変更ファイルの差分を返す。
+///
+/// `to_oid` は比較対象（新しい側）のコミット。`from_oid` を渡すとその間の差分、
+/// `None` のときは `to` コミットの第1親との比較になる（親が無い最初のコミットなら
+/// 空ツリーとの比較＝すべて追加として表示）。
+///
+/// oid のパースに失敗した場合や、そのコミットが見つからない場合は
+/// [`CoreError::InvalidInput`] を返す。ファイルごとに [`FileDiff`] を組み立てて
+/// ベクタで返し、各ファイルの行差分は [`build_file_diff`] と同じ流儀で作る。
+pub fn diff_commits(
+    repo: &Repository,
+    from_oid: Option<&str>,
+    to_oid: &str,
+) -> Result<Vec<FileDiff>> {
+    let to_commit = parse_commit(repo, to_oid)?;
+    let to_tree = to_commit.tree()?;
+
+    // from を決める。明示指定があればそれを、無ければ to の第1親を使う。
+    // 親が無い最初のコミットでは from_tree を None（空ツリー扱い）にする。
+    let from_tree = match from_oid {
+        Some(oid) => Some(parse_commit(repo, oid)?.tree()?),
+        None => match to_commit.parent(0) {
+            Ok(parent) => Some(parent.tree()?),
+            Err(_) => None,
+        },
+    };
+
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3);
+    let diff = repo.diff_tree_to_tree(from_tree.as_ref(), Some(&to_tree), Some(&mut opts))?;
+
+    build_file_diffs(&diff)
+}
+
+/// 文字列の oid をパースし、対応するコミットを取り出す。
+///
+/// oid が不正な形式、またはそのコミットが見つからない場合は
+/// [`CoreError::InvalidInput`] を日本語で返す。
+fn parse_commit<'r>(repo: &'r Repository, oid: &str) -> Result<git2::Commit<'r>> {
+    let parsed = git2::Oid::from_str(oid).map_err(|_| {
+        CoreError::InvalidInput(format!("コミットIDの形式が正しくありません: {oid}"))
+    })?;
+    repo.find_commit(parsed)
+        .map_err(|_| CoreError::InvalidInput(format!("コミットが見つかりません: {oid}")))
+}
+
+/// ツリー間の `git2::Diff` を走査し、ファイルごとに [`FileDiff`] へ組み立てる。
+///
+/// [`build_file_diff`] が単一パス向けなのに対し、こちらは差分に含まれる全ファイルを
+/// それぞれ独立した [`FileDiff`] に分けて返す。バイナリ判定・[`MAX_DIFF_LINES`] での
+/// 打ち切りは各ファイルごとに行う。
+fn build_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    // パスごとの組み立て状態と、初出順を保つためのパス並び。
+    #[derive(Default)]
+    struct State {
+        order: Vec<String>,
+        builds: HashMap<String, DiffBuild>,
+    }
+
+    impl State {
+        // 初出のパスは順序リストに登録しつつ、その組み立て状態への可変参照を返す。
+        fn entry(&mut self, path: String) -> &mut DiffBuild {
+            if !self.builds.contains_key(&path) {
+                self.order.push(path.clone());
+                self.builds.insert(path.clone(), DiffBuild::default());
+            }
+            self.builds.get_mut(&path).unwrap()
+        }
+    }
+
+    // デルタから表示用のパスを取る（new_file 優先、無ければ old_file）。
+    fn delta_path(delta: &git2::DiffDelta) -> String {
+        delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    let state = RefCell::new(State::default());
+
+    let mut file_cb = |delta: git2::DiffDelta, _progress: f32| -> bool {
+        let path = delta_path(&delta);
+        state.borrow_mut().entry(path);
+        true
+    };
+
+    let mut binary_cb = |delta: git2::DiffDelta, _binary: git2::DiffBinary| -> bool {
+        let path = delta_path(&delta);
+        state.borrow_mut().entry(path).is_binary = true;
+        true
+    };
+
+    let mut hunk_cb = |delta: git2::DiffDelta, hunk: git2::DiffHunk| -> bool {
+        let path = delta_path(&delta);
+        let mut s = state.borrow_mut();
+        let build = s.entry(path);
+        if build.lines.len() >= MAX_DIFF_LINES {
+            build.truncated = true;
+            return true;
+        }
+        let header = String::from_utf8_lossy(hunk.header());
+        build.lines.push(DiffLine {
+            kind: DiffLineKind::Hunk,
+            old_lineno: None,
+            new_lineno: None,
+            content: header.trim_end().to_string(),
+        });
+        true
+    };
+
+    let mut line_cb = |delta: git2::DiffDelta,
+                       _hunk: Option<git2::DiffHunk>,
+                       line: git2::DiffLine|
+     -> bool {
+        let path = delta_path(&delta);
+        let mut s = state.borrow_mut();
+        let build = s.entry(path);
+        if build.lines.len() >= MAX_DIFF_LINES {
+            build.truncated = true;
+            return true;
+        }
+        let kind = match line.origin_value() {
+            git2::DiffLineType::Addition | git2::DiffLineType::AddEOFNL => DiffLineKind::Addition,
+            git2::DiffLineType::Deletion | git2::DiffLineType::DeleteEOFNL => {
+                DiffLineKind::Deletion
+            }
+            _ => DiffLineKind::Context,
+        };
+        let raw = String::from_utf8_lossy(line.content());
+        let content = raw
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
+        build.lines.push(DiffLine {
+            kind,
+            old_lineno: line.old_lineno(),
+            new_lineno: line.new_lineno(),
+            content,
+        });
+        true
+    };
+
+    diff.foreach(
+        &mut file_cb,
+        Some(&mut binary_cb),
+        Some(&mut hunk_cb),
+        Some(&mut line_cb),
+    )?;
+
+    // バイナリ判定の取りこぼし対策: 走査後にデルタのフラグでも確認する。
+    {
+        let mut s = state.borrow_mut();
+        for delta in diff.deltas() {
+            if delta.flags().contains(git2::DiffFlags::BINARY) {
+                let path = delta_path(&delta);
+                s.entry(path).is_binary = true;
+            }
+        }
+    }
+
+    let state = state.into_inner();
+    let mut builds = state.builds;
+    let mut out = Vec::with_capacity(state.order.len());
+    for path in state.order {
+        let build = builds.remove(&path).unwrap_or_default();
+        out.push(FileDiff {
+            path,
+            is_binary: build.is_binary,
+            truncated: build.truncated,
+            is_conflicted: false,
+            lines: if build.is_binary {
+                Vec::new()
+            } else {
+                build.lines
+            },
+        });
+    }
+
+    Ok(out)
+}
+
 /// コンフリクト中ファイルの「いまの作業ツリーの中身」を返す。
 ///
 /// コンフリクト中はインデックスに stage 0 が無く、通常の差分（インデックス↔作業
@@ -975,6 +1161,110 @@ mod tests {
 
         assert!(diff.truncated);
         assert!(diff.lines.len() <= MAX_DIFF_LINES);
+    }
+
+    #[test]
+    fn diff_commits_shows_added_and_removed_lines() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "line1\nline2\nline3\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let from = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "line1\nCHANGED\nline3\n");
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let diffs = diff_commits(&repo, Some(&from), &to).unwrap();
+
+        assert_eq!(diffs.len(), 1);
+        let d = &diffs[0];
+        assert_eq!(d.path, "a.txt");
+        assert!(!d.is_binary);
+        assert!(d
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Deletion && l.content == "line2"));
+        assert!(d
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "CHANGED"));
+    }
+
+    #[test]
+    fn diff_commits_none_from_uses_parent() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "v1\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "v2\n");
+        fx.write_file("b.txt", "new file\n");
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // from_oid=None なら c2 の第1親（c1）との比較になる。
+        let diffs = diff_commits(&repo, None, &to).unwrap();
+
+        // a.txt の変更と b.txt の新規追加の 2 ファイルが出る。
+        assert_eq!(diffs.len(), 2);
+        let a = diffs.iter().find(|d| d.path == "a.txt").unwrap();
+        assert!(a
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "v2"));
+        let b = diffs.iter().find(|d| d.path == "b.txt").unwrap();
+        assert!(b
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "new file"));
+    }
+
+    #[test]
+    fn diff_commits_first_commit_against_empty_tree() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello\nworld\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // 親が無い最初のコミットは空ツリーとの比較＝全行が追加になる。
+        let diffs = diff_commits(&repo, None, &to).unwrap();
+        assert_eq!(diffs.len(), 1);
+        let adds: Vec<_> = diffs[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Addition)
+            .collect();
+        assert_eq!(adds.len(), 2);
+    }
+
+    #[test]
+    fn diff_commits_invalid_oid_is_input_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // 不正な形式の oid。
+        let err = diff_commits(&repo, None, "not-a-valid-oid").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // 形式は正しいが存在しない oid。
+        let missing = "0".repeat(40);
+        let err = diff_commits(&repo, None, &missing).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // from 側が不正でもエラーになる。
+        let to = fx.head_oid().to_string();
+        let err = diff_commits(&repo, Some("zzzz"), &to).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
     }
 
     /// `a.txt` がコンフリクト中になった一時リポジトリを作る。
