@@ -21,6 +21,12 @@ interface Props {
   onSearch: (filter: LogFilter) => void;
   // 検索（再取得）の実行中かどうか。スピナー表示に使う。
   searching: boolean;
+  // リベース（squash / reword）対象に選んだコミット id の集合。
+  selectedIds: Set<string>;
+  // チェックボックスの切り替え。
+  onToggleSelect: (id: string) => void;
+  // 選択済みコミットでリベースウィザードを開く。
+  onStartRebase: () => void;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -105,12 +111,16 @@ export function HistoryPanel({
   compareBaseId,
   onSearch,
   searching,
+  selectedIds,
+  onToggleSelect,
+  onStartRebase,
 }: Props) {
   // 検索ボックスの入力値。入力のたびに即時反映し、再取得はデバウンスして行う。
   const [messageQuery, setMessageQuery] = useState("");
   const [authorQuery, setAuthorQuery] = useState("");
   // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
   const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+  const selectedCount = selectedIds.size;
 
   // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
   const onSearchRef = useRef(onSearch);
@@ -144,6 +154,15 @@ export function HistoryPanel({
           <span className="history-searching" role="status">
             <span className="network-spinner">🔄</span>検索中…
           </span>
+        )}
+        {selectedCount > 0 && (
+          <button
+            className="btn btn-small"
+            onClick={onStartRebase}
+            title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
+          >
+            🧹 整理する… ({selectedCount})
+          </button>
         )}
       </div>
 
@@ -195,6 +214,16 @@ export function HistoryPanel({
                   key={c.id}
                   className={`commit-row${isCompareBase ? " compare-base" : ""}`}
                 >
+                  {/* リベース対象の選択チェックボックス */}
+                  <input
+                    type="checkbox"
+                    className="commit-select"
+                    checked={selectedIds.has(c.id)}
+                    onChange={() => onToggleSelect(c.id)}
+                    title="このコミットをリベース（整理）の対象に選ぶ"
+                    aria-label={`コミット ${c.short_id} を選択`}
+                  />
+
                   {/* 著者アバター */}
                   <div
                     className="commit-avatar"

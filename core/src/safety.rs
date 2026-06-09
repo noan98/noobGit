@@ -23,6 +23,7 @@ pub enum OperationKind {
     CherryPick,
     CreateTag,
     DeleteTag,
+    Rebase,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -331,6 +332,29 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                 "直後なら Undo で同じタグを作り直して復元できます。".to_string(),
             ),
         },
+
+        OperationKind::Rebase => RiskAssessment {
+            level: RiskLevel::Destructive,
+            reasons: {
+                let mut r = vec![
+                    "コミットの履歴を整理して作り直します（リベース: まとめる/メッセージ書き換え）。"
+                        .to_string(),
+                ];
+                if ctx.head_published {
+                    r.push(
+                        "対象のコミットはすでにリモートへ送信（push）済みのようです。公開済み履歴の書き換えは危険で、他の人が持っている履歴と食い違い、混乱や事故の原因になります。"
+                            .to_string(),
+                    );
+                }
+                r
+            },
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "履歴の整理は、まだ送信（push）していないコミットに対して行うのが安全です。直後なら Undo で元に戻せます。"
+                    .to_string(),
+            ),
+        },
     }
 }
 
@@ -487,6 +511,25 @@ mod tests {
         assert!(!del.permanent_data_loss);
     }
 
+    #[test]
+    fn rebase_is_destructive_and_flags_published_history() {
+        let local = SafetyContext::default(); // head_published = false
+        let a = assess(OperationKind::Rebase, &local);
+        assert_eq!(a.level, RiskLevel::Destructive);
+        assert!(a.reversible);
+        // 公開前は公開済み履歴の警告を含まない。
+        assert!(!a.reasons.iter().any(|r| r.contains("公開済み履歴")));
+
+        let published = SafetyContext {
+            head_published: true,
+            ..Default::default()
+        };
+        let b = assess(OperationKind::Rebase, &published);
+        assert_eq!(b.level, RiskLevel::Destructive);
+        // 公開済みのときは危険の理由を追加する。
+        assert!(b.reasons.iter().any(|r| r.contains("公開済み履歴")));
+    }
+
     // すべての操作種別がパニックせずに評価でき、理由が空でないことを網羅的に確認する。
     #[test]
     fn assess_covers_all_operation_kinds() {
@@ -511,6 +554,7 @@ mod tests {
             OperationKind::CherryPick,
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
+            OperationKind::Rebase,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }

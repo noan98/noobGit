@@ -129,7 +129,8 @@ export type OperationKind =
   | "force_push"
   | "cherry_pick"
   | "create_tag"
-  | "delete_tag";
+  | "delete_tag"
+  | "rebase";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -258,6 +259,10 @@ export const api = {
     invoke<CommitInfo>("commit", { repoPath, message }),
   amendCommit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("amend_commit", { repoPath, message }),
+  squashCommits: (repoPath: string, commitOids: string[], message: string) =>
+    invoke<void>("squash_commits", { repoPath, commitOids, message }),
+  rewordCommit: (repoPath: string, message: string) =>
+    invoke<CommitInfo>("reword_commit", { repoPath, message }),
   discardPath: (repoPath: string, path: string) =>
     invoke<void>("discard_path", { repoPath, path }),
 

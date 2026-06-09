@@ -1214,3 +1214,67 @@ textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
 }
+
+/* リベース対象選択のチェックボックス（履歴の各行） */
+.commit-select {
+  flex-shrink: 0;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+/* リベースウィザード */
+.rebase-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.rebase-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rebase-mode.active {
+  border-color: var(--caution-emphasis);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+}
+.rebase-mode input:disabled + span {
+  opacity: 0.5;
+}
+.rebase-targets,
+.rebase-message {
+  margin: 12px 0;
+}
+.rebase-commit-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rebase-commit-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rebase-commit-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rebase-hint {
+  font-size: 13px;
+  color: var(--text-muted, #888);
+  margin: 6px 0 0;
+}
+.rebase-message textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  font-family: inherit;
+}

@@ -130,8 +130,8 @@ fn assess_operation(
 ) -> Result<RiskAssessment, String> {
     let r = open(&repo_path)?;
     let working_dir_dirty = repo::is_dirty(&r).map_err(|e| e.to_string())?;
-    // amend のときだけ、HEAD が公開（push）済みかを判定する（危険度の引き上げに使う）。
-    let head_published = if matches!(op, OperationKind::AmendCommit) {
+    // amend / rebase のときだけ、HEAD が公開（push）済みかを判定する（危険度の引き上げに使う）。
+    let head_published = if matches!(op, OperationKind::AmendCommit | OperationKind::Rebase) {
         repo::head_is_published(&r).unwrap_or(false)
     } else {
         false
@@ -181,6 +181,27 @@ fn commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
 fn amend_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     let r = open(&repo_path)?;
     ops::amend_commit(&r, &message).map_err(|e| e.to_string())
+}
+
+/// HEAD から連続する複数のコミットを1つにまとめる（squash）。
+///
+/// `commit_oids` は HEAD から連続する範囲を新しい順（先頭が HEAD）で渡す。
+#[tauri::command]
+fn squash_commits(
+    repo_path: String,
+    commit_oids: Vec<String>,
+    message: String,
+) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    let refs: Vec<&str> = commit_oids.iter().map(|s| s.as_str()).collect();
+    ops::squash_commits(&r, &refs, &message).map_err(|e| e.to_string())
+}
+
+/// 最新のコミット（HEAD）のメッセージだけを書き換える（reword）。
+#[tauri::command]
+fn reword_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
+    let r = open(&repo_path)?;
+    ops::reword_commit(&r, &message).map_err(|e| e.to_string())
 }
 
 /// 指定パスの、まだコミットしていない変更を捨てる（破棄）。元に戻せない破壊的操作。
@@ -358,6 +379,8 @@ pub fn run() {
             unstage,
             commit,
             amend_commit,
+            squash_commits,
+            reword_commit,
             discard_path,
             stash_save,
             stash_apply,
