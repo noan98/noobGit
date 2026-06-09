@@ -24,6 +24,7 @@ pub enum OperationKind {
     CreateTag,
     DeleteTag,
     Rebase,
+    Merge,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -355,6 +356,17 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                     .to_string(),
             ),
         },
+
+        OperationKind::Merge => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "別ブランチの変更をこのブランチに取り込みます（マージ）。".to_string(),
+                "コンフリクト（競合）が起きた場合は、コンフリクト解消ウィザードで対処できます。直後なら Undo で取り消せます。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
     }
 }
 
@@ -555,9 +567,19 @@ mod tests {
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
             OperationKind::Rebase,
+            OperationKind::Merge,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }
+    }
+
+    #[test]
+    fn merge_is_caution_and_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::Merge, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(a.reversible);
+        assert!(!a.permanent_data_loss);
     }
 
     #[test]

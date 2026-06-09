@@ -254,3 +254,23 @@ pub enum PullOutcome {
         commit: CommitInfo,
     },
 }
+
+/// merge（ブランチ統合）の結果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MergeOutcome {
+    /// 対象ブランチはすでに統合済みで、取り込むものは無かった。
+    UpToDate,
+    /// fast-forward で前進した（マージコミットを作らず、履歴を一直線に保つ）。
+    FastForwarded {
+        /// 前進後の、現在ブランチの最新コミット。
+        commit: CommitInfo,
+    },
+    /// マージコミットを作成して統合した。
+    Merged {
+        /// 作成したマージコミット。
+        commit: CommitInfo,
+    },
+    /// コンフリクトが発生した。リポジトリはマージ中の状態で、コンフリクト解消が必要。
+    Conflicted,
+}

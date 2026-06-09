@@ -9,7 +9,7 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, PullOutcome, RepoStatus, StashInfo, TagInfo,
+    FileDiff, MergeOutcome, PullOutcome, RepoStatus, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -310,6 +310,14 @@ fn push(repo_path: String, remote: String, refspec: String, force: bool) -> Resu
     ops::push(&r, &remote, &refspec, force).map_err(|e| e.to_string())
 }
 
+/// 指定したローカルブランチを現在のブランチにマージする。
+/// コンフリクトが発生した場合は `Conflicted` を返し、リポジトリをマージ中の状態にする。
+#[tauri::command]
+fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, String> {
+    let r = open(&repo_path)?;
+    ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
+}
+
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
 #[tauri::command]
 fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
@@ -397,6 +405,7 @@ pub fn run() {
             reset_hard,
             push,
             cherry_pick,
+            merge_branch,
             list_tags,
             create_tag,
             delete_tag,

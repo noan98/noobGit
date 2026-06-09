@@ -132,6 +132,9 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // リベース（squash / reword）は HEAD のコミットを作り直す。status・log・ブランチ関係が
   // 変わり、undo も積まれる。
   rebase: { status: true, branches: true, log: true, undo: true },
+  // マージは HEAD を動かすので status・log・ブランチ関係が変わる。undo も積まれる。
+  // コンフリクト時も status を取り直してコンフリクトを検出する。
+  merge: FULL_REFRESH,
 };
 
 interface Guard {
@@ -688,6 +691,40 @@ export default function App() {
     );
   }
 
+  // ブランチのマージ。コンフリクトの可能性があるため guarded を通す。
+  // コンフリクト時は FULL_REFRESH で status が更新され、ConflictWizard が自動表示される。
+  function doMergeBranch(name: string) {
+    void guarded(
+      `ブランチ「${name}」をマージ`,
+      "merge",
+      async () => {
+        const outcome = await api.mergeBranch(repoPath, name);
+        if (outcome.kind === "up_to_date") {
+          showToast(
+            `「${name}」はすでにこのブランチに統合済みです。`,
+            "success",
+          );
+        } else if (outcome.kind === "fast_forwarded") {
+          showToast(
+            `「${name}」をマージしました（${outcome.commit.short_id} まで前進）。`,
+            "success",
+          );
+        } else if (outcome.kind === "merged") {
+          showToast(
+            `「${name}」をマージしました（マージコミット ${outcome.commit.short_id}）。`,
+            "success",
+          );
+        } else {
+          showToast(
+            `「${name}」のマージ中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください。`,
+            "warning",
+          );
+        }
+      },
+      undefined,
+    );
+  }
+
   // コミットのコピー（cherry-pick）。コンフリクトの可能性があるため guarded を通す。
   function doCherryPick(commit: CommitInfo) {
     void guarded(
@@ -1191,6 +1228,7 @@ export default function App() {
                       name,
                     )
                   }
+                  onMerge={(name) => doMergeBranch(name)}
                   onPush={(name) =>
                     void guarded(
                       `ブランチ「${name}」を送信`,

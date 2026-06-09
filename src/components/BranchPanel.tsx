@@ -9,6 +9,7 @@ interface Props {
   onCreate: (name: string) => void;
   onSwitch: (name: string) => void;
   onDelete: (name: string) => void;
+  onMerge: (name: string) => void;
   onPush: (name: string) => void;
   onForcePush: (name: string) => void;
   // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
@@ -21,6 +22,7 @@ export function BranchPanel({
   onCreate,
   onSwitch,
   onDelete,
+  onMerge,
   onPush,
   onForcePush,
   networkBusy = false,
@@ -110,6 +112,15 @@ export function BranchPanel({
                   {!b.is_head && (
                     <button className="link" onClick={() => onSwitch(b.name)}>
                       切り替え
+                    </button>
+                  )}
+                  {!b.is_head && (
+                    <button
+                      className="link"
+                      onClick={() => onMerge(b.name)}
+                      title="このブランチの変更を現在のブランチに取り込みます（マージ）"
+                    >
+                      マージ
                     </button>
                   )}
                   {!b.is_head && (
