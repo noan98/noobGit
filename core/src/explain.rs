@@ -131,6 +131,38 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "消えた履歴は元に戻すのが困難です。実行前に必ずチームへ確認してください。"
                 .into(),
         },
+        OperationKind::CherryPick => Explanation {
+            title: "コミットをコピー（cherry-pick）".into(),
+            what: "選んだコミットが加えた変更を、いまのブランチの先頭に新しいコミットとしてコピーします。元のコミットはそのまま残ります。"
+                .into(),
+            why: "ほかのブランチにある修正だけを、ブランチ全体をマージせずに取り込みたいときに便利です。いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。"
+                .into(),
+            on_trouble:
+                "コンフリクトが起きた場合は、取り込みを中止して作業ツリーを元の状態に戻します。直後なら Undo で、コピーしたコミットを取り消せます。"
+                    .into(),
+        },
+        OperationKind::CreateTag => Explanation {
+            title: "タグを付ける".into(),
+            what: "特定のコミットに、覚えやすい名前の「目印（タグ）」を付けます。リリースの地点（例: v1.0.0）を示すのによく使います。"
+                .into(),
+            why: "目印を付けるだけで、ファイルの中身や履歴は何も変わりません。安全な操作です。"
+                .into(),
+            on_trouble: "名前を間違えたら、そのタグを削除して付け直せます。コミットには影響しません。"
+                .into(),
+        },
+        OperationKind::DeleteTag => Explanation {
+            title: "タグを削除".into(),
+            what: "コミットに付けた目印（タグ）を外します。コミットそのものは消えません。".into(),
+            why: "目印が消えるだけなので比較的安全ですが、そのタグを参照していた場所からは見えなくなります。"
+                .into(),
+            on_trouble: "直後なら Undo で、同じ名前・同じ対象のタグを作り直して復元できます。".into(),
+        },
+        OperationKind::Rebase => Explanation {
+            title: "コミット履歴の整理（リベース）".into(),
+            what: "最近のコミットを作り直して、複数のコミットを1つにまとめたり（squash）、メッセージを書き換えたり（reword）します。".into(),
+            why: "履歴を見やすく整えられますが、コミットそのものを作り直すため、まだ送信（push）していないコミットに対して行うのが安全です。送信済みのコミットを書き換えると、他の人の履歴と食い違うため注意が必要です。".into(),
+            on_trouble: "直後なら Undo で、整理する前の状態に戻せます。送信済みのコミットを整理してしまったときは、慌てず元に戻してチームに相談しましょう。".into(),
+        },
     }
 }
 
@@ -157,6 +189,10 @@ mod tests {
             OperationKind::Pull,
             OperationKind::Push,
             OperationKind::ForcePush,
+            OperationKind::CherryPick,
+            OperationKind::CreateTag,
+            OperationKind::DeleteTag,
+            OperationKind::Rebase,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty());

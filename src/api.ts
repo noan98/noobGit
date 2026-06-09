@@ -42,6 +42,17 @@ export interface CommitInfo {
   time: number;
 }
 
+// コミット履歴の絞り込み条件。すべて任意で、未指定の項目は条件として使わない。
+// message はメッセージ（件名・本文）への部分一致、author は作者名/メールへの
+// 部分一致（どちらも大文字小文字を無視）、since/until はコミット時刻
+// （Unix エポック秒）の下限・上限（両端を含む）。
+export interface LogFilter {
+  message?: string;
+  author?: string;
+  since?: number;
+  until?: number;
+}
+
 export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
 
 export interface DiffLine {
@@ -57,6 +68,25 @@ export interface FileDiff {
   truncated: boolean;
   is_conflicted: boolean;
   lines: DiffLine[];
+}
+
+// blame（行ごとの最終変更コミット）の1かたまり。
+// lines_start は1始まりの行番号で、そこから lines_count 行ぶんが対象。
+export interface BlameHunk {
+  lines_start: number;
+  lines_count: number;
+  commit_id: string;
+  short_id: string;
+  message_short: string;
+  author_name: string;
+  time: number;
+}
+
+// コンフリクト中のファイル1件（解消ウィザード用）。
+// has_ancestor は共通祖先側エントリの有無（3-way マージか否かの簡易情報）。
+export interface ConflictFile {
+  path: string;
+  has_ancestor: boolean;
 }
 
 export interface BranchRelation {
@@ -96,7 +126,11 @@ export type OperationKind =
   | "fetch"
   | "pull"
   | "push"
-  | "force_push";
+  | "force_push"
+  | "cherry_pick"
+  | "create_tag"
+  | "delete_tag"
+  | "rebase";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -125,6 +159,16 @@ export interface StashInfo {
   index: number;
   message: string;
   id: string;
+  // この退避に含まれる変更ファイル数（一覧表示用の概要）。
+  file_count: number;
+}
+
+// タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
+export interface TagInfo {
+  name: string;
+  target_id: string;
+  target_short_id: string;
+  message: string | null;
 }
 
 // fetch（取得）の結果。リモート追跡ブランチを更新するだけの安全操作。
@@ -167,14 +211,31 @@ export const api = {
     invoke<RepoStatus>("get_status", { repoPath }),
   getBranches: (repoPath: string) =>
     invoke<BranchInfo[]>("get_branches", { repoPath }),
-  getLog: (repoPath: string, skip: number, max: number) =>
-    invoke<CommitInfo[]>("get_log", { repoPath, skip, max }),
+  // filter を省略すると従来どおり全件を対象にする（後方互換）。
+  getLog: (repoPath: string, skip: number, max: number, filter?: LogFilter) =>
+    invoke<CommitInfo[]>("get_log", {
+      repoPath,
+      skip,
+      max,
+      filter: filter ?? null,
+    }),
+  getFileLog: (repoPath: string, path: string, max: number) =>
+    invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
   getDiffStaged: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_staged", { repoPath, path }),
   getDiffConflict: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_conflict", { repoPath, path }),
+  // 2 つのコミット間の差分。fromOid が null なら toOid の第1親との比較になる。
+  getDiffBetween: (repoPath: string, fromOid: string | null, toOid: string) =>
+    invoke<FileDiff[]>("get_diff_between", { repoPath, fromOid, toOid }),
+  getBlame: (repoPath: string, path: string) =>
+    invoke<BlameHunk[]>("get_blame", { repoPath, path }),
+  getConflicts: (repoPath: string) =>
+    invoke<ConflictFile[]>("get_conflicts", { repoPath }),
+  markResolved: (repoPath: string, path: string) =>
+    invoke<void>("mark_resolved", { repoPath, path }),
   getBranchGraph: (repoPath: string) =>
     invoke<BranchGraph>("get_branch_graph", { repoPath }),
 
@@ -190,12 +251,18 @@ export const api = {
   stageAll: (repoPath: string) => invoke<void>("stage_all", { repoPath }),
   stagePath: (repoPath: string, path: string) =>
     invoke<void>("stage_path", { repoPath, path }),
+  stageHunk: (repoPath: string, filePath: string, hunkHeader: string) =>
+    invoke<void>("stage_hunk", { repoPath, filePath, hunkHeader }),
   unstage: (repoPath: string, path: string) =>
     invoke<void>("unstage", { repoPath, path }),
   commit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("commit", { repoPath, message }),
   amendCommit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("amend_commit", { repoPath, message }),
+  squashCommits: (repoPath: string, commitOids: string[], message: string) =>
+    invoke<void>("squash_commits", { repoPath, commitOids, message }),
+  rewordCommit: (repoPath: string, message: string) =>
+    invoke<CommitInfo>("reword_commit", { repoPath, message }),
   discardPath: (repoPath: string, path: string) =>
     invoke<void>("discard_path", { repoPath, path }),
 
@@ -207,6 +274,9 @@ export const api = {
     invoke<void>("stash_apply", { repoPath, index }),
   stashPop: (repoPath: string, index: number) =>
     invoke<void>("stash_pop", { repoPath, index }),
+  // 指定退避の変更ファイル一覧を返す（退避は適用しない安全な操作）。
+  stashDiff: (repoPath: string, index: number) =>
+    invoke<FileChange[]>("stash_diff", { repoPath, index }),
 
   getIdentity: (repoPath: string) =>
     invoke<Identity>("get_identity", { repoPath }),
@@ -235,6 +305,24 @@ export const api = {
     refspec: string,
     force: boolean,
   ) => invoke<void>("push", { repoPath, remote, refspec, force }),
+
+  cherryPick: (repoPath: string, oid: string) =>
+    invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
+  createTag: (
+    repoPath: string,
+    name: string,
+    target?: string,
+    message?: string,
+  ) =>
+    invoke<void>("create_tag", {
+      repoPath,
+      name,
+      target: target ?? null,
+      message: message ?? null,
+    }),
+  deleteTag: (repoPath: string, name: string) =>
+    invoke<void>("delete_tag", { repoPath, name }),
 
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),

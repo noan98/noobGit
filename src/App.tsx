@@ -2,37 +2,47 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  type BlameHunk,
   type BranchGraph,
   type BranchInfo,
   type CommitInfo,
+  type ConflictFile,
   type Explanation,
   type FileChange,
   type FileDiff,
   type Identity,
   type IdentityScope,
+  type LogFilter,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
   type StashInfo,
+  type TagInfo,
   type UndoEntry,
 } from "./api";
 import { showToast } from "./components/Toaster";
 import { StatusPanel } from "./components/StatusPanel";
+import { FileHistoryView } from "./components/FileHistoryView";
 import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
+import { TagPanel } from "./components/TagPanel";
 import {
   StatusPanelSkeleton,
   HistoryPanelSkeleton,
   BranchPanelSkeleton,
 } from "./components/SkeletonPanels";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ConflictWizard } from "./components/ConflictWizard";
+import { RebaseWizard } from "./components/RebaseWizard";
 import {
   DiffPanel,
   type DiffSelection,
   type DiffSource,
 } from "./components/DiffPanel";
 import { IdentityDialog } from "./components/IdentityDialog";
+import { CommitDiffViewer } from "./components/CommitDiffViewer";
+import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -66,6 +76,7 @@ interface RefreshParts {
   log?: boolean;
   undo?: boolean;
   stash?: boolean;
+  tags?: boolean;
 }
 
 // リポジトリを開いた直後や手動更新で使う全件再取得。
@@ -75,6 +86,7 @@ const FULL_REFRESH: RefreshParts = {
   log: true,
   undo: true,
   stash: true,
+  tags: true,
 };
 
 // 各操作が画面のどの部分に影響するか。これに載っていない部分は再取得しない。
@@ -112,6 +124,14 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // upstream 表示が変わりうるのでブランチ情報だけ取り直す。
   push: { branches: true },
   force_push: { branches: true },
+  // cherry-pick は HEAD に新しいコミットを積む。status・log・ブランチ関係が変わり、undo も積まれる。
+  cherry_pick: { status: true, branches: true, log: true, undo: true },
+  // タグ作成・削除はタグ一覧だけを取り直す。削除は undo も積まれる。
+  create_tag: { tags: true, undo: true },
+  delete_tag: { tags: true, undo: true },
+  // リベース（squash / reword）は HEAD のコミットを作り直す。status・log・ブランチ関係が
+  // 変わり、undo も積まれる。
+  rebase: { status: true, branches: true, log: true, undo: true },
 };
 
 interface Guard {
@@ -140,6 +160,28 @@ export default function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
+  const [tags, setTags] = useState<TagInfo[]>([]);
+
+  // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
+  const [logFilter, setLogFilter] = useState<LogFilter>({});
+  // 履歴の検索（再取得）中フラグ。HistoryPanel のスピナー表示に使う。
+  const [searching, setSearching] = useState(false);
+
+  // refresh / loadMore のクロージャから常に最新の条件を参照するための ref。
+  const logFilterRef = useRef<LogFilter>({});
+  useEffect(() => {
+    logFilterRef.current = logFilter;
+  }, [logFilter]);
+
+  // 条件が一つでも設定されていれば true（getLog に渡す filter を絞るかの判断に使う）。
+  function hasFilter(f: LogFilter): boolean {
+    return (
+      (f.message != null && f.message !== "") ||
+      (f.author != null && f.author !== "") ||
+      f.since != null ||
+      f.until != null
+    );
+  }
 
   // 現在読み込み済みのコミット件数。再取得時に「もっと見る」で広げた範囲を保つため、
   // クロージャの陳腐化を避けて常に最新値を参照できるよう ref で持つ。
@@ -158,10 +200,36 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // コンフリクト中ファイルの詳細（解消ウィザード用）。status.conflicted を補う形で
+  // has_ancestor 等の情報を持つ。status の再取得に合わせて取り直す。
+  const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+
+  // リベース（squash / reword）で選択中のコミット id 集合と、ウィザードの表示状態。
+  const [selectedCommitIds, setSelectedCommitIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [showRebase, setShowRebase] = useState(false);
+
   // 差分プレビュー: 選択中ファイルと、その差分。
   const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+
+  // コミット間差分ビューアー: 比較の基準（base）と対象（target）、取得した差分。
+  // base のみ選択中は target が null（2 つ目の選択待ち）。両方揃うと差分を表示する。
+  const [compareBase, setCompareBase] = useState<CommitInfo | null>(null);
+  const [compareTarget, setCompareTarget] = useState<CommitInfo | null>(null);
+  const [commitDiffs, setCommitDiffs] = useState<FileDiff[] | null>(null);
+  const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+
+  // ファイル別変更履歴を表示中の対象パス。null は非表示。
+  const [historyPath, setHistoryPath] = useState<string | null>(null);
+
+  // blame（変更履歴）ビュー: 対象パスと、その blame 結果。
+  const [blamePath, setBlamePath] = useState<string | null>(null);
+  const [blameHunks, setBlameHunks] = useState<BlameHunk[] | null>(null);
+  const [blameLoading, setBlameLoading] = useState(false);
+  const [blameError, setBlameError] = useState<string | null>(null);
 
   // 初回セットアップ用の identity 状態。null は未取得、name/email が揃えば設定済み。
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -181,8 +249,11 @@ export default function App() {
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
           const want = Math.max(LOG_PAGE_SIZE, loadedCount.current);
+          // 検索条件があればそれを渡す（無ければ未指定で全件＝従来動作）。
+          const filter = logFilterRef.current;
+          const arg = hasFilter(filter) ? filter : undefined;
           tasks.push(
-            api.getLog(repoPath, 0, want).then((cs) => {
+            api.getLog(repoPath, 0, want, arg).then((cs) => {
               setCommits(cs);
               setHasMoreCommits(cs.length === want);
             }),
@@ -190,6 +261,7 @@ export default function App() {
         }
         if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
+        if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
         await Promise.all(tasks);
         setError(null);
         return true;
@@ -251,6 +323,27 @@ export default function App() {
     void loadDiff(selectedFile);
   }, [selectedFile, status, loadDiff]);
 
+  // status にコンフリクトがあれば、その詳細（has_ancestor 等）を取り直す。
+  // 取得失敗はベストエフォートで無視（ウィザードを出さないだけ）。
+  useEffect(() => {
+    if (!repoPath || !status || status.conflicted.length === 0) {
+      setConflicts([]);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getConflicts(repoPath)
+      .then((cs) => {
+        if (!cancelled) setConflicts(cs);
+      })
+      .catch(() => {
+        if (!cancelled) setConflicts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, status]);
+
   // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
   const selectFile = useCallback((path: string, source: DiffSource) => {
     setSelectedFile((cur) =>
@@ -259,6 +352,85 @@ export default function App() {
         : { path, source },
     );
   }, []);
+
+  // コミット間差分の取得。base が null のときは target の親との比較になる。
+  const loadCommitDiff = useCallback(
+    async (base: CommitInfo | null, target: CommitInfo) => {
+      if (!repoPath) return;
+      setCommitDiffLoading(true);
+      try {
+        const ds = await api.getDiffBetween(
+          repoPath,
+          base?.id ?? null,
+          target.id,
+        );
+        setCommitDiffs(ds);
+        setError(null);
+      } catch (e) {
+        setCommitDiffs([]);
+        setError(String(e));
+      } finally {
+        setCommitDiffLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  // ファイルの変更履歴（blame）を開く。取得は補助的なので失敗してもダイアログ内に
+  // エラーを表示するだけで、メインのバナーは汚さない。
+  const openBlame = useCallback(
+    async (path: string) => {
+      if (!repoPath) return;
+      setBlamePath(path);
+      setBlameHunks(null);
+      setBlameError(null);
+      setBlameLoading(true);
+      try {
+        setBlameHunks(await api.getBlame(repoPath, path));
+      } catch (e) {
+        setBlameError(String(e));
+      } finally {
+        setBlameLoading(false);
+      }
+    },
+    [repoPath],
+  );
+
+  // 履歴から比較対象を選ぶ。1 つ目で base を選択（target 待ち）、2 つ目で target を
+  // 確定して差分を取得する。base をもう一度押すと選択を解除する。
+  const onCompareSelect = useCallback(
+    (commit: CommitInfo) => {
+      if (compareBase && compareBase.id === commit.id) {
+        // 基準を取り消す。
+        setCompareBase(null);
+        return;
+      }
+      if (!compareBase) {
+        // 1 つ目の選択 = 基準。差分はまだ表示しない。
+        setCompareBase(commit);
+        setCompareTarget(null);
+        setCommitDiffs(null);
+        return;
+      }
+      // 2 つ目の選択 = 比較対象。base→target の差分を取得して表示する。
+      setCompareTarget(commit);
+      void loadCommitDiff(compareBase, commit);
+    },
+    [compareBase, loadCommitDiff],
+  );
+
+  // コミット間差分の表示を閉じ、選択状態もリセットする。
+  const closeCommitDiff = useCallback(() => {
+    setCompareBase(null);
+    setCompareTarget(null);
+    setCommitDiffs(null);
+  }, []);
+
+  function closeBlame() {
+    setBlamePath(null);
+    setBlameHunks(null);
+    setBlameError(null);
+  }
 
   async function openRepo() {
     if (!repoPath.trim()) return;
@@ -391,12 +563,20 @@ export default function App() {
   }
 
   // 「もっと見る」: 末尾から次のページを読み、現在の一覧に追記する。
+  // 検索条件があれば同じ条件で続きを取得する（条件と無関係なコミットが混ざらない）。
   function loadMore() {
     if (loadingMore || !repoPath) return;
     setLoadingMore(true);
     void (async () => {
       try {
-        const more = await api.getLog(repoPath, commits.length, LOG_PAGE_SIZE);
+        const filter = logFilterRef.current;
+        const arg = hasFilter(filter) ? filter : undefined;
+        const more = await api.getLog(
+          repoPath,
+          commits.length,
+          LOG_PAGE_SIZE,
+          arg,
+        );
         setCommits((prev) => [...prev, ...more]);
         setHasMoreCommits(more.length === LOG_PAGE_SIZE);
         setError(null);
@@ -409,6 +589,43 @@ export default function App() {
       }
     })();
   }
+
+  // 履歴パネルからの検索。条件を保存し、ページングをリセットして先頭から取り直す。
+  // 検索中は HistoryPanel にスピナーを出すため searching を立てる。
+  const runSearch = useCallback(
+    (filter: LogFilter) => {
+      // 条件が変わらないなら何もしない（初回マウント時の空→空の無駄打ちも防ぐ）。
+      const prev = logFilterRef.current;
+      const same =
+        (prev.message ?? "") === (filter.message ?? "") &&
+        (prev.author ?? "") === (filter.author ?? "") &&
+        (prev.since ?? null) === (filter.since ?? null) &&
+        (prev.until ?? null) === (filter.until ?? null);
+      if (same) return;
+      // 新しい条件を即座に ref へ反映（refresh のログ取得が最新条件を見るように）。
+      logFilterRef.current = filter;
+      setLogFilter(filter);
+      if (!repoPath) return;
+      setSearching(true);
+      void (async () => {
+        // ページングはリセットし、先頭ページから取り直す。
+        const arg = hasFilter(filter) ? filter : undefined;
+        try {
+          const cs = await api.getLog(repoPath, 0, LOG_PAGE_SIZE, arg);
+          setCommits(cs);
+          setHasMoreCommits(cs.length === LOG_PAGE_SIZE);
+          setError(null);
+        } catch (e) {
+          const errMsg = String(e);
+          setError(errMsg);
+          showToast(errMsg, "error");
+        } finally {
+          setSearching(false);
+        }
+      })();
+    },
+    [repoPath],
+  );
 
   function doUndo() {
     void exec(async () => {
@@ -459,6 +676,31 @@ export default function App() {
     );
   }
 
+  // コンフリクトを「解消済み」としてマークする（解消した内容をステージ）。
+  // ステージ相当の安全操作なので確認ダイアログは挟まず、status を取り直す。
+  function doMarkResolved(path: string) {
+    void exec(
+      async () => {
+        await api.markResolved(repoPath, path);
+        showToast(`「${path}」を解消済みにしました。`, "success");
+      },
+      { refresh: REFRESH_BY_OP.stage },
+    );
+  }
+
+  // コミットのコピー（cherry-pick）。コンフリクトの可能性があるため guarded を通す。
+  function doCherryPick(commit: CommitInfo) {
+    void guarded(
+      "コミットをコピー（cherry-pick）",
+      "cherry_pick",
+      async () => {
+        await api.cherryPick(repoPath, commit.id);
+        showToast(`コミット ${commit.short_id} をコピーしました`, "success");
+      },
+      undefined,
+    );
+  }
+
   // 変更の破棄。元に戻せない破壊的操作なので必ず guarded を通す。
   function doDiscard(path: string) {
     void guarded(`「${path}」の変更を破棄`, "discard", () =>
@@ -505,6 +747,70 @@ export default function App() {
     void guarded("退避を取り出す", "stash_pop", async () => {
       await api.stashPop(repoPath, index);
       showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
+    });
+  }
+
+  // 退避の差分プレビュー。退避を適用しない安全な読み取り操作なので guarded は通さない。
+  async function loadStashDiff(index: number): Promise<FileChange[]> {
+    try {
+      return await api.stashDiff(repoPath, index);
+    } catch (e) {
+      showToast(`退避の差分を取得できませんでした: ${String(e)}`, "error");
+      throw e;
+    }
+  }
+
+  // タグの作成。安全操作なので guarded はダイアログを出さずそのまま実行する。
+  function doCreateTag(name: string, message?: string) {
+    void guarded("タグを作成", "create_tag", async () => {
+      await api.createTag(repoPath, name, undefined, message);
+      showToast(`タグ「${name}」を作成しました。`, "success");
+    });
+  }
+
+  // タグの削除。注意操作なので guarded を通す（直後に Undo で復元できる）。
+  function doDeleteTag(name: string) {
+    void guarded(`タグ「${name}」の削除`, "delete_tag", async () => {
+      await api.deleteTag(repoPath, name);
+      showToast(`タグ「${name}」を削除しました。`, "success");
+    });
+  }
+
+  // リベース対象のチェックボックスを切り替える。
+  function toggleCommitSelect(id: string) {
+    setSelectedCommitIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // 選択を解除する（ウィザードを閉じる・実行後に呼ぶ）。
+  function clearCommitSelection() {
+    setSelectedCommitIds(new Set());
+  }
+
+  // 履歴の表示順（新しい順）で選択中のコミットを取り出す。
+  const selectedCommits = commits.filter((c) => selectedCommitIds.has(c.id));
+
+  // squash: 選んだ連続コミットを1つにまとめる。破壊的なので guarded を通す。
+  function doSquash(commitOids: string[], message: string) {
+    setShowRebase(false);
+    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
+      await api.squashCommits(repoPath, commitOids, message);
+      clearCommitSelection();
+      showToast("選んだコミットを1つにまとめました。", "success");
+    });
+  }
+
+  // reword: 最新コミットのメッセージを書き換える。破壊的なので guarded を通す。
+  function doReword(message: string) {
+    setShowRebase(false);
+    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
+      await api.rewordCommit(repoPath, message);
+      clearCommitSelection();
+      showToast("コミットメッセージを書き換えました。", "success");
     });
   }
 
@@ -592,9 +898,16 @@ export default function App() {
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
+              // 履歴の絞り込みもリセットする。
+              setLogFilter({});
+              logFilterRef.current = {};
               setStashes([]);
+              setTags([]);
               setSelectedFile(null);
               setDiff(null);
+              setCompareBase(null);
+              setCompareTarget(null);
+              setCommitDiffs(null);
             }}
           >
             別のリポジトリ
@@ -667,16 +980,37 @@ export default function App() {
                       })
                     }
                     onDiscard={doDiscard}
+                    onShowHistory={(p) => setHistoryPath(p)}
+                    onBlame={(p) => void openBlame(p)}
                   />
                 </motion.div>
               )
             )}
           </AnimatePresence>
 
+          {conflicts.length > 0 && (
+            <ConflictWizard
+              conflicts={conflicts}
+              selectedPath={
+                selectedFile?.source === "conflicted"
+                  ? selectedFile.path
+                  : null
+              }
+              onSelect={(p) => selectFile(p, "conflicted")}
+              onMarkResolved={doMarkResolved}
+            />
+          )}
+
           <DiffPanel
             selection={selectedFile}
             diff={diff}
             loading={diffLoading}
+            onStageHunk={(hunkHeader) =>
+              void exec(
+                () => api.stageHunk(repoPath, selectedFile!.path, hunkHeader),
+                { refresh: REFRESH_BY_OP.stage },
+              )
+            }
           />
 
           <div className="panel commit-box">
@@ -746,6 +1080,7 @@ export default function App() {
             onSave={doStashSave}
             onApply={doStashApply}
             onPop={doStashPop}
+            onLoadDiff={loadStashDiff}
           />
         </section>
 
@@ -774,6 +1109,8 @@ export default function App() {
                   hasMore={hasMoreCommits}
                   loadingMore={loadingMore}
                   onLoadMore={loadMore}
+                  onSearch={runSearch}
+                  searching={searching}
                   onGoToCommit={() => {
                     commitInput.current?.focus();
                     commitInput.current?.scrollIntoView({
@@ -788,10 +1125,26 @@ export default function App() {
                       () => api.resetHard(repoPath, c.id),
                     )
                   }
+                  onCompareSelect={onCompareSelect}
+                  compareBaseId={compareBase?.id ?? null}
+                  onCherryPick={doCherryPick}
+                  selectedIds={selectedCommitIds}
+                  onToggleSelect={toggleCommitSelect}
+                  onStartRebase={() => setShowRebase(true)}
                 />
               </motion.div>
             )}
           </AnimatePresence>
+
+          {compareTarget && (
+            <CommitDiffViewer
+              base={compareBase}
+              target={compareTarget}
+              diffs={commitDiffs}
+              loading={commitDiffLoading}
+              onClose={closeCommitDiff}
+            />
+          )}
         </section>
 
         <section className="col">
@@ -869,6 +1222,12 @@ export default function App() {
                     )
                   }
                 />
+                <TagPanel
+                  tags={tags}
+                  canTag={commits.length > 0}
+                  onCreate={doCreateTag}
+                  onDelete={doDeleteTag}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -883,6 +1242,33 @@ export default function App() {
           affectedFiles={guard.affectedFiles}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
+        />
+      )}
+
+      {historyPath && (
+        <FileHistoryView
+          repoPath={repoPath}
+          path={historyPath}
+          onClose={() => setHistoryPath(null)}
+        />
+      )}
+
+      {blamePath && (
+        <BlameView
+          path={blamePath}
+          hunks={blameHunks}
+          loading={blameLoading}
+          error={blameError}
+          onClose={closeBlame}
+        />
+      )}
+
+      {showRebase && (
+        <RebaseWizard
+          selected={selectedCommits}
+          onSquash={doSquash}
+          onReword={doReword}
+          onCancel={() => setShowRebase(false)}
         />
       )}
 

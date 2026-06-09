@@ -2,8 +2,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, DiffLine, DiffLineKind,
-    FileChange, FileDiff, LikelyBase, RepoStatus,
+    BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -188,6 +188,50 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
     Ok(out)
 }
 
+/// タグの一覧を返す（名前順）。
+///
+/// 軽量タグ・注釈付きタグの両方を扱う。注釈付きタグは `repo.find_tag` で解決でき、
+/// メッセージと指す対象（多くはコミット）を持つ。軽量タグは参照が直接コミットを指す。
+/// `target_id` には最終的に指すコミット等の oid を入れ、`target_short_id` はその先頭7文字。
+pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
+    let mut out = Vec::new();
+
+    let names = repo.tag_names(None)?;
+    for name in names.iter().flatten() {
+        // タグ参照（refs/tags/<name>）を解決する。
+        let refname = format!("refs/tags/{name}");
+        let reference = match repo.find_reference(&refname) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let oid = match reference.target() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        // 注釈付きタグなら、その oid から Tag オブジェクトを取得できる。
+        let (target_oid, message) = match repo.find_tag(oid) {
+            Ok(tag) => {
+                let msg = tag.message().map(|m| m.trim_end().to_string());
+                (tag.target_id(), msg)
+            }
+            // 軽量タグ: 参照が直接対象（コミット等）を指す。
+            Err(_) => (oid, None),
+        };
+
+        let id = target_oid.to_string();
+        out.push(TagInfo {
+            target_short_id: id.chars().take(7).collect(),
+            target_id: id,
+            name: name.to_string(),
+            message,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 /// 現在ブランチと各ローカルブランチの関係（取り込み済み判定・ahead/behind・派生元推定）を返す。
 ///
 /// すべて読み取り専用。判定の基準は現在ブランチの先端コミット。未誕生ブランチや
@@ -275,6 +319,67 @@ fn pick_likely_base(mut candidates: Vec<(String, usize, usize)>) -> Option<Likel
     })
 }
 
+/// コミット履歴の絞り込み条件。すべて任意で、`None` の項目は条件として使わない。
+///
+/// `message` はコミットのメッセージ（件名・本文）への部分一致（大文字小文字無視）、
+/// `author` は author の名前またはメールアドレスへの部分一致（大文字小文字無視）、
+/// `since` / `until` はコミット時刻（Unix エポック秒）の下限・上限（両端を含む）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LogFilter {
+    /// メッセージに含まれていてほしい文字列（部分一致・大文字小文字無視）。
+    pub message: Option<String>,
+    /// author 名またはメールに含まれていてほしい文字列（部分一致・大文字小文字無視）。
+    pub author: Option<String>,
+    /// この時刻（Unix エポック秒）以降のコミットだけを残す（その時刻を含む）。
+    pub since: Option<i64>,
+    /// この時刻（Unix エポック秒）以前のコミットだけを残す（その時刻を含む）。
+    pub until: Option<i64>,
+}
+
+impl LogFilter {
+    /// 条件が一つも設定されていない（＝全件素通し）かどうか。
+    fn is_empty(&self) -> bool {
+        self.message.is_none()
+            && self.author.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
+    }
+
+    /// 与えられたコミットがこの条件をすべて満たすか判定する。
+    fn matches(&self, commit: &git2::Commit) -> bool {
+        if let Some(needle) = &self.message {
+            let needle = needle.to_lowercase();
+            // 件名だけでなく本文も対象にする（message() は件名＋本文を含む）。
+            let haystack = commit.message().unwrap_or("").to_lowercase();
+            if !haystack.contains(&needle) {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.author {
+            let needle = needle.to_lowercase();
+            let author = commit.author();
+            let name = author.name().unwrap_or("").to_lowercase();
+            let email = author.email().unwrap_or("").to_lowercase();
+            if !name.contains(&needle) && !email.contains(&needle) {
+                return false;
+            }
+        }
+        let time = commit.time().seconds();
+        if let Some(since) = self.since {
+            if time < since {
+                return false;
+            }
+        }
+        if let Some(until) = self.until {
+            if time > until {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// 直近 `max` 件のコミット履歴を新しい順に返す。
 pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
     log_paged(repo, 0, max)
@@ -285,6 +390,69 @@ pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
 /// 履歴パネルの「もっと見る」のような追記読み込み（ページング）に使う。
 /// `skip` がコミット総数を超える場合は空のベクタを返す。
 pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<CommitInfo>> {
+    log_filtered(repo, skip, max, &LogFilter::default())
+}
+
+/// 条件で絞り込んだコミット履歴を、新しい順に `skip` 件飛ばして `max` 件返す。
+///
+/// `Revwalk` で履歴を新しい順にたどり、`filter` を通過したコミットだけを対象に
+/// `skip` / `max`（ページング）を適用する（＝クライアント側フィルタ）。`filter` に
+/// 条件が一つも無いときは [`log_paged`] と同じ結果になり、後方互換を保つ。
+/// `skip` が条件通過後の総数を超える場合は空のベクタを返す。
+pub fn log_filtered(
+    repo: &Repository,
+    skip: usize,
+    max: usize,
+    filter: &LogFilter,
+) -> Result<Vec<CommitInfo>> {
+    if repo.head().is_err() {
+        // コミットが1件も無いリポジトリ。
+        return Ok(Vec::new());
+    }
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    revwalk.set_sorting(git2::Sort::TIME)?;
+
+    let no_filter = filter.is_empty();
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        // 条件を満たさないコミットは skip にも max にも数えない。
+        if !no_filter && !filter.matches(&commit) {
+            continue;
+        }
+        // 条件通過分のうち、先頭 `skip` 件を読み飛ばす。
+        if skipped < skip {
+            skipped += 1;
+            continue;
+        }
+        let author = commit.author();
+        out.push(CommitInfo {
+            id: oid.to_string(),
+            short_id: oid.to_string().chars().take(7).collect(),
+            summary: commit.summary().unwrap_or("").to_string(),
+            author_name: author.name().unwrap_or("").to_string(),
+            author_email: author.email().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
+        if out.len() >= max {
+            break;
+        }
+    }
+
+    Ok(out)
+}
+
+/// 指定ファイルを変更したコミットだけを新しい順に最大 `max` 件返す（ファイル別履歴）。
+///
+/// 全コミットを時刻順に走査し、各コミットについて「そのコミットのツリー」と「第1親の
+/// ツリー」を `path` に絞って差分（`diff_tree_to_tree`）し、変更（delta）が1件以上ある
+/// コミットだけを集める。親が無い最初のコミットは、そのツリーに `path` が含まれていれば
+/// 対象にする。HEAD が無い（コミット0件）リポジトリは空の `Vec` を返す。
+pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitInfo>> {
     if repo.head().is_err() {
         // コミットが1件も無いリポジトリ。
         return Ok(Vec::new());
@@ -295,9 +463,30 @@ pub fn log_paged(repo: &Repository, skip: usize, max: usize) -> Result<Vec<Commi
     revwalk.set_sorting(git2::Sort::TIME)?;
 
     let mut out = Vec::new();
-    for oid in revwalk.skip(skip).take(max) {
+    for oid in revwalk {
+        if out.len() >= max {
+            break;
+        }
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
+        let tree = commit.tree()?;
+
+        // このコミットで `path` が変更されたか判定する。
+        let touched = if commit.parent_count() == 0 {
+            // 最初のコミットには親が無いので、ツリーに `path` があれば「追加された」とみなす。
+            tree.get_path(std::path::Path::new(path)).is_ok()
+        } else {
+            let parent_tree = commit.parent(0)?.tree()?;
+            let mut opts = DiffOptions::new();
+            opts.pathspec(path);
+            let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut opts))?;
+            diff.deltas().len() > 0
+        };
+
+        if !touched {
+            continue;
+        }
+
         let author = commit.author();
         out.push(CommitInfo {
             id: oid.to_string(),
@@ -441,6 +630,192 @@ fn build_file_diff(path: &str, diff: &git2::Diff) -> Result<FileDiff> {
     })
 }
 
+/// 2 つのコミット間（または親コミット↔指定コミット）の全変更ファイルの差分を返す。
+///
+/// `to_oid` は比較対象（新しい側）のコミット。`from_oid` を渡すとその間の差分、
+/// `None` のときは `to` コミットの第1親との比較になる（親が無い最初のコミットなら
+/// 空ツリーとの比較＝すべて追加として表示）。
+///
+/// oid のパースに失敗した場合や、そのコミットが見つからない場合は
+/// [`CoreError::InvalidInput`] を返す。ファイルごとに [`FileDiff`] を組み立てて
+/// ベクタで返し、各ファイルの行差分は [`build_file_diff`] と同じ流儀で作る。
+pub fn diff_commits(
+    repo: &Repository,
+    from_oid: Option<&str>,
+    to_oid: &str,
+) -> Result<Vec<FileDiff>> {
+    let to_commit = parse_commit(repo, to_oid)?;
+    let to_tree = to_commit.tree()?;
+
+    // from を決める。明示指定があればそれを、無ければ to の第1親を使う。
+    // 親が無い最初のコミットでは from_tree を None（空ツリー扱い）にする。
+    let from_tree = match from_oid {
+        Some(oid) => Some(parse_commit(repo, oid)?.tree()?),
+        None => match to_commit.parent(0) {
+            Ok(parent) => Some(parent.tree()?),
+            Err(_) => None,
+        },
+    };
+
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3);
+    let diff = repo.diff_tree_to_tree(from_tree.as_ref(), Some(&to_tree), Some(&mut opts))?;
+
+    build_file_diffs(&diff)
+}
+
+/// 文字列の oid をパースし、対応するコミットを取り出す。
+///
+/// oid が不正な形式、またはそのコミットが見つからない場合は
+/// [`CoreError::InvalidInput`] を日本語で返す。
+fn parse_commit<'r>(repo: &'r Repository, oid: &str) -> Result<git2::Commit<'r>> {
+    let parsed = git2::Oid::from_str(oid).map_err(|_| {
+        CoreError::InvalidInput(format!("コミットIDの形式が正しくありません: {oid}"))
+    })?;
+    repo.find_commit(parsed)
+        .map_err(|_| CoreError::InvalidInput(format!("コミットが見つかりません: {oid}")))
+}
+
+/// ツリー間の `git2::Diff` を走査し、ファイルごとに [`FileDiff`] へ組み立てる。
+///
+/// [`build_file_diff`] が単一パス向けなのに対し、こちらは差分に含まれる全ファイルを
+/// それぞれ独立した [`FileDiff`] に分けて返す。バイナリ判定・[`MAX_DIFF_LINES`] での
+/// 打ち切りは各ファイルごとに行う。
+fn build_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    // パスごとの組み立て状態と、初出順を保つためのパス並び。
+    #[derive(Default)]
+    struct State {
+        order: Vec<String>,
+        builds: HashMap<String, DiffBuild>,
+    }
+
+    impl State {
+        // 初出のパスは順序リストに登録しつつ、その組み立て状態への可変参照を返す。
+        fn entry(&mut self, path: String) -> &mut DiffBuild {
+            if !self.builds.contains_key(&path) {
+                self.order.push(path.clone());
+                self.builds.insert(path.clone(), DiffBuild::default());
+            }
+            self.builds.get_mut(&path).unwrap()
+        }
+    }
+
+    // デルタから表示用のパスを取る（new_file 優先、無ければ old_file）。
+    fn delta_path(delta: &git2::DiffDelta) -> String {
+        delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    let state = RefCell::new(State::default());
+
+    let mut file_cb = |delta: git2::DiffDelta, _progress: f32| -> bool {
+        let path = delta_path(&delta);
+        state.borrow_mut().entry(path);
+        true
+    };
+
+    let mut binary_cb = |delta: git2::DiffDelta, _binary: git2::DiffBinary| -> bool {
+        let path = delta_path(&delta);
+        state.borrow_mut().entry(path).is_binary = true;
+        true
+    };
+
+    let mut hunk_cb = |delta: git2::DiffDelta, hunk: git2::DiffHunk| -> bool {
+        let path = delta_path(&delta);
+        let mut s = state.borrow_mut();
+        let build = s.entry(path);
+        if build.lines.len() >= MAX_DIFF_LINES {
+            build.truncated = true;
+            return true;
+        }
+        let header = String::from_utf8_lossy(hunk.header());
+        build.lines.push(DiffLine {
+            kind: DiffLineKind::Hunk,
+            old_lineno: None,
+            new_lineno: None,
+            content: header.trim_end().to_string(),
+        });
+        true
+    };
+
+    let mut line_cb = |delta: git2::DiffDelta,
+                       _hunk: Option<git2::DiffHunk>,
+                       line: git2::DiffLine|
+     -> bool {
+        let path = delta_path(&delta);
+        let mut s = state.borrow_mut();
+        let build = s.entry(path);
+        if build.lines.len() >= MAX_DIFF_LINES {
+            build.truncated = true;
+            return true;
+        }
+        let kind = match line.origin_value() {
+            git2::DiffLineType::Addition | git2::DiffLineType::AddEOFNL => DiffLineKind::Addition,
+            git2::DiffLineType::Deletion | git2::DiffLineType::DeleteEOFNL => {
+                DiffLineKind::Deletion
+            }
+            _ => DiffLineKind::Context,
+        };
+        let raw = String::from_utf8_lossy(line.content());
+        let content = raw
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
+        build.lines.push(DiffLine {
+            kind,
+            old_lineno: line.old_lineno(),
+            new_lineno: line.new_lineno(),
+            content,
+        });
+        true
+    };
+
+    diff.foreach(
+        &mut file_cb,
+        Some(&mut binary_cb),
+        Some(&mut hunk_cb),
+        Some(&mut line_cb),
+    )?;
+
+    // バイナリ判定の取りこぼし対策: 走査後にデルタのフラグでも確認する。
+    {
+        let mut s = state.borrow_mut();
+        for delta in diff.deltas() {
+            if delta.flags().contains(git2::DiffFlags::BINARY) {
+                let path = delta_path(&delta);
+                s.entry(path).is_binary = true;
+            }
+        }
+    }
+
+    let state = state.into_inner();
+    let mut builds = state.builds;
+    let mut out = Vec::with_capacity(state.order.len());
+    for path in state.order {
+        let build = builds.remove(&path).unwrap_or_default();
+        out.push(FileDiff {
+            path,
+            is_binary: build.is_binary,
+            truncated: build.truncated,
+            is_conflicted: false,
+            lines: if build.is_binary {
+                Vec::new()
+            } else {
+                build.lines
+            },
+        });
+    }
+
+    Ok(out)
+}
+
 /// コンフリクト中ファイルの「いまの作業ツリーの中身」を返す。
 ///
 /// コンフリクト中はインデックスに stage 0 が無く、通常の差分（インデックス↔作業
@@ -496,6 +871,90 @@ pub fn diff_conflict(repo: &Repository, path: &str) -> Result<FileDiff> {
         is_conflicted: true,
         lines,
     })
+}
+
+/// 指定ファイルの blame（各行を最後に変更したコミット）を行のかたまり単位で返す。
+///
+/// `git blame` 相当。連続する行が同じコミットで最後に変更された場合はまとめて1つの
+/// hunk になる。`path` は作業ツリー内の相対パス。ファイルが存在しない・コミットが
+/// 1件も無い・バイナリ等の場合は日本語エラーを返す。
+pub fn blame_file(repo: &Repository, path: &str) -> Result<Vec<BlameHunk>> {
+    // 作業ツリー外を指す相対パスは扱わない（安全のため）。
+    let rel = std::path::Path::new(path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
+    }
+
+    let blame = repo.blame_file(rel, None).map_err(|e| {
+        CoreError::Git(format!(
+            "ファイル「{path}」の変更履歴（blame）を取得できませんでした: {}",
+            e.message()
+        ))
+    })?;
+
+    let mut out = Vec::with_capacity(blame.len());
+    for hunk in blame.iter() {
+        let oid = hunk.final_commit_id();
+        let commit = repo.find_commit(oid)?;
+        let author = commit.author();
+        out.push(BlameHunk {
+            lines_start: hunk.final_start_line(),
+            lines_count: hunk.lines_in_hunk(),
+            commit_id: oid.to_string(),
+            short_id: oid.to_string().chars().take(7).collect(),
+            message_short: commit.summary().unwrap_or("").to_string(),
+            author_name: author.name().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
+    }
+
+    Ok(out)
+}
+
+/// コンフリクト中のファイル一覧を返す。
+///
+/// インデックスの conflict エントリ（stage 1=共通祖先 / 2=our / 3=their）を走査し、
+/// ファイルごとに 1 件へまとめる。パスは `our`→`their`→`ancestor` の順で取れたものを採用し、
+/// `String::from_utf8_lossy` で文字列化する。同じパスが重複しないようにする。
+/// コンフリクトが無ければ空のベクタを返す。
+pub fn get_conflicts(repo: &Repository) -> Result<Vec<ConflictFile>> {
+    let index = repo.index()?;
+    // conflicts() はコンフリクトが無いリポジトリでも空イテレータを返す。
+    let conflicts = match index.conflicts() {
+        Ok(c) => c,
+        // index にコンフリクトの仕組みが無い等の場合は「競合なし」として扱う。
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut out: Vec<ConflictFile> = Vec::new();
+    for item in conflicts {
+        let c = item?;
+        // パスは our → their → ancestor の順に、最初に取れたものを使う。
+        let path = c
+            .our
+            .as_ref()
+            .or(c.their.as_ref())
+            .or(c.ancestor.as_ref())
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned());
+        let path = match path {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+        // 同じパスが複数回出ても 1 件にまとめる。
+        if out.iter().any(|f| f.path == path) {
+            continue;
+        }
+        out.push(ConflictFile {
+            has_ancestor: c.ancestor.is_some(),
+            path,
+        });
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -584,6 +1043,176 @@ mod tests {
         // skip がコミット総数以上なら空。
         assert!(log_paged(&repo, 5, 10).unwrap().is_empty());
         assert!(log_paged(&repo, 99, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn file_log_returns_only_commits_that_touched_the_path() {
+        let fx = TestRepo::new();
+
+        // c1: a.txt を作成。
+        fx.write_file("a.txt", "a1");
+        fx.stage_all();
+        fx.commit("c1: add a");
+
+        // c2: b.txt だけを変更（a.txt は触らない）。
+        fx.write_file("b.txt", "b1");
+        fx.stage_all();
+        fx.commit("c2: add b");
+
+        // c3: a.txt を変更。
+        fx.write_file("a.txt", "a2");
+        fx.stage_all();
+        fx.commit("c3: change a");
+
+        // c4: b.txt を変更。
+        fx.write_file("b.txt", "b2");
+        fx.stage_all();
+        fx.commit("c4: change b");
+
+        let repo = fx.open();
+        // a.txt を触ったのは c1（作成）と c3（変更）だけ。b 系は含まれない。
+        // テストではコミット時刻が同秒になりうるため、特定の並び順は仮定せず
+        // 「対象コミットだけが含まれる」という集合の性質で検証する（log_paged テストと同じ方針）。
+        let a_log = file_log(&repo, "a.txt", 100).unwrap();
+        let mut a_summaries: Vec<&str> = a_log.iter().map(|c| c.summary.as_str()).collect();
+        a_summaries.sort_unstable();
+        assert_eq!(a_summaries, vec!["c1: add a", "c3: change a"]);
+
+        let b_log = file_log(&repo, "b.txt", 100).unwrap();
+        let mut b_summaries: Vec<&str> = b_log.iter().map(|c| c.summary.as_str()).collect();
+        b_summaries.sort_unstable();
+        assert_eq!(b_summaries, vec!["c2: add b", "c4: change b"]);
+    }
+
+    #[test]
+    fn file_log_respects_max_limit() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        // 5 コミットすべてが a.txt を変更しているが、max=2 で 2 件に制限される。
+        let log = file_log(&repo, "a.txt", 2).unwrap();
+        assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn file_log_empty_repo_returns_empty() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(file_log(&repo, "a.txt", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn log_filtered_empty_matches_log_paged() {
+        // 条件なしのフィルタは log_paged と完全に同じ結果（後方互換）。
+        let fx = TestRepo::new();
+        for i in 0..4 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        let paged: Vec<String> = log_paged(&repo, 0, 100)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let filtered: Vec<String> = log_filtered(&repo, 0, 100, &LogFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(paged, filtered);
+
+        // ページング（skip/max）も条件なしなら一致する。
+        let paged_page: Vec<String> = log_paged(&repo, 1, 2)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let filtered_page: Vec<String> = log_filtered(&repo, 1, 2, &LogFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(paged_page, filtered_page);
+    }
+
+    #[test]
+    fn log_filtered_by_message_substring() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("ログイン画面を追加");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("バグを修正");
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("ログアウト処理を追加");
+
+        let repo = fx.open();
+        // 「ログ」を含む 2 件だけが残る。
+        let filter = LogFilter {
+            message: Some("ログ".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|c| c.summary.contains("ログ")));
+
+        // 大文字小文字を無視して英字も部分一致する。
+        let filter = LogFilter {
+            message: Some("BUG".to_string()),
+            ..Default::default()
+        };
+        // 日本語の件名には "BUG" は無いので 0 件。
+        assert!(log_filtered(&repo, 0, 100, &filter).unwrap().is_empty());
+    }
+
+    #[test]
+    fn log_filtered_by_author() {
+        use crate::ops::{commit, stage_all};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // 既定の author（TestRepo の identity）
+
+        // author を切り替えて 2 件目を積む。
+        let repo = fx.open();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Alice Example").unwrap();
+            cfg.set_str("user.email", "alice@example.com").unwrap();
+        }
+        std::fs::write(fx.path().join("a.txt"), "2").unwrap();
+        stage_all(&repo).unwrap();
+        commit(&repo, "c2").unwrap();
+
+        let repo = fx.open();
+        // 名前の一部「alice」で 1 件に絞れる（大文字小文字無視）。
+        let filter = LogFilter {
+            author: Some("ALICE".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].author_name, "Alice Example");
+
+        // メールアドレスの一部でも絞れる。
+        let filter = LogFilter {
+            author: Some("alice@example".to_string()),
+            ..Default::default()
+        };
+        let got = log_filtered(&repo, 0, 100, &filter).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].author_email, "alice@example.com");
     }
 
     /// upstream を用意してローカルにクローンし、(一時ディレクトリ, クローン先パス) を返す。
@@ -843,6 +1472,47 @@ mod tests {
     }
 
     #[test]
+    fn list_tags_returns_lightweight_and_annotated() {
+        use crate::ops::create_tag;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let head = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // 軽量タグと注釈付きタグを1つずつ作る。
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        create_tag(&repo, "v1.1.0", None, Some("リリース 1.1.0")).unwrap();
+
+        let tags = list_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 2);
+        // 名前順に並ぶ。
+        assert_eq!(tags[0].name, "v1.0.0");
+        assert_eq!(tags[1].name, "v1.1.0");
+
+        // 軽量タグはメッセージ無し・HEAD を指す。
+        assert!(tags[0].message.is_none());
+        assert_eq!(tags[0].target_id, head);
+        assert_eq!(tags[0].target_short_id, &head[..7]);
+
+        // 注釈付きタグはメッセージを持ち、対象は HEAD。
+        assert_eq!(tags[1].message.as_deref(), Some("リリース 1.1.0"));
+        assert_eq!(tags[1].target_id, head);
+    }
+
+    #[test]
+    fn list_tags_empty_when_no_tags() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        assert!(list_tags(&repo).unwrap().is_empty());
+    }
+
+    #[test]
     fn diff_unstaged_shows_added_and_removed_lines() {
         let fx = TestRepo::new();
         fx.write_file("a.txt", "line1\nline2\nline3\n");
@@ -977,6 +1647,110 @@ mod tests {
         assert!(diff.lines.len() <= MAX_DIFF_LINES);
     }
 
+    #[test]
+    fn diff_commits_shows_added_and_removed_lines() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "line1\nline2\nline3\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let from = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "line1\nCHANGED\nline3\n");
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let diffs = diff_commits(&repo, Some(&from), &to).unwrap();
+
+        assert_eq!(diffs.len(), 1);
+        let d = &diffs[0];
+        assert_eq!(d.path, "a.txt");
+        assert!(!d.is_binary);
+        assert!(d
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Deletion && l.content == "line2"));
+        assert!(d
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "CHANGED"));
+    }
+
+    #[test]
+    fn diff_commits_none_from_uses_parent() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "v1\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "v2\n");
+        fx.write_file("b.txt", "new file\n");
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // from_oid=None なら c2 の第1親（c1）との比較になる。
+        let diffs = diff_commits(&repo, None, &to).unwrap();
+
+        // a.txt の変更と b.txt の新規追加の 2 ファイルが出る。
+        assert_eq!(diffs.len(), 2);
+        let a = diffs.iter().find(|d| d.path == "a.txt").unwrap();
+        assert!(a
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "v2"));
+        let b = diffs.iter().find(|d| d.path == "b.txt").unwrap();
+        assert!(b
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Addition && l.content == "new file"));
+    }
+
+    #[test]
+    fn diff_commits_first_commit_against_empty_tree() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello\nworld\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // 親が無い最初のコミットは空ツリーとの比較＝全行が追加になる。
+        let diffs = diff_commits(&repo, None, &to).unwrap();
+        assert_eq!(diffs.len(), 1);
+        let adds: Vec<_> = diffs[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Addition)
+            .collect();
+        assert_eq!(adds.len(), 2);
+    }
+
+    #[test]
+    fn diff_commits_invalid_oid_is_input_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // 不正な形式の oid。
+        let err = diff_commits(&repo, None, "not-a-valid-oid").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // 形式は正しいが存在しない oid。
+        let missing = "0".repeat(40);
+        let err = diff_commits(&repo, None, &missing).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // from 側が不正でもエラーになる。
+        let to = fx.head_oid().to_string();
+        let err = diff_commits(&repo, Some("zzzz"), &to).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
     /// `a.txt` がコンフリクト中になった一時リポジトリを作る。
     fn repo_with_conflict() -> TestRepo {
         let fx = TestRepo::new();
@@ -1049,5 +1823,97 @@ mod tests {
         let repo = fx.open();
         assert!(diff_conflict(&repo, "../secret.txt").is_err());
         assert!(diff_conflict(&repo, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn blame_file_returns_multiple_hunks_for_two_commits() {
+        let fx = TestRepo::new();
+        // 1回目: 3行のファイルを作る。
+        fx.write_file("a.txt", "line1\nline2\nline3\n");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+
+        // 2回目: 真ん中の行だけを変更する。先頭・末尾は c1 のまま残る。
+        fx.write_file("a.txt", "line1\nCHANGED\nline3\n");
+        fx.stage_all();
+        let c2 = fx.commit("c2");
+
+        let repo = fx.open();
+        let hunks = blame_file(&repo, "a.txt").unwrap();
+
+        // 変更されていない行と変更された行で、別々の hunk に分かれる。
+        assert!(
+            hunks.len() >= 2,
+            "複数の hunk が返るはず: {} 件",
+            hunks.len()
+        );
+
+        // 全行ぶんがちょうど覆われている（行番号は1始まりで連続）。
+        let total: usize = hunks.iter().map(|h| h.lines_count).sum();
+        assert_eq!(total, 3);
+        let mut next = 1usize;
+        for h in &hunks {
+            assert_eq!(h.lines_start, next);
+            next += h.lines_count;
+            // commit_id は妥当（c1 か c2 のいずれか）で、short_id はその先頭7桁。
+            assert!(h.commit_id == c1.to_string() || h.commit_id == c2.to_string());
+            assert_eq!(h.short_id, &h.commit_id[..7]);
+            assert!(!h.message_short.is_empty());
+            assert_eq!(h.author_name, "Test User");
+        }
+
+        // 真ん中の行（2行目）を覆う hunk は c2、それ以外の行は c1 が担当する。
+        let owner = |lineno: usize| -> &str {
+            &hunks
+                .iter()
+                .find(|h| lineno >= h.lines_start && lineno < h.lines_start + h.lines_count)
+                .unwrap()
+                .commit_id
+        };
+        assert_eq!(owner(1), c1.to_string());
+        assert_eq!(owner(2), c2.to_string());
+        assert_eq!(owner(3), c1.to_string());
+    }
+
+    #[test]
+    fn blame_file_missing_path_errors() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        assert!(blame_file(&repo, "does-not-exist.txt").is_err());
+    }
+
+    #[test]
+    fn blame_file_rejects_path_traversal() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(blame_file(&repo, "../secret.txt").is_err());
+        assert!(blame_file(&repo, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn get_conflicts_lists_conflicted_path_with_ancestor() {
+        let fx = repo_with_conflict();
+        let repo = fx.open();
+        let conflicts = get_conflicts(&repo).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].path, "a.txt");
+        // base からの 3-way マージなので共通祖先側のエントリがある。
+        assert!(conflicts[0].has_ancestor);
+    }
+
+    #[test]
+    fn get_conflicts_empty_when_no_conflict() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // コンフリクトを作っていないリポジトリでは空のベクタが返る。
+        assert!(get_conflicts(&repo).unwrap().is_empty());
     }
 }

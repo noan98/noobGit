@@ -35,6 +35,18 @@ pub struct FileChange {
     pub kind: ChangeKind,
 }
 
+/// コンフリクト中のファイル1件。
+///
+/// マージや stash の取り出しで競合したファイルを、解消ウィザードで一覧表示するための情報。
+/// `has_ancestor` は共通祖先（3-way マージの基準）側のエントリがあるかを表す簡易情報で、
+/// 真なら「共通の元」と両側の変更がそろった通常のマージ競合、偽なら追加同士の競合など。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictFile {
+    pub path: String,
+    /// 共通祖先側のエントリがあるか（3-way マージか否かの簡易情報）。
+    pub has_ancestor: bool,
+}
+
 /// リポジトリの現在状態（status相当）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoStatus {
@@ -162,6 +174,28 @@ pub struct CommitInfo {
     pub time: i64,
 }
 
+/// blame（行ごとの最終変更コミット）の1かたまり。
+///
+/// 連続する行が同じコミットで最後に変更された場合、それらをまとめて1つの hunk として返す。
+/// `lines_start` は1始まりの行番号で、`lines_start` から `lines_count` 行ぶんが対象。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlameHunk {
+    /// このかたまりの先頭行番号（1始まり）。
+    pub lines_start: usize,
+    /// このかたまりに含まれる行数。
+    pub lines_count: usize,
+    /// この行を最後に変更したコミットのID（完全な40桁）。
+    pub commit_id: String,
+    /// コミットIDの短縮表示（先頭7桁）。
+    pub short_id: String,
+    /// コミットメッセージの1行目（要約）。
+    pub message_short: String,
+    /// このコミットの著者名。
+    pub author_name: String,
+    /// コミット日時（Unixエポック秒）。
+    pub time: i64,
+}
+
 /// 退避（stash）1件の情報。
 ///
 /// `index` は一覧での位置で、0 がいちばん新しい退避。apply / pop はこの index で指定する。
@@ -173,6 +207,22 @@ pub struct StashInfo {
     pub message: String,
     /// 退避コミットのID。
     pub id: String,
+    /// この退避に含まれる変更ファイル数（一覧表示用の概要）。
+    pub file_count: usize,
+}
+
+/// タグ1件の情報。
+///
+/// 軽量タグ（参照だけ）と注釈付きタグ（メッセージ・作成者を持つ）の両方を表す。
+/// `message` は注釈付きタグのときだけ `Some`。`target_id` はタグが指す対象（多くは
+/// コミット）の完全な oid で、`target_short_id` はその先頭7文字。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagInfo {
+    pub name: String,
+    pub target_id: String,
+    pub target_short_id: String,
+    /// 注釈付きタグのメッセージ。軽量タグのときは None。
+    pub message: Option<String>,
 }
 
 /// fetch（リモートの取得）の結果サマリ。

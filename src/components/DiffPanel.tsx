@@ -11,6 +11,9 @@ interface Props {
   selection: DiffSelection | null;
   diff: FileDiff | null;
   loading: boolean;
+  // 未ステージ差分の hunk ヘッダー行で「この塊だけステージ」したときに呼ばれる。
+  // 引数はその hunk のヘッダー文字列（例 `@@ -1,3 +1,4 @@`）。
+  onStageHunk?: (hunkHeader: string) => void;
 }
 
 const sourceLabel: Record<DiffSource, string> = {
@@ -37,7 +40,9 @@ function lineClass(line: DiffLine, conflicted: boolean): string {
   return `diff-line diff-${line.kind}`;
 }
 
-export function DiffPanel({ selection, diff, loading }: Props) {
+export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
+  // 未ステージ差分のときだけ、hunk 単位の部分ステージを出す。
+  const canStageHunk = selection?.source === "unstaged" && !!onStageHunk;
   return (
     <div className="panel diff-panel">
       <div className="panel-head">
@@ -86,7 +91,25 @@ export function DiffPanel({ selection, diff, loading }: Props) {
                         <td className="diff-lineno">{line.old_lineno ?? ""}</td>
                         <td className="diff-lineno">{line.new_lineno ?? ""}</td>
                         <td className="diff-sign">{sign(line.kind)}</td>
-                        <td className="diff-content">{line.content || " "}</td>
+                        <td className="diff-content">
+                          {line.kind === "hunk" && canStageHunk ? (
+                            <span className="diff-hunk-row">
+                              <span className="diff-hunk-header">
+                                {line.content || " "}
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-small diff-hunk-stage"
+                                title="この変更の塊（hunk）だけをステージします"
+                                onClick={() => onStageHunk?.(line.content)}
+                              >
+                                この塊だけステージ
+                              </button>
+                            </span>
+                          ) : (
+                            line.content || " "
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

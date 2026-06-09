@@ -20,6 +20,10 @@ pub enum OperationKind {
     Pull,
     Push,
     ForcePush,
+    CherryPick,
+    CreateTag,
+    DeleteTag,
+    Rebase,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -301,6 +305,56 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
+        OperationKind::CherryPick => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "別の場所にあるコミットの変更を、いまのブランチにコピーして取り込みます（cherry-pick）。".to_string(),
+                "いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
+
+        OperationKind::CreateTag => RiskAssessment::safe(
+            "コミットに「目印（タグ）」を付けるだけで、ファイルの中身や履歴は変わりません。",
+        ),
+
+        OperationKind::DeleteTag => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "タグ（目印）を削除します。コミットそのものは消えません。".to_string(),
+                "そのタグを使っている場所（リリースの参照など）があると、見つけにくくなることがあります。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "直後なら Undo で同じタグを作り直して復元できます。".to_string(),
+            ),
+        },
+
+        OperationKind::Rebase => RiskAssessment {
+            level: RiskLevel::Destructive,
+            reasons: {
+                let mut r = vec![
+                    "コミットの履歴を整理して作り直します（リベース: まとめる/メッセージ書き換え）。"
+                        .to_string(),
+                ];
+                if ctx.head_published {
+                    r.push(
+                        "対象のコミットはすでにリモートへ送信（push）済みのようです。公開済み履歴の書き換えは危険で、他の人が持っている履歴と食い違い、混乱や事故の原因になります。"
+                            .to_string(),
+                    );
+                }
+                r
+            },
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "履歴の整理は、まだ送信（push）していないコミットに対して行うのが安全です。直後なら Undo で元に戻せます。"
+                    .to_string(),
+            ),
+        },
     }
 }
 
@@ -432,6 +486,78 @@ mod tests {
             assess(OperationKind::StashPop, &ctx).level,
             RiskLevel::Caution
         );
+    }
+
+    #[test]
+    fn cherry_pick_is_caution_and_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::CherryPick, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(a.reversible);
+        assert!(!a.permanent_data_loss);
+    }
+
+    #[test]
+    fn create_tag_is_safe_and_delete_tag_is_caution() {
+        let ctx = SafetyContext::default();
+        assert_eq!(
+            assess(OperationKind::CreateTag, &ctx).level,
+            RiskLevel::Safe
+        );
+        let del = assess(OperationKind::DeleteTag, &ctx);
+        assert_eq!(del.level, RiskLevel::Caution);
+        // 削除は Undo で戻せる。
+        assert!(del.reversible);
+        assert!(!del.permanent_data_loss);
+    }
+
+    #[test]
+    fn rebase_is_destructive_and_flags_published_history() {
+        let local = SafetyContext::default(); // head_published = false
+        let a = assess(OperationKind::Rebase, &local);
+        assert_eq!(a.level, RiskLevel::Destructive);
+        assert!(a.reversible);
+        // 公開前は公開済み履歴の警告を含まない。
+        assert!(!a.reasons.iter().any(|r| r.contains("公開済み履歴")));
+
+        let published = SafetyContext {
+            head_published: true,
+            ..Default::default()
+        };
+        let b = assess(OperationKind::Rebase, &published);
+        assert_eq!(b.level, RiskLevel::Destructive);
+        // 公開済みのときは危険の理由を追加する。
+        assert!(b.reasons.iter().any(|r| r.contains("公開済み履歴")));
+    }
+
+    // すべての操作種別がパニックせずに評価でき、理由が空でないことを網羅的に確認する。
+    #[test]
+    fn assess_covers_all_operation_kinds() {
+        let ctx = SafetyContext::default();
+        for op in [
+            OperationKind::Stage,
+            OperationKind::Unstage,
+            OperationKind::Commit,
+            OperationKind::AmendCommit,
+            OperationKind::Discard,
+            OperationKind::StashSave,
+            OperationKind::StashApply,
+            OperationKind::StashPop,
+            OperationKind::CreateBranch,
+            OperationKind::SwitchBranch,
+            OperationKind::DeleteBranch,
+            OperationKind::ResetHard,
+            OperationKind::Fetch,
+            OperationKind::Pull,
+            OperationKind::Push,
+            OperationKind::ForcePush,
+            OperationKind::CherryPick,
+            OperationKind::CreateTag,
+            OperationKind::DeleteTag,
+            OperationKind::Rebase,
+        ] {
+            assert!(!assess(op, &ctx).reasons.is_empty());
+        }
     }
 
     #[test]

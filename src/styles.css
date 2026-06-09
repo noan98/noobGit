@@ -411,6 +411,26 @@ textarea {
   color: var(--muted);
   margin: 12px 0 6px;
 }
+
+/* 履歴の検索バー（メッセージ・作者の絞り込み）。 */
+.history-search {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.history-search-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+/* 「検索中…」インジケータ。見出し横に小さく出す。 */
+.history-searching {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .empty {
   color: var(--muted);
   font-size: 13px;
@@ -516,6 +536,19 @@ textarea {
 .diff-hunk .diff-content {
   color: var(--accent);
 }
+/* hunk ヘッダー行に「この塊だけステージ」ボタンを並べる。 */
+.diff-hunk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.diff-hunk-header {
+  flex: 1 1 auto;
+}
+.diff-hunk-stage {
+  flex: 0 0 auto;
+}
 .diff-conflict-marker {
   background: var(--caution-bg);
   font-weight: 600;
@@ -537,6 +570,76 @@ textarea {
   border-radius: 3px;
   padding: 0 4px;
   font-size: 12px;
+}
+
+/* ---- コンフリクト解消ウィザード (#54) ---- */
+.conflict-wizard {
+  border: 1px solid var(--caution-border);
+}
+.conflict-wizard .conflict-count {
+  background: var(--caution-bg);
+  color: var(--caution);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.conflict-guide {
+  background: var(--caution-bg);
+  border: 1px solid var(--caution-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.conflict-guide ol,
+.conflict-guide ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+.conflict-guide code {
+  background: var(--caution-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.conflict-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--neutral-border, transparent);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+}
+.conflict-item.selected {
+  background: var(--caution-bg);
+}
+.conflict-path {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  color: var(--destructive);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conflict-note {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--caution);
 }
 
 /* ---- commits ---- */
@@ -756,6 +859,46 @@ textarea {
   align-self: center;
   font-size: 12px;
 }
+.commit-compare-btn {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 12px;
+  color: var(--accent);
+}
+.commit-compare-btn.active {
+  font-weight: 700;
+}
+.commit-row.compare-base {
+  background: var(--diff-hunk-bg);
+}
+.compare-hint {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ---- commit-diff viewer ---- */
+.commit-diff-viewer .commit-diff-file {
+  margin-top: 12px;
+}
+.commit-diff-filename {
+  font-size: 13px;
+  margin: 0 0 6px;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 履歴コミット行の操作ボタン（コピー・戻す）を縦並びにまとめる。 */
+.commit-actions-inline {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.commit-cherry-pick-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+}
 
 /* ---- stash ---- */
 .hint {
@@ -782,6 +925,14 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- file history view ---- */
+/* ファイル別変更履歴モーダル内のコミット一覧。長くなりすぎないようスクロールさせる。 */
+.file-history-commits {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 8px 0;
 }
 
 /* ---- confirm dialog ---- */
@@ -1008,4 +1159,122 @@ textarea {
 }
 .btn-confirm.risk-safe {
   background: var(--safe-emphasis);
+}
+
+/* ---- blame（変更履歴）ビュー ---- */
+.blame-dialog {
+  width: 720px;
+}
+.blame-help {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+.blame-body {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.blame-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.blame-table td {
+  padding: 4px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.blame-row:last-child td {
+  border-bottom: none;
+}
+.blame-commit .sha {
+  color: var(--accent);
+  font-size: 12px;
+  margin-right: 8px;
+}
+.blame-commit .meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blame-author,
+.blame-time {
+  white-space: nowrap;
+}
+.blame-lines {
+  text-align: right;
+  white-space: nowrap;
+}
+.blame-lineno {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* リベース対象選択のチェックボックス（履歴の各行） */
+.commit-select {
+  flex-shrink: 0;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+/* リベースウィザード */
+.rebase-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.rebase-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rebase-mode.active {
+  border-color: var(--caution-emphasis);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+}
+.rebase-mode input:disabled + span {
+  opacity: 0.5;
+}
+.rebase-targets,
+.rebase-message {
+  margin: 12px 0;
+}
+.rebase-commit-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rebase-commit-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rebase-commit-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rebase-hint {
+  font-size: 13px;
+  color: var(--text-muted, #888);
+  margin: 6px 0 0;
+}
+.rebase-message textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  font-family: inherit;
 }
