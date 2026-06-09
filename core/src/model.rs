@@ -173,6 +173,8 @@ pub struct StashInfo {
     pub message: String,
     /// 退避コミットのID。
     pub id: String,
+    /// この退避に含まれる変更ファイル数（一覧表示用の概要）。
+    pub file_count: usize,
 }
 
 /// fetch（リモートの取得）の結果サマリ。

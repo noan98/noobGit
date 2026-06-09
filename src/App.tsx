@@ -508,6 +508,16 @@ export default function App() {
     });
   }
 
+  // 退避の差分プレビュー。退避を適用しない安全な読み取り操作なので guarded は通さない。
+  async function loadStashDiff(index: number): Promise<FileChange[]> {
+    try {
+      return await api.stashDiff(repoPath, index);
+    } catch (e) {
+      showToast(`退避の差分を取得できませんでした: ${String(e)}`, "error");
+      throw e;
+    }
+  }
+
   if (!opened) {
     return (
       <div className="welcome">
@@ -746,6 +756,7 @@ export default function App() {
             onSave={doStashSave}
             onApply={doStashApply}
             onPop={doStashPop}
+            onLoadDiff={loadStashDiff}
           />
         </section>
 
