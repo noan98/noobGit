@@ -163,6 +163,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "履歴を見やすく整えられますが、コミットそのものを作り直すため、まだ送信（push）していないコミットに対して行うのが安全です。送信済みのコミットを書き換えると、他の人の履歴と食い違うため注意が必要です。".into(),
             on_trouble: "直後なら Undo で、整理する前の状態に戻せます。送信済みのコミットを整理してしまったときは、慌てず元に戻してチームに相談しましょう。".into(),
         },
+        OperationKind::Merge => Explanation {
+            title: "ブランチのマージ（統合）".into(),
+            what: "別ブランチの変更をこのブランチに取り込みます。両方の変更を合わせた新しいコミットを作ります。".into(),
+            why: "分岐して開発した機能を統合するために使います。コンフリクト（同じ箇所への競合する変更）が起きた場合は、コンフリクト解消ウィザードで対処できます。".into(),
+            on_trouble: "コンフリクトが発生した場合は、ウィザードの案内に従って競合を解消してください。マージ自体を取りやめたいときは Undo を使ってください。".into(),
+        },
     }
 }
 
@@ -193,12 +199,13 @@ mod tests {
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
             OperationKind::Rebase,
+            OperationKind::Merge,
         ] {
             let e = explain(op);
-            assert!(!e.title.is_empty());
-            assert!(!e.what.is_empty());
-            assert!(!e.why.is_empty());
-            assert!(!e.on_trouble.is_empty());
+            assert!(!e.title.is_empty(), "{:?}: title が空", op);
+            assert!(!e.what.is_empty(), "{:?}: what が空", op);
+            assert!(!e.why.is_empty(), "{:?}: why が空", op);
+            assert!(!e.on_trouble.is_empty(), "{:?}: on_trouble が空", op);
         }
     }
 }

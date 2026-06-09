@@ -8,7 +8,9 @@ use git2::{
 };
 
 use crate::error::{CoreError, Result};
-use crate::model::{ChangeKind, CommitInfo, FetchOutcome, FileChange, PullOutcome, StashInfo};
+use crate::model::{
+    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, PullOutcome, StashInfo,
+};
 use crate::repo::current_branch;
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
@@ -1310,6 +1312,133 @@ fn map_push_error(e: git2::Error) -> CoreError {
         ),
         _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", e.message())),
     }
+}
+
+/// 指定したローカルブランチを現在のブランチにマージする。
+///
+/// - すでに統合済み（up-to-date）: 何もせず [`MergeOutcome::UpToDate`] を返す。
+/// - fast-forward 可能: マージコミットを作らず履歴を一直線に前進させ、
+///   [`MergeOutcome::FastForwarded`] を返す。undo は `HardResetTo` で記録。
+/// - 通常マージ（コンフリクトなし）: マージコミットを作成して [`MergeOutcome::Merged`] を返す。
+///   undo は `SoftResetTo` で記録。
+/// - コンフリクトあり: リポジトリをマージ中の状態のまま [`MergeOutcome::Conflicted`] を返す。
+///   フロントエンドの ConflictWizard でコンフリクト解消を行う。undo は記録しない（解消後に
+///   コミットして初めて状態が確定する）。
+pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome> {
+    let branch_name = branch_name.trim();
+    if branch_name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "マージするブランチ名を指定してください。".to_string(),
+        ));
+    }
+
+    // マージ対象ブランチの先端コミットを取得する。
+    let branch = repo
+        .find_branch(branch_name, BranchType::Local)
+        .map_err(|_| {
+            CoreError::InvalidInput(format!(
+                "ブランチ「{branch_name}」が見つかりませんでした。ブランチ名を確認してください。"
+            ))
+        })?;
+    let their_commit = branch.get().peel_to_commit()?;
+    let annotated = repo.find_annotated_commit(their_commit.id())?;
+
+    // 現在の HEAD を記録する（undo 用）。
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットがないため、マージできません。先に最初のコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let previous = head_commit.id();
+
+    // マージ方法を判定する。
+    let (analysis, _pref) = repo.merge_analysis(&[&annotated])?;
+
+    if analysis.is_up_to_date() {
+        return Ok(MergeOutcome::UpToDate);
+    }
+
+    if analysis.is_fast_forward() {
+        // fast-forward: 作業ツリー・インデックスを対象コミットへ合わせ、HEAD を前進させる。
+        let mut co = CheckoutBuilder::new();
+        repo.checkout_tree(their_commit.as_object(), Some(&mut co))
+            .map_err(|_| {
+                CoreError::Blocked(
+                    "未コミットの変更があるためマージできません。先に変更をコミットするか退避(stash)してください。"
+                        .to_string(),
+                )
+            })?;
+        let mut head_ref = repo.head()?;
+        head_ref.set_target(their_commit.id(), "noobgit: fast-forward merge")?;
+
+        record_undo(
+            repo,
+            UndoEntry {
+                op: OperationKind::Merge,
+                description: format!("ブランチ「{branch_name}」のマージ（fast-forward）を取り消す"),
+                action: UndoAction::HardResetTo {
+                    previous: previous.to_string(),
+                },
+            },
+        );
+
+        let updated = repo.find_commit(their_commit.id())?;
+        return Ok(MergeOutcome::FastForwarded {
+            commit: commit_info(&updated),
+        });
+    }
+
+    // 通常マージ: インデックスと作業ツリーにマージ結果を適用する。
+    repo.merge(&[&annotated], None, None)
+        .map_err(|e| CoreError::Git(format!("マージに失敗しました: {}", e.message())))?;
+
+    // コンフリクトがあれば、リポジトリをマージ中の状態のまま返す。
+    // フロントエンドは status を取り直して ConflictWizard に誘導する。
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Ok(MergeOutcome::Conflicted);
+    }
+
+    // コンフリクトなし: マージコミットを作成する。
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "マージには名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+    let tree_id = index.write_tree_to(repo)?;
+    let tree = repo.find_tree(tree_id)?;
+    let message = format!("Merge branch '{branch_name}'");
+
+    let new_oid = repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        &message,
+        &tree,
+        &[&head_commit, &their_commit],
+    )?;
+
+    // インデックスをディスクに書き出し、MERGE_HEAD などの中間状態を片付ける。
+    index.write()?;
+    let _ = repo.cleanup_state();
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Merge,
+            description: format!("ブランチ「{branch_name}」のマージを取り消す"),
+            action: UndoAction::SoftResetTo {
+                previous: previous.to_string(),
+            },
+        },
+    );
+
+    let new_commit = repo.find_commit(new_oid)?;
+    Ok(MergeOutcome::Merged {
+        commit: commit_info(&new_commit),
+    })
 }
 
 fn first_line(s: &str) -> &str {

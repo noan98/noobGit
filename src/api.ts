@@ -130,7 +130,8 @@ export type OperationKind =
   | "cherry_pick"
   | "create_tag"
   | "delete_tag"
-  | "rebase";
+  | "rebase"
+  | "merge";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -183,6 +184,13 @@ export interface FetchOutcome {
 export type PullOutcome =
   | { kind: "up_to_date" }
   | { kind: "fast_forwarded"; commit: CommitInfo };
+
+// merge（ブランチ統合）の結果。
+export type MergeOutcome =
+  | { kind: "up_to_date" }
+  | { kind: "fast_forwarded"; commit: CommitInfo }
+  | { kind: "merged"; commit: CommitInfo }
+  | { kind: "conflicted" };
 
 // identity の保存先。"local" は今のリポジトリだけ、"global" はこのPC全体。
 export type IdentityScope = "local" | "global";
@@ -308,6 +316,8 @@ export const api = {
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  mergeBranch: (repoPath: string, branchName: string) =>
+    invoke<MergeOutcome>("merge_branch", { repoPath, branchName }),
   listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
   createTag: (
     repoPath: string,
