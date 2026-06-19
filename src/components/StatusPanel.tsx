@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Box, HStack, Text, VStack } from "@chakra-ui/react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
+import type { PanInfo } from "framer-motion";
 import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
@@ -26,7 +27,19 @@ import type { ContextMenuItem } from "./FileContextMenu";
  *     セクション間を移動する際に位置アニメーションが追従する。
  *   - 各セクションのリストを AnimatePresence で包み、出現・消失をアニメーション。
  *   - セクションごとに LayoutGroup を分け、過剰な再レイアウトを抑制する。
+ *
+ * #87 ドラッグ&ドロップ:
+ *   - 未ステージ／未追跡カードを「ステージ済み」ゾーンへドラッグ → ステージ
+ *   - ステージ済みカードを「変更あり」ゾーンへドラッグ → アンステージ
+ *   - framer-motion の組み込み drag API を使用（外部ライブラリ不要）
+ *   - ドロップ後はカードが元位置へスナップバック（実データの更新は API 再取得）
+ *
+ * #88 右クリックメニュー:
+ *   - 各カードを右クリックすると操作メニュー（ステージ・破棄・差分など）を表示。
  */
+
+// #87 ドラッグ&ドロップ: どのゾーンがハイライト中かを表す型。
+type HighlightZone = "staged" | "unstaged" | null;
 
 interface Props {
   status: RepoStatus;
@@ -103,12 +116,29 @@ const cardPresence = {
   },
 };
 
+// #87 ドラッグ&ドロップ: ポインタ座標がゾーンの矩形内に収まるかを判定する。
+function isInsideRect(
+  point: { x: number; y: number },
+  el: HTMLElement | null,
+): boolean {
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  return (
+    point.x >= rect.left &&
+    point.x <= rect.right &&
+    point.y >= rect.top &&
+    point.y <= rect.bottom
+  );
+}
+
 // 1 ファイル分のカード UI。
 // #78 ステージング移動アニメーション:
 //   - layoutId={path} でパネル全体の layout アニメーションコンテキストを共有し、
 //     ステージ↔アンステージ操作でカードが移動する際に位置が補間される。
 //   - layout でサイズ変化もアニメーション追従させる。
 //   - initial/animate/exit は親 AnimatePresence のための出現・消失アニメーション。
+// #87 ドラッグ&ドロップ: draggable / onDragStart / onDragEnd プロップを追加。
+// #88 右クリックメニュー: onContextMenu プロップを追加。
 function FileCard({
   path,
   isSelected,
@@ -116,6 +146,10 @@ function FileCard({
   actions,
   // #88 右クリックメニュー
   onContextMenu,
+  // #87 ドラッグ&ドロップ
+  draggable,
+  onDragStart,
+  onDragEnd,
 }: {
   path: string;
   isSelected: boolean;
@@ -123,19 +157,53 @@ function FileCard({
   actions: React.ReactNode;
   // #88 右クリックメニュー: カードの右クリック座標を親へ渡す。
   onContextMenu?: (e: MouseEvent) => void;
+  // #87 ドラッグ&ドロップ
+  draggable?: boolean;
+  onDragStart?: () => void;
+  onDragEnd?: (info: PanInfo) => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
+  const dragging = useRef(false);
   const { dir, name } = splitPath(path);
   const icon = fileIcon(name);
 
   return (
-    // #78 ステージング移動アニメーション
+    // #78 ステージング移動アニメーション + #87 ドラッグ&ドロップ
     <motion.div
       layoutId={path}
       layout
       initial={cardPresence.initial}
       animate={cardPresence.animate}
       exit={cardPresence.exit}
+      // #87 ドラッグ&ドロップ: framer-motion 組み込みの drag API。
+      drag={draggable ? true : undefined}
+      dragSnapToOrigin={draggable ? true : undefined}
+      dragElastic={draggable ? 0.15 : undefined}
+      // ドラッグ中のスタイル（半透明＋軽く拡大して浮き上がり感を演出）。
+      whileDrag={
+        draggable ? { opacity: 0.6, scale: 1.03, zIndex: 10 } : undefined
+      }
+      onDragStart={
+        draggable
+          ? () => {
+              dragging.current = true;
+              onDragStart?.();
+            }
+          : undefined
+      }
+      onDragEnd={
+        draggable
+          ? (_event: unknown, info: PanInfo) => {
+              dragging.current = false;
+              onDragEnd?.(info);
+            }
+          : undefined
+      }
+      style={{
+        position: "relative",
+        touchAction: draggable ? "none" : undefined,
+      }}
     >
       <Box
         as="div"
@@ -146,7 +214,7 @@ function FileCard({
         px="10px"
         py="7px"
         mb="6px"
-        cursor="pointer"
+        cursor={draggable ? "grab" : "pointer"}
         transition="background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease"
         boxShadow={hovered ? "var(--shadow)" : "none"}
         _hover={{
@@ -184,7 +252,10 @@ function FileCard({
               font: "inherit",
               cursor: "pointer",
             }}
-            onClick={onSelect}
+            onClick={() => {
+              // #87 ドラッグ&ドロップ: ドラッグ終了時の pointerup をクリックと誤認しない。
+              if (!dragging.current) onSelect();
+            }}
             title="クリックで差分を表示"
           >
             <VStack gap="1px" align="flex-start">
@@ -237,6 +308,24 @@ function FileCard({
           </AnimatePresence>
         </HStack>
       </Box>
+
+      {/* #87 ドラッグ&ドロップ: ドラッグ可能なカードにグリップアイコンを表示。*/}
+      {draggable && (
+        <Text
+          as="span"
+          fontSize="10px"
+          color="neutral.muted"
+          position="absolute"
+          top="50%"
+          right="-2px"
+          transform="translateY(-50%)"
+          pointerEvents="none"
+          aria-hidden="true"
+          userSelect="none"
+        >
+          ⠿
+        </Text>
+      )}
     </motion.div>
   );
 }
@@ -331,6 +420,48 @@ export function StatusPanel({
     };
   }
 
+  // #87 ドラッグ&ドロップ: どのゾーンをハイライトするかの状態。
+  const [highlightZone, setHighlightZone] = useState<HighlightZone>(null);
+
+  // #87 ドラッグ&ドロップ: 各セクションのドロップゾーン ref。
+  // stagedZoneRef   — ステージ済みセクション全体（未ステージカードのドロップ先）。
+  // unstagedZoneRef — 未ステージ＋未追跡セクション全体（ステージ済みカードのドロップ先）。
+  const stagedZoneRef = useRef<HTMLDivElement>(null);
+  const unstagedZoneRef = useRef<HTMLDivElement>(null);
+
+  // #87 ドラッグ&ドロップ: ゾーンのスタイル（ハイライト時に点線枠を表示）。
+  // 色はテーマのセマンティックトークン（CSS 変数）を参照し、ライト/ダークに追従する。
+  function dropZoneStyle(zone: "staged" | "unstaged") {
+    const highlighted = highlightZone === zone;
+    return {
+      borderRadius: "var(--radius-sm)",
+      border: `2px dashed ${highlighted ? "var(--accent-border)" : "transparent"}`,
+      background: highlighted ? "var(--accent-bg)" : "transparent",
+      transition: "border-color 0.15s ease, background 0.15s ease",
+      // セクションが空のときもドロップゾーンとして機能するよう最低高さを確保する。
+      minHeight: "48px",
+      padding: "2px",
+    };
+  }
+
+  // #87 ドラッグ&ドロップ: 未ステージ／未追跡カードのドラッグ終了。
+  // ステージ済みゾーンにドロップしたら onStagePath を呼ぶ。
+  function handleUnstagedDragEnd(path: string, info: PanInfo) {
+    setHighlightZone(null);
+    if (isInsideRect(info.point, stagedZoneRef.current)) {
+      onStagePath(path);
+    }
+  }
+
+  // #87 ドラッグ&ドロップ: ステージ済みカードのドラッグ終了。
+  // 未ステージゾーンにドロップしたら onUnstage を呼ぶ。
+  function handleStagedDragEnd(path: string, info: PanInfo) {
+    setHighlightZone(null);
+    if (isInsideRect(info.point, unstagedZoneRef.current)) {
+      onUnstage(path);
+    }
+  }
+
   return (
     <div className="panel">
       <div className="panel-head">
@@ -353,178 +484,204 @@ export function StatusPanel({
         />
       )}
 
-      {/* #78 ステージング移動アニメーション — ステージ済みセクション */}
-      {status.staged.length > 0 && (
+      {/* ステージ済みセクション（#87 ドロップ先 + #78 アニメーション）*/}
+      {(status.staged.length > 0 || (!status.is_clean && hasUnstaged)) && (
         <div>
           <SectionHeader label="コミット予定（ステージ済み）" />
-          {/* LayoutGroup でこのセクション内の layout 計算を分離し、パフォーマンスを確保する */}
-          <LayoutGroup id="staged">
-            <AnimatePresence initial={false}>
-              {status.staged.map((f) => (
-                <FileCard
-                  key={f.path}
-                  path={f.path}
-                  isSelected={isSelected(f.path, "staged")}
-                  onSelect={() => onSelect(f.path, "staged")}
-                  onContextMenu={handleContextMenu(f.path, "staged")}
-                  actions={
-                    <>
-                      <StatusBadge kind={f.kind} />
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onShowHistory(f.path);
-                        }}
-                        title="このファイルを変更したコミットの履歴を表示します"
-                        style={{ marginLeft: "6px" }}
-                      >
-                        変更履歴
-                      </button>
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onBlame(f.path);
-                        }}
-                        title="この行を最後に変更したコミットを表示します（blame）"
-                        style={{ marginLeft: "6px" }}
-                      >
-                        履歴
-                      </button>
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onUnstage(f.path);
-                        }}
-                        title="コミット対象から外します（変更は残ります）"
-                        style={{ marginLeft: "6px" }}
-                      >
-                        外す
-                      </button>
-                    </>
-                  }
-                />
-              ))}
-            </AnimatePresence>
-          </LayoutGroup>
+          <div ref={stagedZoneRef} style={dropZoneStyle("staged")}>
+            {status.staged.length === 0 ? (
+              /* セクションが空のときも視覚的なドロップ先を確保する。*/
+              <Text
+                fontSize="12px"
+                color="neutral.muted"
+                textAlign="center"
+                py="10px"
+                userSelect="none"
+              >
+                ここにドラッグしてステージ
+              </Text>
+            ) : (
+              <LayoutGroup id="staged">
+                <AnimatePresence initial={false}>
+                  {status.staged.map((f) => (
+                    <FileCard
+                      key={f.path}
+                      path={f.path}
+                      isSelected={isSelected(f.path, "staged")}
+                      onSelect={() => onSelect(f.path, "staged")}
+                      onContextMenu={handleContextMenu(f.path, "staged")}
+                      draggable
+                      onDragStart={() => setHighlightZone("unstaged")}
+                      onDragEnd={(info) => handleStagedDragEnd(f.path, info)}
+                      actions={
+                        <>
+                          <StatusBadge kind={f.kind} />
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onShowHistory(f.path);
+                            }}
+                            title="このファイルを変更したコミットの履歴を表示します"
+                            style={{ marginLeft: "6px" }}
+                          >
+                            変更履歴
+                          </button>
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onBlame(f.path);
+                            }}
+                            title="この行を最後に変更したコミットを表示します（blame）"
+                            style={{ marginLeft: "6px" }}
+                          >
+                            履歴
+                          </button>
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onUnstage(f.path);
+                            }}
+                            title="コミット対象から外します（変更は残ります）"
+                            style={{ marginLeft: "6px" }}
+                          >
+                            外す
+                          </button>
+                        </>
+                      }
+                    />
+                  ))}
+                </AnimatePresence>
+              </LayoutGroup>
+            )}
+          </div>
         </div>
       )}
 
-      {/* #78 ステージング移動アニメーション — 未ステージセクション */}
-      {status.unstaged.length > 0 && (
-        <div>
-          <SectionHeader label="変更あり（未ステージ）" />
-          <LayoutGroup id="unstaged">
-            <AnimatePresence initial={false}>
-              {status.unstaged.map((f) => (
-                <FileCard
-                  key={f.path}
-                  path={f.path}
-                  isSelected={isSelected(f.path, "unstaged")}
-                  onSelect={() => onSelect(f.path, "unstaged")}
-                  onContextMenu={handleContextMenu(f.path, "unstaged")}
-                  actions={
-                    <>
-                      <StatusBadge kind={f.kind} />
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onShowHistory(f.path);
-                        }}
-                        title="このファイルを変更したコミットの履歴を表示します"
-                        style={{ marginLeft: "6px" }}
-                      >
-                        変更履歴
-                      </button>
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onBlame(f.path);
-                        }}
-                        title="この行を最後に変更したコミットを表示します（blame）"
-                        style={{ marginLeft: "6px" }}
-                      >
-                        履歴
-                      </button>
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onStagePath(f.path);
-                        }}
-                        style={{ marginLeft: "6px" }}
-                      >
-                        ステージ
-                      </button>
-                      <button
-                        className="link danger"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDiscard(f.path);
-                        }}
-                        title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
-                      >
-                        破棄
-                      </button>
-                    </>
-                  }
-                />
-              ))}
-            </AnimatePresence>
-          </LayoutGroup>
+      {/* 未ステージ＋未追跡セクション（#87 ドロップ先 + #78 アニメーション）*/}
+      {(status.unstaged.length > 0 || status.untracked.length > 0) && (
+        <div ref={unstagedZoneRef} style={dropZoneStyle("unstaged")}>
+          {status.unstaged.length > 0 && (
+            <div>
+              <SectionHeader label="変更あり（未ステージ）" />
+              <LayoutGroup id="unstaged">
+                <AnimatePresence initial={false}>
+                  {status.unstaged.map((f) => (
+                    <FileCard
+                      key={f.path}
+                      path={f.path}
+                      isSelected={isSelected(f.path, "unstaged")}
+                      onSelect={() => onSelect(f.path, "unstaged")}
+                      onContextMenu={handleContextMenu(f.path, "unstaged")}
+                      draggable
+                      onDragStart={() => setHighlightZone("staged")}
+                      onDragEnd={(info) => handleUnstagedDragEnd(f.path, info)}
+                      actions={
+                        <>
+                          <StatusBadge kind={f.kind} />
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onShowHistory(f.path);
+                            }}
+                            title="このファイルを変更したコミットの履歴を表示します"
+                            style={{ marginLeft: "6px" }}
+                          >
+                            変更履歴
+                          </button>
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onBlame(f.path);
+                            }}
+                            title="この行を最後に変更したコミットを表示します（blame）"
+                            style={{ marginLeft: "6px" }}
+                          >
+                            履歴
+                          </button>
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStagePath(f.path);
+                            }}
+                            style={{ marginLeft: "6px" }}
+                          >
+                            ステージ
+                          </button>
+                          <button
+                            className="link danger"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDiscard(f.path);
+                            }}
+                            title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
+                          >
+                            破棄
+                          </button>
+                        </>
+                      }
+                    />
+                  ))}
+                </AnimatePresence>
+              </LayoutGroup>
+            </div>
+          )}
+
+          {status.untracked.length > 0 && (
+            <div>
+              <SectionHeader label="新しいファイル（未追跡）" />
+              <LayoutGroup id="untracked">
+                <AnimatePresence initial={false}>
+                  {status.untracked.map((p) => (
+                    <FileCard
+                      key={p}
+                      path={p}
+                      isSelected={isSelected(p, "unstaged")}
+                      onSelect={() => onSelect(p, "unstaged")}
+                      onContextMenu={handleContextMenu(p, "unstaged")}
+                      draggable
+                      onDragStart={() => setHighlightZone("staged")}
+                      onDragEnd={(info) => handleUnstagedDragEnd(p, info)}
+                      actions={
+                        <>
+                          <StatusBadge kind="untracked" />
+                          <button
+                            className="link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStagePath(p);
+                            }}
+                            style={{ marginLeft: "6px" }}
+                          >
+                            ステージ
+                          </button>
+                          <button
+                            className="link danger"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDiscard(p);
+                            }}
+                            title="この新しいファイルを削除します（元に戻せません）"
+                          >
+                            破棄
+                          </button>
+                        </>
+                      }
+                    />
+                  ))}
+                </AnimatePresence>
+              </LayoutGroup>
+            </div>
+          )}
         </div>
       )}
 
-      {/* #78 ステージング移動アニメーション — 未追跡セクション */}
-      {status.untracked.length > 0 && (
-        <div>
-          <SectionHeader label="新しいファイル（未追跡）" />
-          <LayoutGroup id="untracked">
-            <AnimatePresence initial={false}>
-              {status.untracked.map((p) => (
-                <FileCard
-                  key={p}
-                  path={p}
-                  isSelected={isSelected(p, "unstaged")}
-                  onSelect={() => onSelect(p, "unstaged")}
-                  onContextMenu={handleContextMenu(p, "unstaged")}
-                  actions={
-                    <>
-                      <StatusBadge kind="untracked" />
-                      <button
-                        className="link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onStagePath(p);
-                        }}
-                        style={{ marginLeft: "6px" }}
-                      >
-                        ステージ
-                      </button>
-                      <button
-                        className="link danger"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDiscard(p);
-                        }}
-                        title="この新しいファイルを削除します（元に戻せません）"
-                      >
-                        破棄
-                      </button>
-                    </>
-                  }
-                />
-              ))}
-            </AnimatePresence>
-          </LayoutGroup>
-        </div>
-      )}
-
-      {/* #78 ステージング移動アニメーション — コンフリクトセクション */}
+      {/* コンフリクトセクション（#78 アニメーションのみ。ドラッグ対象外）*/}
       {status.conflicted.length > 0 && (
         <div>
           <SectionHeader label="コンフリクト" />
@@ -536,6 +693,7 @@ export function StatusPanel({
                   path={p}
                   isSelected={isSelected(p, "conflicted")}
                   onSelect={() => onSelect(p, "conflicted")}
+                  onContextMenu={handleContextMenu(p, "conflicted")}
                   actions={<StatusBadge kind="conflicted" />}
                 />
               ))}
