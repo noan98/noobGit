@@ -10,6 +10,9 @@ import { transitions } from "../theme/motion";
 // #88 右クリックメニュー
 import { FileContextMenu } from "./FileContextMenu";
 import type { ContextMenuItem } from "./FileContextMenu";
+// #49 インライン差分プレビュー
+import { InlineDiff } from "./InlineDiff";
+import type { InlineDiffSource } from "./InlineDiff";
 
 /*
  * StatusPanel — ファイル変更一覧（#91 カード UI リデザイン）。
@@ -36,6 +39,10 @@ import type { ContextMenuItem } from "./FileContextMenu";
  *
  * #88 右クリックメニュー:
  *   - 各カードを右クリックすると操作メニュー（ステージ・破棄・差分など）を表示。
+ *
+ * #49 インライン差分プレビュー:
+ *   - カードを選択（クリック）すると、その下に追加(緑)/削除(赤)行付きの差分を
+ *     スライドダウン展開する。
  */
 
 // #87 ドラッグ&ドロップ: どのゾーンがハイライト中かを表す型。
@@ -44,6 +51,8 @@ type HighlightZone = "staged" | "unstaged" | null;
 interface Props {
   status: RepoStatus;
   selected: DiffSelection | null;
+  // #49 インライン差分プレビュー: repoPath を受け取り InlineDiff へ渡す。
+  repoPath: string;
   onStageAll: () => void;
   onStagePath: (path: string) => void;
   onUnstage: (path: string) => void;
@@ -139,6 +148,8 @@ function isInsideRect(
 //   - initial/animate/exit は親 AnimatePresence のための出現・消失アニメーション。
 // #87 ドラッグ&ドロップ: draggable / onDragStart / onDragEnd プロップを追加。
 // #88 右クリックメニュー: onContextMenu プロップを追加。
+// #49 インライン差分プレビュー: repoPath / inlineDiffSource を受け取り、選択中のとき
+//   カードの下に InlineDiff をスライドダウン展開する。
 function FileCard({
   path,
   isSelected,
@@ -150,6 +161,9 @@ function FileCard({
   draggable,
   onDragStart,
   onDragEnd,
+  // #49 インライン差分プレビュー
+  repoPath,
+  inlineDiffSource,
 }: {
   path: string;
   isSelected: boolean;
@@ -161,6 +175,9 @@ function FileCard({
   draggable?: boolean;
   onDragStart?: () => void;
   onDragEnd?: (info: PanInfo) => void;
+  // #49 インライン差分プレビュー
+  repoPath?: string;
+  inlineDiffSource?: InlineDiffSource;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
@@ -307,6 +324,33 @@ function FileCard({
             )}
           </AnimatePresence>
         </HStack>
+
+        {/* #49 インライン差分プレビュー: 選択中のときスライドダウン展開する */}
+        <AnimatePresence>
+          {isSelected && repoPath && inlineDiffSource && (
+            <motion.div
+              key={`inline-diff-${path}`}
+              initial={{ height: 0, opacity: 0 }}
+              animate={{
+                height: "auto",
+                opacity: 1,
+                transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
+              }}
+              exit={{
+                height: 0,
+                opacity: 0,
+                transition: { duration: 0.15, ease: [0.4, 0, 0.2, 1] },
+              }}
+              style={{ overflow: "hidden" }}
+            >
+              <InlineDiff
+                repoPath={repoPath}
+                path={path}
+                source={inlineDiffSource}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </Box>
 
       {/* #87 ドラッグ&ドロップ: ドラッグ可能なカードにグリップアイコンを表示。*/}
@@ -358,6 +402,7 @@ interface ContextMenuState {
 export function StatusPanel({
   status,
   selected,
+  repoPath,
   onStageAll,
   onStagePath,
   onUnstage,
@@ -513,6 +558,8 @@ export function StatusPanel({
                       draggable
                       onDragStart={() => setHighlightZone("unstaged")}
                       onDragEnd={(info) => handleStagedDragEnd(f.path, info)}
+                      repoPath={repoPath}
+                      inlineDiffSource="staged"
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -578,6 +625,8 @@ export function StatusPanel({
                       draggable
                       onDragStart={() => setHighlightZone("staged")}
                       onDragEnd={(info) => handleUnstagedDragEnd(f.path, info)}
+                      repoPath={repoPath}
+                      inlineDiffSource="unstaged"
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -647,6 +696,8 @@ export function StatusPanel({
                       draggable
                       onDragStart={() => setHighlightZone("staged")}
                       onDragEnd={(info) => handleUnstagedDragEnd(p, info)}
+                      repoPath={repoPath}
+                      inlineDiffSource="unstaged"
                       actions={
                         <>
                           <StatusBadge kind="untracked" />
@@ -681,7 +732,7 @@ export function StatusPanel({
         </div>
       )}
 
-      {/* コンフリクトセクション（#78 アニメーションのみ。ドラッグ対象外）*/}
+      {/* コンフリクトセクション（#78 アニメーションのみ。ドラッグ・インライン差分対象外）*/}
       {status.conflicted.length > 0 && (
         <div>
           <SectionHeader label="コンフリクト" />

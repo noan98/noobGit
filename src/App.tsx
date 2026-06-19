@@ -1054,6 +1054,7 @@ export default function App() {
                   <StatusPanel
                     status={status}
                     selected={selectedFile}
+                    repoPath={repoPath}
                     onSelect={selectFile}
                     onStageAll={() =>
                       void exec(() => api.stageAll(repoPath), {
