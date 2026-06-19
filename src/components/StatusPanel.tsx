@@ -170,7 +170,7 @@ function FileCard({
   onSelect: () => void;
   actions: React.ReactNode;
   // #88 右クリックメニュー: カードの右クリック座標を親へ渡す。
-  onContextMenu?: (e: MouseEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   // #87 ドラッグ&ドロップ
   draggable?: boolean;
   onDragStart?: () => void;
@@ -459,7 +459,7 @@ export function StatusPanel({
 
   // #88 右クリックメニュー: FileCard の onContextMenu ハンドラを生成する。
   function handleContextMenu(path: string, source: DiffSource) {
-    return (e: MouseEvent) => {
+    return (e: React.MouseEvent) => {
       e.preventDefault();
       setContextMenu({ path, source, x: e.clientX, y: e.clientY });
     };
