@@ -351,6 +351,13 @@ fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_tag(&r, &name).map_err(|e| e.to_string())
 }
 
+/// 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
+#[tauri::command]
+fn get_undo_journal(repo_path: String) -> Result<Vec<UndoEntry>, String> {
+    let r = open(&repo_path)?;
+    undo::list(&r).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
@@ -409,6 +416,7 @@ pub fn run() {
             list_tags,
             create_tag,
             delete_tag,
+            get_undo_journal,
             peek_undo,
             undo_last,
         ])

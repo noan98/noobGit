@@ -44,6 +44,7 @@ import { IdentityDialog } from "./components/IdentityDialog";
 import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -162,6 +163,7 @@ export default function App() {
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
+  const [undoJournal, setUndoJournal] = useState<UndoEntry[]>([]); // #48 Undo タイムライン
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
 
@@ -262,7 +264,10 @@ export default function App() {
             }),
           );
         }
-        if (parts.undo) tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
+        if (parts.undo) {
+          tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
+          tasks.push(api.getUndoJournal(repoPath).then(setUndoJournal)); // #48 Undo タイムライン
+        }
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
         if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
         await Promise.all(tasks);
@@ -1266,6 +1271,8 @@ export default function App() {
                   onCreate={doCreateTag}
                   onDelete={doDeleteTag}
                 />
+                {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
+                <UndoTimeline entries={[...undoJournal].reverse()} />
               </motion.div>
             )}
           </AnimatePresence>
