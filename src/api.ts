@@ -334,6 +334,9 @@ export const api = {
   deleteTag: (repoPath: string, name: string) =>
     invoke<void>("delete_tag", { repoPath, name }),
 
+  // 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
+  getUndoJournal: (repoPath: string) =>
+    invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
   undoLast: (repoPath: string) => invoke<string>("undo_last", { repoPath }),

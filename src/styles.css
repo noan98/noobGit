@@ -1278,3 +1278,59 @@ textarea {
   margin-top: 6px;
   font-family: inherit;
 }
+
+/* ---- #48 Undo タイムライン ---- */
+.empty-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+.undo-timeline-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.undo-timeline-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  font-size: 13px;
+}
+.undo-timeline-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.undo-timeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.undo-timeline-op {
+  font-weight: 600;
+  color: var(--text);
+}
+.undo-timeline-desc {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.undo-timeline-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--safe);
+  border: 1px solid var(--safe);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  align-self: center;
+}
