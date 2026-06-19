@@ -1506,3 +1506,17 @@ textarea {
   flex-shrink: 0;
   align-self: center;
 }
+
+/* ---- prefers-reduced-motion 対応 (#108) ---- */
+/* OS の「視差効果を減らす / アニメーションを減らす」設定が有効なとき、
+   CSS トランジション（カードのホバー・入力フォーカス・ボタン等）も抑制する。
+   framer-motion のアニメーションは MotionConfig reducedMotion="user" が担う。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
