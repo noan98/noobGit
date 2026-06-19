@@ -59,6 +59,17 @@
   --diff-del-bg: #ffebe9;
   --diff-hunk-bg: #ddf4ff;
 
+  /* 著者アバターのパレット（8 色。HistoryPanel がインライン style で参照）。 #66: トークン化
+     ライト/ダーク両方で定義し、data-theme 経由で自動切り替えする。 */
+  --avatar-0-bg: #ddf4ff; --avatar-0-fg: #0969da;
+  --avatar-1-bg: #dafbe1; --avatar-1-fg: #1a7f37;
+  --avatar-2-bg: #fff1cc; --avatar-2-fg: #9a6700;
+  --avatar-3-bg: #ffebe9; --avatar-3-fg: #cf222e;
+  --avatar-4-bg: #faf0ff; --avatar-4-fg: #8250df;
+  --avatar-5-bg: #fff1e5; --avatar-5-fg: #bc4c00;
+  --avatar-6-bg: #e6f0ff; --avatar-6-fg: #1b60d1;
+  --avatar-7-bg: #e6ffec; --avatar-7-fg: #116329;
+
   /* ボタン */
   --btn-bg: #ffffff;
   --btn-hover: #f3f4f6;
@@ -135,6 +146,16 @@
   --diff-del-bg: rgba(248, 81, 73, 0.18);
   --diff-hunk-bg: rgba(56, 139, 253, 0.18);
 
+  /* 著者アバターのパレット（ダーク版）。 #66: トークン化 */
+  --avatar-0-bg: rgba(56, 139, 253, 0.16); --avatar-0-fg: #58a6ff;
+  --avatar-1-bg: rgba(46, 160, 67, 0.16);  --avatar-1-fg: #3fb950;
+  --avatar-2-bg: rgba(187, 128, 9, 0.16);  --avatar-2-fg: #d29922;
+  --avatar-3-bg: rgba(248, 81, 73, 0.16);  --avatar-3-fg: #f85149;
+  --avatar-4-bg: rgba(163, 113, 247, 0.16); --avatar-4-fg: #d2a8ff;
+  --avatar-5-bg: rgba(219, 109, 40, 0.16); --avatar-5-fg: #ec775c;
+  --avatar-6-bg: rgba(56, 139, 253, 0.12); --avatar-6-fg: #79c0ff;
+  --avatar-7-bg: rgba(46, 160, 67, 0.12);  --avatar-7-fg: #56d364;
+
   --btn-bg: #21262d;
   --btn-hover: #30363d;
   --btn-active: #282e36;
@@ -205,6 +226,95 @@ textarea:focus-visible {
 .welcome .error {
   color: var(--destructive);
   margin-top: 16px;
+}
+
+/* ---- ウェルカム画面リデザイン (#68) ---- */
+/* ヒーローエリア: タイトルとキャッチコピーの縦並び。 */
+.welcome-hero {
+  width: 100%;
+  text-align: center;
+  margin-bottom: 8px;
+}
+/* ウェルカム専用キャッチコピー（.tagline の余白を上書き）。 */
+.welcome-catch {
+  font-size: 15px;
+  margin-bottom: 28px;
+}
+/* 入力エリア全体の幅を揃える。 */
+.welcome-input-area {
+  width: 100%;
+}
+/* 「開く」ボタン: アクセント色の塗りで主操作を強調する。 */
+.btn-primary-accent {
+  background: var(--accent);
+  color: var(--on-emphasis);
+  border-color: var(--accent);
+  font-weight: var(--font-weight-strong);
+  padding: 8px 20px;
+}
+.btn-primary-accent:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+/* 最近使ったリポジトリセクション。 */
+.recent-repos-section {
+  width: 100%;
+  margin-top: 32px;
+  text-align: left;
+}
+/* セクション見出し: 小さめのキャプション風ラベル。 */
+.recent-repos-label {
+  font-size: 11px;
+  font-weight: var(--font-weight-strong);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 10px;
+}
+/* カードリストの縦並びコンテナ。 */
+.recent-repos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 個別リポジトリカード。 */
+.recent-repo-card {
+  width: 100%;
+  text-align: left;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  line-height: var(--line-height-ui);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.recent-repo-card:hover {
+  background: var(--btn-hover);
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(9, 105, 218, 0.12);
+}
+/* フォルダアイコン（縮小しない）。 */
+.recent-repo-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+/* パスのテキスト: 長すぎる場合は末尾を省略。 */
+.recent-repo-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 /* ---- inputs ---- */
@@ -382,6 +492,68 @@ textarea {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+}
+
+/* ---- #89 リサイズ可能レイアウト ---- */
+/* ResizableColumns コンテナ: flex で横並びにし、パディングと overflow は .columns と同じ。 */
+.resizable-columns {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 12px;
+  overflow: auto;
+  gap: 0;
+}
+
+/* 各カラム: flex-basis は JS から px で設定される。縦スクロールはカラム単位。 */
+.resizable-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0 6px;
+}
+.resizable-col:first-child {
+  padding-left: 0;
+}
+.resizable-col:last-child {
+  padding-right: 0;
+}
+
+/* リサイズハンドル（セパレーター）: 細い縦バー。
+   ホバー・ドラッグ中は --accent 色でハイライトし、CSS トランジションで滑らかに変化する。 */
+.resize-handle {
+  flex: 0 0 8px;
+  width: 8px;
+  cursor: col-resize;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+}
+
+/* ハンドルの視覚的な細バー（:before 疑似要素）。クリック領域は広く、見た目は細く。 */
+.resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+/* ホバー・ドラッグ中: バーを太くして --accent 色にする。 */
+.resize-handle--active::before {
+  background: var(--accent);
+  width: 3px;
 }
 
 /* ---- panel ---- */
@@ -1240,7 +1412,7 @@ textarea {
 }
 .rebase-mode.active {
   border-color: var(--caution-emphasis);
-  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+  background: var(--surface-muted); /* #66: トークン化（フォールバック hex を除去） */
 }
 .rebase-mode input:disabled + span {
   opacity: 0.5;
@@ -1269,7 +1441,7 @@ textarea {
 }
 .rebase-hint {
   font-size: 13px;
-  color: var(--text-muted, #888);
+  color: var(--muted); /* #66: トークン化（--text-muted は未定義のため --muted へ統一） */
   margin: 6px 0 0;
 }
 .rebase-message textarea {

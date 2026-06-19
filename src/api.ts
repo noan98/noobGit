@@ -40,6 +40,8 @@ export interface CommitInfo {
   author_name: string;
   author_email: string;
   time: number;
+  /** 親コミットの完全な oid 文字列の一覧。マージコミットは複数、最初のコミットは空配列。 */
+  parent_ids: string[];
 }
 
 // コミット履歴の絞り込み条件。すべて任意で、未指定の項目は条件として使わない。

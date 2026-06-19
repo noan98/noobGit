@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CommitInfo, LogFilter } from "../api";
+import { CommitGraph } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 
 interface Props {
@@ -53,15 +54,17 @@ function authorInitials(name: string): string {
 }
 
 // 著者名から決定論的なアバター背景色を生成する（同じ名前は常に同じ色）。
+// 色は styles.css の CSS 変数（--avatar-N-bg / --avatar-N-fg）で定義し、
+// data-theme によるライト/ダーク切り替えに自動追従する。 #66: トークン化
 const AVATAR_PALETTES = [
-  { bg: "#ddf4ff", fg: "#0969da" },
-  { bg: "#dafbe1", fg: "#1a7f37" },
-  { bg: "#fff1cc", fg: "#9a6700" },
-  { bg: "#ffebe9", fg: "#cf222e" },
-  { bg: "#faf0ff", fg: "#8250df" },
-  { bg: "#fff1e5", fg: "#bc4c00" },
-  { bg: "#e6f0ff", fg: "#1b60d1" },
-  { bg: "#e6ffec", fg: "#116329" },
+  { bg: "var(--avatar-0-bg)", fg: "var(--avatar-0-fg)" },
+  { bg: "var(--avatar-1-bg)", fg: "var(--avatar-1-fg)" },
+  { bg: "var(--avatar-2-bg)", fg: "var(--avatar-2-fg)" },
+  { bg: "var(--avatar-3-bg)", fg: "var(--avatar-3-fg)" },
+  { bg: "var(--avatar-4-bg)", fg: "var(--avatar-4-fg)" },
+  { bg: "var(--avatar-5-bg)", fg: "var(--avatar-5-fg)" },
+  { bg: "var(--avatar-6-bg)", fg: "var(--avatar-6-fg)" },
+  { bg: "var(--avatar-7-bg)", fg: "var(--avatar-7-fg)" },
 ];
 
 function authorPalette(name: string) {
@@ -115,6 +118,9 @@ export function HistoryPanel({
   onToggleSelect,
   onStartRebase,
 }: Props) {
+  // #51 DAG グラフ — ON/OFF トグル状態。
+  const [showGraph, setShowGraph] = useState(false);
+
   // 検索ボックスの入力値。入力のたびに即時反映し、再取得はデバウンスして行う。
   const [messageQuery, setMessageQuery] = useState("");
   const [authorQuery, setAuthorQuery] = useState("");
@@ -145,6 +151,15 @@ export function HistoryPanel({
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
+        {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+        <button
+          className={`btn btn-small${showGraph ? " active" : ""}`}
+          onClick={() => setShowGraph((v) => !v)}
+          title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+          aria-pressed={showGraph}
+        >
+          {showGraph ? "グラフ 非表示" : "グラフ 表示"}
+        </button>
         {compareBaseId && (
           <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
             比較対象を選択中…
@@ -185,6 +200,11 @@ export function HistoryPanel({
           onChange={(e) => setAuthorQuery(e.target.value)}
         />
       </div>
+
+      {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
+      {showGraph && commits.length > 0 && (
+        <CommitGraph commits={commits} />
+      )}
 
       {commits.length === 0 ? (
         isSearching ? (

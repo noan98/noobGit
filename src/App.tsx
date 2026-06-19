@@ -44,6 +44,11 @@ import { IdentityDialog } from "./components/IdentityDialog";
 import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
+import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
+import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 ショートカット
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
+import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
@@ -240,6 +245,9 @@ export default function App() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [showIdentity, setShowIdentity] = useState(false);
   const identityComplete = !!(identity && identity.name && identity.email);
+
+  // #63 ショートカット: ヘルプダイアログの表示状態。
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
@@ -448,7 +456,12 @@ export default function App() {
     setOpened(true);
     const ok = await refresh();
     // 開けなかった場合は元の入力画面に戻す（エラーはバナーで表示済み）。
-    if (!ok) setOpened(false);
+    if (!ok) {
+      setOpened(false);
+    } else {
+      // 成功したら最近使ったリポジトリ一覧に記録する。
+      rememberRepo(repoPath);
+    }
     setRepoLoading(false);
   }
 
@@ -642,6 +655,40 @@ export default function App() {
       showToast(`取り消しました: ${desc}`, "success");
     });
   }
+
+  // #63 ショートカット: Ctrl+P で現在ブランチをプッシュする。
+  function doPushCurrentBranch() {
+    const name = status?.branch;
+    if (!name) return;
+    void guarded(
+      `ブランチ「${name}」を送信`,
+      "push",
+      () =>
+        api.push(
+          repoPath,
+          "origin",
+          `refs/heads/${name}:refs/heads/${name}`,
+          false,
+        ),
+      name,
+      true, // networkOp
+    );
+  }
+
+  // #63 ショートカット: グローバルキーボードショートカットを登録する。
+  useGlobalShortcuts({
+    onCommit: doCommit,
+    onStageAll: () =>
+      void exec(() => api.stageAll(repoPath), {
+        refresh: REFRESH_BY_OP.stage,
+      }),
+    onUndo: () => {
+      if (undoInfo) doUndo();
+    },
+    onRefresh: () => void refresh(),
+    onPush: doPushCurrentBranch,
+    onHelp: () => setShowShortcuts(true),
+  });
 
   // 取得（fetch）: リモートの最新情報だけを取り込む安全操作。確認なしで実行する。
   function doFetch() {
@@ -858,27 +905,19 @@ export default function App() {
 
   if (!opened) {
     return (
-      <div className="welcome">
-        <h1>noobGit</h1>
-        <p className="tagline">ジュニアエンジニアが安心して使えるGitツール</p>
-        <div className="open-box">
-          <input
-            value={repoPath}
-            placeholder="Gitリポジトリのフォルダパスを入力 (例: C:\\Users\\you\\project)"
-            onChange={(e) => setRepoPath(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && openRepo()}
-          />
-          <button className="btn" onClick={openRepo}>
-            開く
-          </button>
-        </div>
-        {error && <p className="error">{error}</p>}
-      </div>
+      <WelcomeScreen
+        repoPath={repoPath}
+        setRepoPath={setRepoPath}
+        onOpen={openRepo}
+        error={error}
+      />
     );
   }
 
   return (
     <div className="app">
+      {/* #64 オンボーディング */}
+      <OnboardingWizard onClose={() => {}} />
       <header className="topbar">
         <div className="repo-info">
           <strong>noobGit</strong>
@@ -916,7 +955,11 @@ export default function App() {
             )}
           </button>
           {undoInfo && (
-            <button className="btn btn-undo" onClick={doUndo}>
+            <button
+              className="btn btn-undo"
+              onClick={doUndo}
+              title={`直前の操作を取り消します [Ctrl+Z]`}
+            >
               ↩ 取り消す: {undoInfo.description}
             </button>
           )}
@@ -928,7 +971,19 @@ export default function App() {
             👤 名前/メール
           </button>
           <ThemeToggle />
-          <button className="btn btn-small" onClick={() => void refresh()}>
+          {/* #63 ショートカット: ヘルプを開くボタン */}
+          <button
+            className="btn btn-small"
+            onClick={() => setShowShortcuts(true)}
+            title="キーボードショートカット一覧 [? / F1]"
+          >
+            ?
+          </button>
+          <button
+            className="btn btn-small"
+            onClick={() => void refresh()}
+            title="ステータスを再取得します [Ctrl+R]"
+          >
             更新
           </button>
           <button
@@ -981,7 +1036,9 @@ export default function App() {
         </div>
       )}
 
-      <main className="columns">
+      {/* #89 リサイズ可能レイアウト: ResizableColumns で 3 カラムをラップ */}
+      <ResizableColumns>
+        {/* カラム 1: ステージ・コミット・退避 */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1005,6 +1062,7 @@ export default function App() {
                   <StatusPanel
                     status={status}
                     selected={selectedFile}
+                    repoPath={repoPath}
                     onSelect={selectFile}
                     onStageAll={() =>
                       void exec(() => api.stageAll(repoPath), {
@@ -1102,6 +1160,7 @@ export default function App() {
                 className="btn"
                 onClick={doCommit}
                 disabled={!commitMsg.trim()}
+                title="変更をコミットします [Ctrl+Enter]"
               >
                 コミットする
               </button>
@@ -1126,6 +1185,7 @@ export default function App() {
           />
         </section>
 
+        {/* カラム 2: 履歴 */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1189,6 +1249,7 @@ export default function App() {
           )}
         </section>
 
+        {/* カラム 3: ブランチ・タグ */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1277,7 +1338,7 @@ export default function App() {
             )}
           </AnimatePresence>
         </section>
-      </main>
+      </ResizableColumns>
 
       {guard && (
         <ConfirmDialog
@@ -1325,6 +1386,11 @@ export default function App() {
           }
           onCancel={() => setShowIdentity(false)}
         />
+      )}
+
+      {/* #63 ショートカット: ヘルプダイアログ */}
+      {showShortcuts && (
+        <ShortcutHelpDialog onClose={() => setShowShortcuts(false)} />
       )}
     </div>
   );

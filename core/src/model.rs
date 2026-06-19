@@ -172,6 +172,10 @@ pub struct CommitInfo {
     pub author_email: String,
     /// コミット日時（Unixエポック秒）。
     pub time: i64,
+    /// 親コミットの完全な oid 文字列の一覧。
+    /// 通常のコミットは1件、マージコミットは2件以上、最初のコミットは空。
+    /// DAG グラフ表示で分岐・マージを可視化するために使う。
+    pub parent_ids: Vec<String>,
 }
 
 /// blame（行ごとの最終変更コミット）の1かたまり。
