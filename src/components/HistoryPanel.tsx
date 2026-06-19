@@ -53,15 +53,17 @@ function authorInitials(name: string): string {
 }
 
 // 著者名から決定論的なアバター背景色を生成する（同じ名前は常に同じ色）。
+// 色は styles.css の CSS 変数（--avatar-N-bg / --avatar-N-fg）で定義し、
+// data-theme によるライト/ダーク切り替えに自動追従する。 #66: トークン化
 const AVATAR_PALETTES = [
-  { bg: "#ddf4ff", fg: "#0969da" },
-  { bg: "#dafbe1", fg: "#1a7f37" },
-  { bg: "#fff1cc", fg: "#9a6700" },
-  { bg: "#ffebe9", fg: "#cf222e" },
-  { bg: "#faf0ff", fg: "#8250df" },
-  { bg: "#fff1e5", fg: "#bc4c00" },
-  { bg: "#e6f0ff", fg: "#1b60d1" },
-  { bg: "#e6ffec", fg: "#116329" },
+  { bg: "var(--avatar-0-bg)", fg: "var(--avatar-0-fg)" },
+  { bg: "var(--avatar-1-bg)", fg: "var(--avatar-1-fg)" },
+  { bg: "var(--avatar-2-bg)", fg: "var(--avatar-2-fg)" },
+  { bg: "var(--avatar-3-bg)", fg: "var(--avatar-3-fg)" },
+  { bg: "var(--avatar-4-bg)", fg: "var(--avatar-4-fg)" },
+  { bg: "var(--avatar-5-bg)", fg: "var(--avatar-5-fg)" },
+  { bg: "var(--avatar-6-bg)", fg: "var(--avatar-6-fg)" },
+  { bg: "var(--avatar-7-bg)", fg: "var(--avatar-7-fg)" },
 ];
 
 function authorPalette(name: string) {

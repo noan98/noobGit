@@ -59,6 +59,17 @@
   --diff-del-bg: #ffebe9;
   --diff-hunk-bg: #ddf4ff;
 
+  /* 著者アバターのパレット（8 色。HistoryPanel がインライン style で参照）。 #66: トークン化
+     ライト/ダーク両方で定義し、data-theme 経由で自動切り替えする。 */
+  --avatar-0-bg: #ddf4ff; --avatar-0-fg: #0969da;
+  --avatar-1-bg: #dafbe1; --avatar-1-fg: #1a7f37;
+  --avatar-2-bg: #fff1cc; --avatar-2-fg: #9a6700;
+  --avatar-3-bg: #ffebe9; --avatar-3-fg: #cf222e;
+  --avatar-4-bg: #faf0ff; --avatar-4-fg: #8250df;
+  --avatar-5-bg: #fff1e5; --avatar-5-fg: #bc4c00;
+  --avatar-6-bg: #e6f0ff; --avatar-6-fg: #1b60d1;
+  --avatar-7-bg: #e6ffec; --avatar-7-fg: #116329;
+
   /* ボタン */
   --btn-bg: #ffffff;
   --btn-hover: #f3f4f6;
@@ -134,6 +145,16 @@
   --diff-add-bg: rgba(46, 160, 67, 0.18);
   --diff-del-bg: rgba(248, 81, 73, 0.18);
   --diff-hunk-bg: rgba(56, 139, 253, 0.18);
+
+  /* 著者アバターのパレット（ダーク版）。 #66: トークン化 */
+  --avatar-0-bg: rgba(56, 139, 253, 0.16); --avatar-0-fg: #58a6ff;
+  --avatar-1-bg: rgba(46, 160, 67, 0.16);  --avatar-1-fg: #3fb950;
+  --avatar-2-bg: rgba(187, 128, 9, 0.16);  --avatar-2-fg: #d29922;
+  --avatar-3-bg: rgba(248, 81, 73, 0.16);  --avatar-3-fg: #f85149;
+  --avatar-4-bg: rgba(163, 113, 247, 0.16); --avatar-4-fg: #d2a8ff;
+  --avatar-5-bg: rgba(219, 109, 40, 0.16); --avatar-5-fg: #ec775c;
+  --avatar-6-bg: rgba(56, 139, 253, 0.12); --avatar-6-fg: #79c0ff;
+  --avatar-7-bg: rgba(46, 160, 67, 0.12);  --avatar-7-fg: #56d364;
 
   --btn-bg: #21262d;
   --btn-hover: #30363d;
@@ -1240,7 +1261,7 @@ textarea {
 }
 .rebase-mode.active {
   border-color: var(--caution-emphasis);
-  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+  background: var(--surface-muted); /* #66: トークン化（フォールバック hex を除去） */
 }
 .rebase-mode input:disabled + span {
   opacity: 0.5;
@@ -1269,7 +1290,7 @@ textarea {
 }
 .rebase-hint {
   font-size: 13px;
-  color: var(--text-muted, #888);
+  color: var(--muted); /* #66: トークン化（--text-muted は未定義のため --muted へ統一） */
   margin: 6px 0 0;
 }
 .rebase-message textarea {
