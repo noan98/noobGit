@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Box, HStack, Text, VStack } from "@chakra-ui/react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
-import { fadeIn, transitions } from "../theme/motion";
+import { transitions } from "../theme/motion";
 // #88 右クリックメニュー
 import { FileContextMenu } from "./FileContextMenu";
 import type { ContextMenuItem } from "./FileContextMenu";
@@ -20,6 +20,12 @@ import type { ContextMenuItem } from "./FileContextMenu";
  *   - ホバー時に操作ボタンが AnimatePresence でフェードイン
  *   - ファイルアイコンは拡張子に応じた絵文字（react-icons 追加なし）
  *   - StatusBadge（#52）をそのまま活用
+ *
+ * #78 ステージング移動アニメーション:
+ *   - FileCard の motion.div に layout + layoutId（パスベース）を付与し、
+ *     セクション間を移動する際に位置アニメーションが追従する。
+ *   - 各セクションのリストを AnimatePresence で包み、出現・消失をアニメーション。
+ *   - セクションごとに LayoutGroup を分け、過剰な再レイアウトを抑制する。
  */
 
 interface Props {
@@ -80,7 +86,29 @@ const actionsFadeIn = {
   exit: { opacity: 0, transition: transitions.fast },
 };
 
+// #78 ステージング移動アニメーション — カード出現・消失の variants。
+// layout アニメーション（layoutId による位置補間）と二重にならないよう、
+// opacity と y の小さな変化だけに留める。transition はトークン（fast=0.12s）。
+const cardPresence = {
+  initial: { opacity: 0, y: -8 },
+  animate: {
+    opacity: 1,
+    y: 0,
+    transition: transitions.fast,
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.95,
+    transition: transitions.fast,
+  },
+};
+
 // 1 ファイル分のカード UI。
+// #78 ステージング移動アニメーション:
+//   - layoutId={path} でパネル全体の layout アニメーションコンテキストを共有し、
+//     ステージ↔アンステージ操作でカードが移動する際に位置が補間される。
+//   - layout でサイズ変化もアニメーション追従させる。
+//   - initial/animate/exit は親 AnimatePresence のための出現・消失アニメーション。
 function FileCard({
   path,
   isSelected,
@@ -101,7 +129,14 @@ function FileCard({
   const icon = fileIcon(name);
 
   return (
-    <motion.div variants={fadeIn} initial="hidden" animate="visible">
+    // #78 ステージング移動アニメーション
+    <motion.div
+      layoutId={path}
+      layout
+      initial={cardPresence.initial}
+      animate={cardPresence.animate}
+      exit={cardPresence.exit}
+    >
       <Box
         as="div"
         bg={isSelected ? "accent.bg" : "neutral.surface"}
@@ -318,173 +353,194 @@ export function StatusPanel({
         />
       )}
 
+      {/* #78 ステージング移動アニメーション — ステージ済みセクション */}
       {status.staged.length > 0 && (
         <div>
           <SectionHeader label="コミット予定（ステージ済み）" />
-          {status.staged.map((f) => (
-            <FileCard
-              key={`s-${f.path}`}
-              path={f.path}
-              isSelected={isSelected(f.path, "staged")}
-              onSelect={() => onSelect(f.path, "staged")}
-              onContextMenu={handleContextMenu(f.path, "staged")}
-              actions={
-                <>
-                  <StatusBadge kind={f.kind} />
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onShowHistory(f.path);
-                    }}
-                    title="このファイルを変更したコミットの履歴を表示します"
-                    style={{ marginLeft: "6px" }}
-                  >
-                    変更履歴
-                  </button>
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onBlame(f.path);
-                    }}
-                    title="この行を最後に変更したコミットを表示します（blame）"
-                    style={{ marginLeft: "6px" }}
-                  >
-                    履歴
-                  </button>
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onUnstage(f.path);
-                    }}
-                    title="コミット対象から外します（変更は残ります）"
-                    style={{ marginLeft: "6px" }}
-                  >
-                    外す
-                  </button>
-                </>
-              }
-            />
-          ))}
+          {/* LayoutGroup でこのセクション内の layout 計算を分離し、パフォーマンスを確保する */}
+          <LayoutGroup id="staged">
+            <AnimatePresence initial={false}>
+              {status.staged.map((f) => (
+                <FileCard
+                  key={f.path}
+                  path={f.path}
+                  isSelected={isSelected(f.path, "staged")}
+                  onSelect={() => onSelect(f.path, "staged")}
+                  onContextMenu={handleContextMenu(f.path, "staged")}
+                  actions={
+                    <>
+                      <StatusBadge kind={f.kind} />
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onShowHistory(f.path);
+                        }}
+                        title="このファイルを変更したコミットの履歴を表示します"
+                        style={{ marginLeft: "6px" }}
+                      >
+                        変更履歴
+                      </button>
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBlame(f.path);
+                        }}
+                        title="この行を最後に変更したコミットを表示します（blame）"
+                        style={{ marginLeft: "6px" }}
+                      >
+                        履歴
+                      </button>
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onUnstage(f.path);
+                        }}
+                        title="コミット対象から外します（変更は残ります）"
+                        style={{ marginLeft: "6px" }}
+                      >
+                        外す
+                      </button>
+                    </>
+                  }
+                />
+              ))}
+            </AnimatePresence>
+          </LayoutGroup>
         </div>
       )}
 
+      {/* #78 ステージング移動アニメーション — 未ステージセクション */}
       {status.unstaged.length > 0 && (
         <div>
           <SectionHeader label="変更あり（未ステージ）" />
-          {status.unstaged.map((f) => (
-            <FileCard
-              key={`u-${f.path}`}
-              path={f.path}
-              isSelected={isSelected(f.path, "unstaged")}
-              onSelect={() => onSelect(f.path, "unstaged")}
-              onContextMenu={handleContextMenu(f.path, "unstaged")}
-              actions={
-                <>
-                  <StatusBadge kind={f.kind} />
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onShowHistory(f.path);
-                    }}
-                    title="このファイルを変更したコミットの履歴を表示します"
-                    style={{ marginLeft: "6px" }}
-                  >
-                    変更履歴
-                  </button>
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onBlame(f.path);
-                    }}
-                    title="この行を最後に変更したコミットを表示します（blame）"
-                    style={{ marginLeft: "6px" }}
-                  >
-                    履歴
-                  </button>
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStagePath(f.path);
-                    }}
-                    style={{ marginLeft: "6px" }}
-                  >
-                    ステージ
-                  </button>
-                  <button
-                    className="link danger"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDiscard(f.path);
-                    }}
-                    title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
-                  >
-                    破棄
-                  </button>
-                </>
-              }
-            />
-          ))}
+          <LayoutGroup id="unstaged">
+            <AnimatePresence initial={false}>
+              {status.unstaged.map((f) => (
+                <FileCard
+                  key={f.path}
+                  path={f.path}
+                  isSelected={isSelected(f.path, "unstaged")}
+                  onSelect={() => onSelect(f.path, "unstaged")}
+                  onContextMenu={handleContextMenu(f.path, "unstaged")}
+                  actions={
+                    <>
+                      <StatusBadge kind={f.kind} />
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onShowHistory(f.path);
+                        }}
+                        title="このファイルを変更したコミットの履歴を表示します"
+                        style={{ marginLeft: "6px" }}
+                      >
+                        変更履歴
+                      </button>
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBlame(f.path);
+                        }}
+                        title="この行を最後に変更したコミットを表示します（blame）"
+                        style={{ marginLeft: "6px" }}
+                      >
+                        履歴
+                      </button>
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onStagePath(f.path);
+                        }}
+                        style={{ marginLeft: "6px" }}
+                      >
+                        ステージ
+                      </button>
+                      <button
+                        className="link danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDiscard(f.path);
+                        }}
+                        title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
+                      >
+                        破棄
+                      </button>
+                    </>
+                  }
+                />
+              ))}
+            </AnimatePresence>
+          </LayoutGroup>
         </div>
       )}
 
+      {/* #78 ステージング移動アニメーション — 未追跡セクション */}
       {status.untracked.length > 0 && (
         <div>
           <SectionHeader label="新しいファイル（未追跡）" />
-          {status.untracked.map((p) => (
-            <FileCard
-              key={`n-${p}`}
-              path={p}
-              isSelected={isSelected(p, "unstaged")}
-              onSelect={() => onSelect(p, "unstaged")}
-              onContextMenu={handleContextMenu(p, "unstaged")}
-              actions={
-                <>
-                  <StatusBadge kind="untracked" />
-                  <button
-                    className="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStagePath(p);
-                    }}
-                    style={{ marginLeft: "6px" }}
-                  >
-                    ステージ
-                  </button>
-                  <button
-                    className="link danger"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDiscard(p);
-                    }}
-                    title="この新しいファイルを削除します（元に戻せません）"
-                  >
-                    破棄
-                  </button>
-                </>
-              }
-            />
-          ))}
+          <LayoutGroup id="untracked">
+            <AnimatePresence initial={false}>
+              {status.untracked.map((p) => (
+                <FileCard
+                  key={p}
+                  path={p}
+                  isSelected={isSelected(p, "unstaged")}
+                  onSelect={() => onSelect(p, "unstaged")}
+                  onContextMenu={handleContextMenu(p, "unstaged")}
+                  actions={
+                    <>
+                      <StatusBadge kind="untracked" />
+                      <button
+                        className="link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onStagePath(p);
+                        }}
+                        style={{ marginLeft: "6px" }}
+                      >
+                        ステージ
+                      </button>
+                      <button
+                        className="link danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDiscard(p);
+                        }}
+                        title="この新しいファイルを削除します（元に戻せません）"
+                      >
+                        破棄
+                      </button>
+                    </>
+                  }
+                />
+              ))}
+            </AnimatePresence>
+          </LayoutGroup>
         </div>
       )}
 
+      {/* #78 ステージング移動アニメーション — コンフリクトセクション */}
       {status.conflicted.length > 0 && (
         <div>
           <SectionHeader label="コンフリクト" />
-          {status.conflicted.map((p) => (
-            <FileCard
-              key={`c-${p}`}
-              path={p}
-              isSelected={isSelected(p, "conflicted")}
-              onSelect={() => onSelect(p, "conflicted")}
-              actions={<StatusBadge kind="conflicted" />}
-            />
-          ))}
+          <LayoutGroup id="conflicted">
+            <AnimatePresence initial={false}>
+              {status.conflicted.map((p) => (
+                <FileCard
+                  key={p}
+                  path={p}
+                  isSelected={isSelected(p, "conflicted")}
+                  onSelect={() => onSelect(p, "conflicted")}
+                  actions={<StatusBadge kind="conflicted" />}
+                />
+              ))}
+            </AnimatePresence>
+          </LayoutGroup>
         </div>
       )}
 
