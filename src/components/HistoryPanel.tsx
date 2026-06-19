@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CommitInfo, LogFilter } from "../api";
+import { CommitGraph } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 
 interface Props {
@@ -117,6 +118,9 @@ export function HistoryPanel({
   onToggleSelect,
   onStartRebase,
 }: Props) {
+  // #51 DAG グラフ — ON/OFF トグル状態。
+  const [showGraph, setShowGraph] = useState(false);
+
   // 検索ボックスの入力値。入力のたびに即時反映し、再取得はデバウンスして行う。
   const [messageQuery, setMessageQuery] = useState("");
   const [authorQuery, setAuthorQuery] = useState("");
@@ -147,6 +151,15 @@ export function HistoryPanel({
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
+        {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+        <button
+          className={`btn btn-small${showGraph ? " active" : ""}`}
+          onClick={() => setShowGraph((v) => !v)}
+          title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+          aria-pressed={showGraph}
+        >
+          {showGraph ? "グラフ 非表示" : "グラフ 表示"}
+        </button>
         {compareBaseId && (
           <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
             比較対象を選択中…
@@ -187,6 +200,11 @@ export function HistoryPanel({
           onChange={(e) => setAuthorQuery(e.target.value)}
         />
       </div>
+
+      {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
+      {showGraph && commits.length > 0 && (
+        <CommitGraph commits={commits} />
+      )}
 
       {commits.length === 0 ? (
         isSearching ? (

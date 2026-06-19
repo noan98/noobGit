@@ -248,6 +248,7 @@ fn commit_info(commit: &Commit) -> CommitInfo {
         author_name: author.name().unwrap_or("").to_string(),
         author_email: author.email().unwrap_or("").to_string(),
         time: commit.time().seconds(),
+        parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
     }
 }
 

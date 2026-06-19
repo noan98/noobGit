@@ -437,6 +437,7 @@ pub fn log_filtered(
             author_name: author.name().unwrap_or("").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
+            parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
         });
         if out.len() >= max {
             break;
@@ -495,6 +496,7 @@ pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitI
             author_name: author.name().unwrap_or("").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
+            parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
         });
     }
 
