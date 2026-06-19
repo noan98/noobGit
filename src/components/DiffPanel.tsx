@@ -1,4 +1,6 @@
 import type { DiffLine, DiffLineKind, FileDiff } from "../api";
+import { langFromPath } from "../lib/highlight";
+import { HighlightedCode } from "./HighlightedCode";
 
 export type DiffSource = "staged" | "unstaged" | "conflicted";
 
@@ -43,6 +45,9 @@ function lineClass(line: DiffLine, conflicted: boolean): string {
 export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
   // 未ステージ差分のときだけ、hunk 単位の部分ステージを出す。
   const canStageHunk = selection?.source === "unstaged" && !!onStageHunk;
+  // ファイルの拡張子から shiki 言語名を決定する。
+  const lang = selection ? langFromPath(selection.path) : "text";
+
   return (
     <div className="panel diff-panel">
       <div className="panel-head">
@@ -93,6 +98,7 @@ export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
                         <td className="diff-sign">{sign(line.kind)}</td>
                         <td className="diff-content">
                           {line.kind === "hunk" && canStageHunk ? (
+                            // hunk 行でステージボタンあり: プレーン表示 + ボタン。
                             <span className="diff-hunk-row">
                               <span className="diff-hunk-header">
                                 {line.content || " "}
@@ -107,7 +113,12 @@ export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
                               </button>
                             </span>
                           ) : (
-                            line.content || " "
+                            // その他の行: シンタックスハイライトを適用する。
+                            <HighlightedCode
+                              code={line.content}
+                              lang={lang}
+                              isHunk={line.kind === "hunk"}
+                            />
                           )}
                         </td>
                       </tr>

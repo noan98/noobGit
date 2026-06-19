@@ -17,6 +17,8 @@ import { Box, Text } from "@chakra-ui/react";
 import { motion, animate } from "framer-motion";
 import { api, type FileDiff } from "../api";
 import { durations } from "../theme/motion";
+import { langFromPath } from "../lib/highlight";
+import { HighlightedCode } from "./HighlightedCode";
 
 // #49 インライン差分プレビュー
 export type InlineDiffSource = "staged" | "unstaged";
@@ -115,6 +117,9 @@ export function InlineDiff({ repoPath, path, source, onStageHunk }: Props) {
   // hunk 行のループを追跡して各ブロックをグループ化するための変数。
   // 現在処理中の hunk ヘッダー（null = hunk 外）。
   let currentHunkHeader: string | null = null;
+
+  // #128 ファイルの拡張子から shiki 言語名を決定する。
+  const lang = langFromPath(path);
 
   return (
     // overflow:hidden は親の AnimatePresence（height アニメーション）が担う。
@@ -273,18 +278,21 @@ export function InlineDiff({ repoPath, path, source, onStageHunk }: Props) {
                   {prefix}
                 </Text>
 
-                {/* 行の内容 */}
+                {/* 行の内容（hunk 以外はシンタックスハイライトを適用する） */}
                 <Text
                   as="span"
-                  color={fg}
+                  color={isHunk ? fg : undefined}
                   fontSize="12px"
                   fontWeight={isHunk ? "600" : "400"}
                   whiteSpace="pre"
                   ml={isHunk ? "40px" : undefined}
                   flex="1"
                 >
-                  {/* 末尾改行は除去して表示する */}
-                  {line.content.replace(/\n$/, "")}
+                  <HighlightedCode
+                    code={line.content}
+                    lang={lang}
+                    isHunk={isHunk}
+                  />
                 </Text>
 
                 {/* #125 hunk ステージボタン: hunk 見出し行 + unstaged のみ表示 */}
