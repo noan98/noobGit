@@ -45,6 +45,7 @@ import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
+import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -870,6 +871,8 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* #64 オンボーディング */}
+      <OnboardingWizard onClose={() => {}} />
       <header className="topbar">
         <div className="repo-info">
           <strong>noobGit</strong>
