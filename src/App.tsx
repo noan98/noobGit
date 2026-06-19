@@ -44,6 +44,7 @@ import { IdentityDialog } from "./components/IdentityDialog";
 import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -443,7 +444,12 @@ export default function App() {
     setOpened(true);
     const ok = await refresh();
     // 開けなかった場合は元の入力画面に戻す（エラーはバナーで表示済み）。
-    if (!ok) setOpened(false);
+    if (!ok) {
+      setOpened(false);
+    } else {
+      // 成功したら最近使ったリポジトリ一覧に記録する。
+      rememberRepo(repoPath);
+    }
     setRepoLoading(false);
   }
 
@@ -853,22 +859,12 @@ export default function App() {
 
   if (!opened) {
     return (
-      <div className="welcome">
-        <h1>noobGit</h1>
-        <p className="tagline">ジュニアエンジニアが安心して使えるGitツール</p>
-        <div className="open-box">
-          <input
-            value={repoPath}
-            placeholder="Gitリポジトリのフォルダパスを入力 (例: C:\\Users\\you\\project)"
-            onChange={(e) => setRepoPath(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && openRepo()}
-          />
-          <button className="btn" onClick={openRepo}>
-            開く
-          </button>
-        </div>
-        {error && <p className="error">{error}</p>}
-      </div>
+      <WelcomeScreen
+        repoPath={repoPath}
+        setRepoPath={setRepoPath}
+        onOpen={openRepo}
+        error={error}
+      />
     );
   }
 
