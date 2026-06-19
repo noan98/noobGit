@@ -66,6 +66,8 @@ interface Props {
   onStagePaths?: (paths: string[]) => void;
   onUnstagePaths?: (paths: string[]) => void;
   onDiscardPaths?: (paths: string[]) => void;
+  // #125 hunk 単位ステージ: ファイルパスと hunk ヘッダーを受け取り App.tsx へ委譲する。
+  onStageHunk?: (path: string, hunkHeader: string) => void;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -154,6 +156,7 @@ function isInsideRect(
 // #88 右クリックメニュー: onContextMenu プロップを追加。
 // #49 インライン差分プレビュー: repoPath / inlineDiffSource を受け取り、選択中のとき
 //   カードの下に InlineDiff をスライドダウン展開する。
+// #125 hunk 単位ステージ: onStageHunk を受け取り InlineDiff へ橋渡しする。
 function FileCard({
   path,
   isSelected,
@@ -171,6 +174,8 @@ function FileCard({
   // #127 マルチ選択: チェックボックス用プロップ。
   checked,
   onCheck,
+  // #125 hunk 単位ステージ
+  onStageHunk,
 }: {
   path: string;
   isSelected: boolean;
@@ -188,6 +193,8 @@ function FileCard({
   // #127 マルチ選択
   checked?: boolean;
   onCheck?: (checked: boolean) => void;
+  // #125 hunk 単位ステージ: hunk ヘッダーを受け取り親へ委譲する。
+  onStageHunk?: (hunkHeader: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
@@ -369,6 +376,7 @@ function FileCard({
                 repoPath={repoPath}
                 path={path}
                 source={inlineDiffSource}
+                onStageHunk={onStageHunk}
               />
             </motion.div>
           )}
@@ -460,6 +468,8 @@ export function StatusPanel({
   onStagePaths,
   onUnstagePaths,
   onDiscardPaths,
+  // #125 hunk 単位ステージ
+  onStageHunk,
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -766,6 +776,12 @@ export function StatusPanel({
                       inlineDiffSource="unstaged"
                       checked={checkedPaths.has(f.path)}
                       onCheck={(c) => toggleCheck(f.path, c)}
+                      // #125 hunk 単位ステージ: ファイルパスを束ねて親へ委譲する。
+                      onStageHunk={
+                        onStageHunk
+                          ? (h) => onStageHunk(f.path, h)
+                          : undefined
+                      }
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />

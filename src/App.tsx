@@ -1191,6 +1191,12 @@ export default function App() {
                         },
                       )
                     }
+                    // #125 hunk ステージ
+                    onStageHunk={(p, h) =>
+                      void exec(() => api.stageHunk(repoPath, p, h), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
                   />
                 </motion.div>
               )
