@@ -286,6 +286,13 @@ export const api = {
   discardPath: (repoPath: string, path: string) =>
     invoke<void>("discard_path", { repoPath, path }),
 
+  // #70 .gitignore 管理: 現在の .gitignore の内容を取得する（無ければ null）。
+  getGitignore: (repoPath: string) =>
+    invoke<string | null>("get_gitignore", { repoPath }),
+  // #70 .gitignore 管理: パターンを .gitignore の末尾に 1 行追記する（無ければ新規作成）。
+  addToGitignore: (repoPath: string, pattern: string) =>
+    invoke<void>("add_to_gitignore", { repoPath, pattern }),
+
   getStashes: (repoPath: string) =>
     invoke<StashInfo[]>("get_stashes", { repoPath }),
   stashSave: (repoPath: string, message: string) =>

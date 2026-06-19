@@ -212,6 +212,20 @@ fn discard_path(repo_path: String, path: String) -> Result<(), String> {
     ops::discard_path(&r, &path).map_err(|e| e.to_string())
 }
 
+/// リポジトリ直下の `.gitignore` の内容を返す（ファイルが無ければ null）。
+#[tauri::command]
+fn get_gitignore(repo_path: String) -> Result<Option<String>, String> {
+    let r = open(&repo_path)?;
+    repo::read_gitignore(&r).map_err(|e| e.to_string())
+}
+
+/// `.gitignore` の末尾にパターンを 1 行追記する（ファイルが無ければ新規作成）。
+#[tauri::command]
+fn add_to_gitignore(repo_path: String, pattern: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::add_to_gitignore(&r, &pattern).map_err(|e| e.to_string())
+}
+
 /// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避する。
 #[tauri::command]
 fn stash_save(repo_path: String, message: String) -> Result<(), String> {
@@ -408,6 +422,8 @@ pub fn run() {
             squash_commits,
             reword_commit,
             discard_path,
+            get_gitignore,
+            add_to_gitignore,
             stash_save,
             stash_apply,
             stash_pop,

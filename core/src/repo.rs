@@ -959,6 +959,25 @@ pub fn get_conflicts(repo: &Repository) -> Result<Vec<ConflictFile>> {
     Ok(out)
 }
 
+/// リポジトリ直下の `.gitignore` の内容を返す。ファイルが無ければ `None`。
+///
+/// `.gitignore` は「Git に無視させたいファイルのパターン」を 1 行ずつ書くテキスト
+/// ファイル。GUI で現在の内容を確認できるようにするための読み取り専用関数。
+/// `.gitignore` が無い（`None`）のと、空ファイル（`Some("")`）は区別して返す。
+pub fn read_gitignore(repo: &Repository) -> Result<Option<String>> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
+    let path = workdir.join(".gitignore");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CoreError::Git(format!(
+            ".gitignore を読み込めませんでした: {e}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1917,5 +1936,24 @@ mod tests {
         let repo = fx.open();
         // コンフリクトを作っていないリポジトリでは空のベクタが返る。
         assert!(get_conflicts(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_gitignore_none_when_missing() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        // .gitignore が無いときは None（空ファイルとは区別する）。
+        assert!(read_gitignore(&repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_gitignore_returns_contents() {
+        let fx = TestRepo::new();
+        fx.write_file(".gitignore", "target/\n*.log\n");
+        let repo = fx.open();
+        assert_eq!(
+            read_gitignore(&repo).unwrap().as_deref(),
+            Some("target/\n*.log\n")
+        );
     }
 }

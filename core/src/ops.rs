@@ -539,6 +539,65 @@ pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// `.gitignore` の末尾にパターンを 1 行追記する（ファイルが無ければ新規作成）。
+///
+/// `.gitignore` は Git に無視させたいファイルを指定するテキストファイル。ここへ追記する
+/// だけで Git のインデックス・履歴は変えないため、undo は記録しない（変更は通常の
+/// ファイル編集として status に現れ、ユーザー自身が確認・コミットできる）。
+///
+/// 安全とおせっかい防止のための約束:
+/// - 前後の空白を取り除いた `pattern` が空なら [`CoreError::InvalidInput`]。
+/// - 改行を含む `pattern` は複数行を書き込んでしまうので拒否する。
+/// - すでに同じパターンが（行として）書かれていれば何もしない（冪等・重複防止）。
+/// - 既存内容の末尾に改行が無ければ補ってから追記し、行が混ざらないようにする。
+pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "無視するパターンが空です。".to_string(),
+        ));
+    }
+    // 改行を含むと複数行を書き込んでしまうため拒否する。
+    if pattern.contains('\n') || pattern.contains('\r') {
+        return Err(CoreError::InvalidInput(
+            "無視するパターンに改行を含めることはできません。".to_string(),
+        ));
+    }
+
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
+    let path = workdir.join(".gitignore");
+
+    // 既存の内容を読む（無ければ空から始める）。
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(CoreError::Git(format!(
+                ".gitignore を読み込めませんでした: {e}"
+            )))
+        }
+    };
+
+    // すでに同じパターンが行として存在すれば重複追記を避ける。
+    if existing.lines().any(|line| line.trim() == pattern) {
+        return Ok(());
+    }
+
+    // 末尾に改行が無ければ補ってから追記し、最後も改行で終える。
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(pattern);
+    next.push('\n');
+
+    std::fs::write(&path, next)
+        .map_err(|e| CoreError::Git(format!(".gitignore に書き込めませんでした: {e}")))?;
+    Ok(())
+}
+
 /// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避し、作業ツリーを
 /// きれいな状態に戻す。`message` が空なら libgit2 が既定のメッセージを付ける。
 ///
@@ -2983,5 +3042,63 @@ mod tests {
             "main change\n"
         );
         assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
+    fn add_to_gitignore_creates_file_when_missing() {
+        use crate::repo::read_gitignore;
+
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        // .gitignore が無い状態から追記すると新規作成され、末尾は改行で終わる。
+        add_to_gitignore(&repo, ".env").unwrap();
+        assert_eq!(read_gitignore(&repo).unwrap().as_deref(), Some(".env\n"));
+    }
+
+    #[test]
+    fn add_to_gitignore_appends_with_separating_newline() {
+        use crate::repo::read_gitignore;
+
+        let fx = TestRepo::new();
+        // 末尾に改行が無い既存ファイルでも、行が連結されないよう改行を補う。
+        fx.write_file(".gitignore", "target/");
+        let repo = fx.open();
+        add_to_gitignore(&repo, "*.log").unwrap();
+        assert_eq!(
+            read_gitignore(&repo).unwrap().as_deref(),
+            Some("target/\n*.log\n")
+        );
+    }
+
+    #[test]
+    fn add_to_gitignore_is_idempotent_for_existing_pattern() {
+        use crate::repo::read_gitignore;
+
+        let fx = TestRepo::new();
+        fx.write_file(".gitignore", "node_modules/\n.env\n");
+        let repo = fx.open();
+        // すでにある行を追記しても重複しない。
+        add_to_gitignore(&repo, ".env").unwrap();
+        assert_eq!(
+            read_gitignore(&repo).unwrap().as_deref(),
+            Some("node_modules/\n.env\n")
+        );
+    }
+
+    #[test]
+    fn add_to_gitignore_rejects_empty_and_multiline() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        // 空・空白のみ・改行入りはエラー。
+        assert!(matches!(
+            add_to_gitignore(&repo, "   ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            add_to_gitignore(&repo, "a\nb").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        // どちらの失敗でも .gitignore は作られない。
+        assert!(crate::repo::read_gitignore(&repo).unwrap().is_none());
     }
 }
