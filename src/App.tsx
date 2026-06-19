@@ -48,6 +48,7 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
 import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
 import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 ショートカット
+import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 管理
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
@@ -259,6 +260,11 @@ export default function App() {
 
   // #63 ショートカット: ヘルプダイアログの表示状態。
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // #70 .gitignore 管理: 閲覧モーダルの表示と、その時点の .gitignore 内容（null = 未作成）。
+  const [gitignore, setGitignore] = useState<{ content: string | null } | null>(
+    null,
+  );
 
   // #105 コマンドパレット: Ctrl+K / ⌘K で開くパレットの表示状態。
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -842,6 +848,26 @@ export default function App() {
     );
   }
 
+  // #70 .gitignore 管理: ファイルを無視リスト（.gitignore）に追加する。
+  // .gitignore への追記だけの安全操作なので guarded は通さず exec で直接実行する。
+  // 追記後に status を更新すると、未追跡ファイルは無視されて一覧から消える。
+  function doIgnore(path: string) {
+    void exec(() => api.addToGitignore(repoPath, path), {
+      successMsg: `.gitignore に追加しました: ${path}`,
+      refresh: REFRESH_BY_OP.stage,
+    });
+  }
+
+  // #70 .gitignore 管理: 現在の .gitignore の内容を取得して閲覧モーダルを開く。
+  async function doShowGitignore() {
+    try {
+      const content = await api.getGitignore(repoPath);
+      setGitignore({ content });
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
   // 直前のコミットを修正（amend）。コミットと同様に名前・メール未設定なら先に案内する。
   function doAmend() {
     if (commits.length === 0) return;
@@ -1221,6 +1247,9 @@ export default function App() {
                         refresh: REFRESH_BY_OP.stage,
                       })
                     }
+                    // #70 .gitignore 管理
+                    onIgnore={doIgnore}
+                    onShowGitignore={() => void doShowGitignore()}
                   />
                 </motion.div>
               )
@@ -1536,6 +1565,14 @@ export default function App() {
       {/* #63 ショートカット: ヘルプダイアログ */}
       {showShortcuts && (
         <ShortcutHelpDialog onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {/* #70 .gitignore 管理: 閲覧モーダル */}
+      {gitignore && (
+        <GitignoreModal
+          content={gitignore.content}
+          onClose={() => setGitignore(null)}
+        />
       )}
 
       {/* #105 コマンドパレット */}

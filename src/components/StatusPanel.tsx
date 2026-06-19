@@ -68,6 +68,10 @@ interface Props {
   onDiscardPaths?: (paths: string[]) => void;
   // #125 hunk 単位ステージ: ファイルパスと hunk ヘッダーを受け取り App.tsx へ委譲する。
   onStageHunk?: (path: string, hunkHeader: string) => void;
+  // #70 .gitignore 管理: このファイルを .gitignore に追加する（無視リストへ）。
+  onIgnore?: (path: string) => void;
+  // #70 .gitignore 管理: .gitignore の内容を閲覧するモーダルを開く。
+  onShowGitignore?: () => void;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -470,6 +474,9 @@ export function StatusPanel({
   onDiscardPaths,
   // #125 hunk 単位ステージ
   onStageHunk,
+  // #70 .gitignore 管理
+  onIgnore,
+  onShowGitignore,
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -638,14 +645,26 @@ export function StatusPanel({
     <div className="panel">
       <div className="panel-head">
         <h2>変更</h2>
-        <button
-          className="btn btn-small"
-          onClick={onStageAll}
-          disabled={!hasUnstaged}
-          title="すべての変更をコミット対象に加えます"
-        >
-          すべてステージ
-        </button>
+        <HStack gap="6px">
+          {/* #70 .gitignore 管理: 現在の無視リストを確認する */}
+          {onShowGitignore && (
+            <button
+              className="btn btn-small"
+              onClick={onShowGitignore}
+              title=".gitignore（Git に無視させるファイルの一覧）を表示します"
+            >
+              無視リスト
+            </button>
+          )}
+          <button
+            className="btn btn-small"
+            onClick={onStageAll}
+            disabled={!hasUnstaged}
+            title="すべての変更をコミット対象に加えます"
+          >
+            すべてステージ
+          </button>
+        </HStack>
       </div>
 
       {status.is_clean && (
@@ -877,6 +896,20 @@ export function StatusPanel({
                           >
                             ステージ
                           </button>
+                          {/* #70 .gitignore 管理: 未追跡ファイルを無視リストに追加する */}
+                          {onIgnore && (
+                            <button
+                              className="link"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onIgnore(p);
+                              }}
+                              title="このファイルを .gitignore に追加して Git に無視させます"
+                              style={{ marginLeft: "6px" }}
+                            >
+                              無視
+                            </button>
+                          )}
                           <button
                             className="link danger"
                             onClick={(e) => {
