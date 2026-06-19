@@ -5,6 +5,7 @@
 
 use git2::Repository;
 
+use noobgit_core::error::{classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
@@ -351,6 +352,16 @@ fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_tag(&r, &name).map_err(|e| e.to_string())
 }
 
+/// ネットワーク操作のエラーメッセージを種別に分類する。
+///
+/// フロントエンドが fetch / pull / push の失敗時にエラー文字列をここに渡すと、
+/// [`NetworkErrorKind`] が返る。それを使って種別ごとの日本語ガイドダイアログを表示できる。
+/// リポジトリ不要の純粋関数なので `repo_path` は取らない。
+#[tauri::command]
+fn classify_network_error_cmd(message: String) -> NetworkErrorKind {
+    classify_network_error(&message)
+}
+
 /// 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
 #[tauri::command]
 fn get_undo_journal(repo_path: String) -> Result<Vec<UndoEntry>, String> {
@@ -416,6 +427,7 @@ pub fn run() {
             list_tags,
             create_tag,
             delete_tag,
+            classify_network_error_cmd,
             get_undo_journal,
             peek_undo,
             undo_last,

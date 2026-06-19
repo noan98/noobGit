@@ -1506,3 +1506,158 @@ textarea {
   flex-shrink: 0;
   align-self: center;
 }
+
+/* ---- prefers-reduced-motion 対応 (#108) ---- */
+/* OS の「視差効果を減らす / アニメーションを減らす」設定が有効なとき、
+   CSS トランジション（カードのホバー・入力フォーカス・ボタン等）も抑制する。
+   framer-motion のアニメーションは MotionConfig reducedMotion="user" が担う。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ---- #105 コマンドパレット ---- */
+/* 中央に浮かぶ検索パネル。横幅はコンテンツが読みやすい固定サイズ。 */
+.command-palette-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 560px;
+  max-width: 94vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 検索入力欄: 上端に固定し、常に表示する。 */
+.command-palette-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 14px 18px;
+  font-size: 15px;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+}
+.command-palette-input::placeholder {
+  color: var(--muted);
+}
+.command-palette-input:focus {
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+/* 結果リスト: スクロール可能。 */
+.command-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* 各コマンド行 */
+.command-palette-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 18px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.command-palette-item:hover {
+  background: var(--surface-muted);
+}
+.command-palette-item--active {
+  background: var(--accent-bg);
+}
+.command-palette-item--active:hover {
+  background: var(--accent-bg);
+}
+
+/* コマンド名（太字） */
+.command-palette-label {
+  font-size: 14px;
+  font-weight: var(--font-weight-strong);
+  color: var(--text);
+}
+
+/* 補足説明 */
+.command-palette-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 「見つかりません」メッセージ */
+.command-palette-empty {
+  padding: 14px 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* キーボード操作ヒント（パネル最下部） */
+.command-palette-hint {
+  border-top: 1px solid var(--border);
+  padding: 8px 18px;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.command-palette-hint kbd {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+/* ショートカット一覧テーブル（ShortcutHelpDialog 共用） */
+.shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: 8px 0 12px;
+}
+.shortcut-table th {
+  text-align: left;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: var(--font-weight-strong);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-muted);
+}
+.shortcut-table tr:last-child td {
+  border-bottom: none;
+}
+.shortcut-key {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.shortcut-note {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}

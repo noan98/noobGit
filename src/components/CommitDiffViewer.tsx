@@ -1,4 +1,6 @@
 import type { CommitInfo, DiffLineKind, FileDiff } from "../api";
+import { langFromPath } from "../lib/highlight";
+import { HighlightedCode } from "./HighlightedCode";
 
 interface Props {
   // 比較の基準（古い側）のコミット。null のときは target の親との比較。
@@ -51,45 +53,54 @@ export function CommitDiffViewer({
 
       {!loading &&
         diffs &&
-        diffs.map((file) => (
-          <div key={file.path} className="commit-diff-file">
-            <h3 className="commit-diff-filename">{file.path}</h3>
+        diffs.map((file) => {
+          // ファイルの拡張子から shiki 言語名を決定する。
+          const lang = langFromPath(file.path);
+          return (
+            <div key={file.path} className="commit-diff-file">
+              <h3 className="commit-diff-filename">{file.path}</h3>
 
-            {file.is_binary ? (
-              <p className="empty">バイナリのため差分は表示できません。</p>
-            ) : file.lines.length === 0 ? (
-              <p className="empty">このファイルに表示できる差分はありません。</p>
-            ) : (
-              <>
-                <div className="diff-body">
-                  <table className="diff-table">
-                    <tbody>
-                      {file.lines.map((line, i) => (
-                        <tr key={i} className={`diff-line diff-${line.kind}`}>
-                          <td className="diff-lineno">
-                            {line.old_lineno ?? ""}
-                          </td>
-                          <td className="diff-lineno">
-                            {line.new_lineno ?? ""}
-                          </td>
-                          <td className="diff-sign">{sign(line.kind)}</td>
-                          <td className="diff-content">
-                            {line.content || " "}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {file.truncated && (
-                  <p className="empty">
-                    差分が大きいため、最初の{file.lines.length}行のみ表示しています。
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        ))}
+              {file.is_binary ? (
+                <p className="empty">バイナリのため差分は表示できません。</p>
+              ) : file.lines.length === 0 ? (
+                <p className="empty">このファイルに表示できる差分はありません。</p>
+              ) : (
+                <>
+                  <div className="diff-body">
+                    <table className="diff-table">
+                      <tbody>
+                        {file.lines.map((line, i) => (
+                          <tr key={i} className={`diff-line diff-${line.kind}`}>
+                            <td className="diff-lineno">
+                              {line.old_lineno ?? ""}
+                            </td>
+                            <td className="diff-lineno">
+                              {line.new_lineno ?? ""}
+                            </td>
+                            <td className="diff-sign">{sign(line.kind)}</td>
+                            <td className="diff-content">
+                              {/* hunk 行以外はシンタックスハイライトを適用する。 */}
+                              <HighlightedCode
+                                code={line.content}
+                                lang={lang}
+                                isHunk={line.kind === "hunk"}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {file.truncated && (
+                    <p className="empty">
+                      差分が大きいため、最初の{file.lines.length}行のみ表示しています。
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
     </div>
   );
 }

@@ -6,6 +6,10 @@
  * ここで定義したトークンと variants だけを参照することで、アプリ全体の
  * 動きのトーンを揃える。新しいアニメーションを足すときは、まずここに
  * トークンを追加してから使うこと（コンポーネントに数値を直書きしない）。
+ *
+ * 動きの抑制は src/main.tsx の MotionConfig reducedMotion="user" が担う。
+ * OS の「視差効果を減らす」設定が有効なとき、framer-motion のアニメーションは
+ * 自動的に無効化される（このファイルのトークン値を変える必要はない）。
  */
 import type { Transition, Variants } from "framer-motion";
 

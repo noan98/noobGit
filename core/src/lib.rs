@@ -22,7 +22,7 @@ pub mod undo;
 #[cfg(test)]
 mod test_support;
 
-pub use error::{CoreError, ErrorKind, Result};
+pub use error::{classify_network_error, CoreError, ErrorKind, NetworkErrorKind, Result};
 pub use explain::{explain, Explanation};
 pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{

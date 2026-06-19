@@ -197,6 +197,16 @@ export type MergeOutcome =
 // identity の保存先。"local" は今のリポジトリだけ、"global" はこのPC全体。
 export type IdentityScope = "local" | "global";
 
+// ネットワーク操作（fetch / pull / push）のエラー種別（core の NetworkErrorKind に対応）。
+// snake_case のリテラルで届く（serde rename_all = "snake_case" による）。
+export type NetworkErrorKind =
+  | "auth_failed"
+  | "remote_not_found"
+  | "ssh_key_not_found"
+  | "non_fast_forward"
+  | "timeout"
+  | "other";
+
 export interface Identity {
   name: string | null;
   email: string | null;
@@ -342,4 +352,9 @@ export const api = {
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
   undoLast: (repoPath: string) => invoke<string>("undo_last", { repoPath }),
+
+  // #126 ネットワーク診断: エラーメッセージを種別に分類する。
+  // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。
+  classifyNetworkError: (message: string) =>
+    invoke<NetworkErrorKind>("classify_network_error_cmd", { message }),
 };

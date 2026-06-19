@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, HStack, Text, VStack } from "@chakra-ui/react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import type { PanInfo } from "framer-motion";
@@ -6,7 +6,7 @@ import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
-import { transitions } from "../theme/motion";
+import { slideInFromBottom, transitions } from "../theme/motion";
 // #88 右クリックメニュー
 import { FileContextMenu } from "./FileContextMenu";
 import type { ContextMenuItem } from "./FileContextMenu";
@@ -62,6 +62,12 @@ interface Props {
   onShowHistory: (path: string) => void;
   // ファイルの変更履歴（blame）を開く。
   onBlame: (path: string) => void;
+  // #127 マルチ選択: バッチ操作ハンドラ（省略可能）。
+  onStagePaths?: (paths: string[]) => void;
+  onUnstagePaths?: (paths: string[]) => void;
+  onDiscardPaths?: (paths: string[]) => void;
+  // #125 hunk 単位ステージ: ファイルパスと hunk ヘッダーを受け取り App.tsx へ委譲する。
+  onStageHunk?: (path: string, hunkHeader: string) => void;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -150,6 +156,7 @@ function isInsideRect(
 // #88 右クリックメニュー: onContextMenu プロップを追加。
 // #49 インライン差分プレビュー: repoPath / inlineDiffSource を受け取り、選択中のとき
 //   カードの下に InlineDiff をスライドダウン展開する。
+// #125 hunk 単位ステージ: onStageHunk を受け取り InlineDiff へ橋渡しする。
 function FileCard({
   path,
   isSelected,
@@ -164,6 +171,11 @@ function FileCard({
   // #49 インライン差分プレビュー
   repoPath,
   inlineDiffSource,
+  // #127 マルチ選択: チェックボックス用プロップ。
+  checked,
+  onCheck,
+  // #125 hunk 単位ステージ
+  onStageHunk,
 }: {
   path: string;
   isSelected: boolean;
@@ -178,6 +190,11 @@ function FileCard({
   // #49 インライン差分プレビュー
   repoPath?: string;
   inlineDiffSource?: InlineDiffSource;
+  // #127 マルチ選択
+  checked?: boolean;
+  onCheck?: (checked: boolean) => void;
+  // #125 hunk 単位ステージ: hunk ヘッダーを受け取り親へ委譲する。
+  onStageHunk?: (hunkHeader: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
@@ -244,6 +261,18 @@ function FileCard({
         onContextMenu={onContextMenu}
       >
         <HStack gap="8px" align="center" wrap="nowrap">
+          {/* #127 マルチ選択: 各カードのチェックボックス */}
+          {onCheck !== undefined && (
+            <input
+              type="checkbox"
+              checked={checked ?? false}
+              onChange={(e) => onCheck(e.target.checked)}
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`${path}を選択`}
+              style={{ flexShrink: 0, cursor: "pointer", accentColor: "var(--accent)" }}
+            />
+          )}
+
           {/* ファイルアイコン（拡張子絵文字）*/}
           <Text
             as="span"
@@ -347,6 +376,7 @@ function FileCard({
                 repoPath={repoPath}
                 path={path}
                 source={inlineDiffSource}
+                onStageHunk={onStageHunk}
               />
             </motion.div>
           )}
@@ -375,19 +405,43 @@ function FileCard({
 }
 
 // セクションヘッダ（「コミット予定」「変更あり」など）。
-function SectionHeader({ label }: { label: string }) {
+// #127 マルチ選択: checkboxRef / checkCount / totalCount を渡すと全選択チェックボックスを表示する。
+function SectionHeader({
+  label,
+  checkboxRef,
+  checkCount,
+  totalCount,
+  onToggleAll,
+}: {
+  label: string;
+  checkboxRef?: React.RefObject<HTMLInputElement | null>;
+  checkCount?: number;
+  totalCount?: number;
+  onToggleAll?: (checked: boolean) => void;
+}) {
   return (
-    <Text
-      fontSize="12px"
-      fontWeight="600"
-      color="neutral.muted"
-      letterSpacing="0.06em"
-      mt="10px"
-      mb="4px"
-      px="2px"
-    >
-      {label}
-    </Text>
+    <HStack gap="6px" align="center" mt="10px" mb="4px" px="2px">
+      {/* #127 マルチ選択: 全選択チェックボックス（indeterminate 対応） */}
+      {onToggleAll !== undefined && totalCount !== undefined && checkCount !== undefined && (
+        <input
+          type="checkbox"
+          ref={checkboxRef}
+          checked={checkCount > 0 && checkCount === totalCount}
+          onChange={(e) => onToggleAll(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`${label}のすべてのファイルを選択`}
+          style={{ cursor: "pointer", flexShrink: 0, accentColor: "var(--accent)" }}
+        />
+      )}
+      <Text
+        fontSize="12px"
+        fontWeight="600"
+        color="neutral.muted"
+        letterSpacing="0.06em"
+      >
+        {label}
+      </Text>
+    </HStack>
   );
 }
 
@@ -410,6 +464,12 @@ export function StatusPanel({
   onSelect,
   onShowHistory,
   onBlame,
+  // #127 マルチ選択
+  onStagePaths,
+  onUnstagePaths,
+  onDiscardPaths,
+  // #125 hunk 単位ステージ
+  onStageHunk,
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -419,6 +479,73 @@ export function StatusPanel({
 
   // #88 右クリックメニュー: 表示中のメニュー状態（null = 非表示）。
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  // #127 マルチ選択: チェック済みパスの Set（セクション問わず統合して管理）。
+  const [checkedPaths, setCheckedPaths] = useState<Set<string>>(new Set());
+
+  // #127 マルチ選択: 全選択チェックボックスの indeterminate 制御用 ref。
+  const stagedAllRef = useRef<HTMLInputElement>(null);
+  const unstagedAllRef = useRef<HTMLInputElement>(null);
+  const untrackedAllRef = useRef<HTMLInputElement>(null);
+
+  // #127 マルチ選択: indeterminate 状態を DOM に反映する。
+  // React は indeterminate を props で制御できないため直接 ref で設定する。
+  const setIndeterminate = (
+    ref: React.RefObject<HTMLInputElement | null>,
+    count: number,
+    total: number,
+  ) => {
+    if (ref.current) {
+      ref.current.indeterminate = count > 0 && count < total;
+    }
+  };
+
+  // #127 マルチ選択: レンダリング後に indeterminate を更新する。
+  const stagedChecked = status.staged.filter((f) => checkedPaths.has(f.path)).length;
+  const unstagedChecked = status.unstaged.filter((f) => checkedPaths.has(f.path)).length;
+  const untrackedChecked = status.untracked.filter((p) => checkedPaths.has(p)).length;
+
+  // #127 マルチ選択: レンダリング後に全選択チェックボックスの indeterminate を反映する。
+  useEffect(() => {
+    setIndeterminate(stagedAllRef, stagedChecked, status.staged.length);
+    setIndeterminate(unstagedAllRef, unstagedChecked, status.unstaged.length);
+    setIndeterminate(untrackedAllRef, untrackedChecked, status.untracked.length);
+  });
+
+  // #127 マルチ選択: パス 1 件のチェック状態を切り替える。
+  function toggleCheck(path: string, checked: boolean) {
+    setCheckedPaths((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }
+
+  // #127 マルチ選択: セクション全体を一括選択/解除する。
+  function toggleSection(paths: string[], checked: boolean) {
+    setCheckedPaths((prev) => {
+      const next = new Set(prev);
+      for (const p of paths) {
+        if (checked) next.add(p);
+        else next.delete(p);
+      }
+      return next;
+    });
+  }
+
+  // #127 マルチ選択: バッチ操作後に選択をクリアする。
+  function clearChecked() {
+    setCheckedPaths(new Set());
+  }
+
+  // #127 マルチ選択: 選択済みパスをセクション別に分類する。
+  const checkedStaged = status.staged.filter((f) => checkedPaths.has(f.path)).map((f) => f.path);
+  const checkedUnstaged = [
+    ...status.unstaged.filter((f) => checkedPaths.has(f.path)).map((f) => f.path),
+    ...status.untracked.filter((p) => checkedPaths.has(p)),
+  ];
+  const totalChecked = checkedPaths.size;
 
   // #88 右クリックメニュー: 指定ファイル・セクションに対応したメニュー項目を生成する。
   function buildMenuItems(path: string, source: DiffSource): ContextMenuItem[] {
@@ -532,7 +659,16 @@ export function StatusPanel({
       {/* ステージ済みセクション（#87 ドロップ先 + #78 アニメーション）*/}
       {(status.staged.length > 0 || (!status.is_clean && hasUnstaged)) && (
         <div>
-          <SectionHeader label="コミット予定（ステージ済み）" />
+          {/* #127 マルチ選択: ステージ済みセクションの全選択チェックボックス付きヘッダ */}
+          <SectionHeader
+            label="コミット予定（ステージ済み）"
+            checkboxRef={stagedAllRef}
+            checkCount={stagedChecked}
+            totalCount={status.staged.length}
+            onToggleAll={(checked) =>
+              toggleSection(status.staged.map((f) => f.path), checked)
+            }
+          />
           <div ref={stagedZoneRef} style={dropZoneStyle("staged")}>
             {status.staged.length === 0 ? (
               /* セクションが空のときも視覚的なドロップ先を確保する。*/
@@ -560,6 +696,8 @@ export function StatusPanel({
                       onDragEnd={(info) => handleStagedDragEnd(f.path, info)}
                       repoPath={repoPath}
                       inlineDiffSource="staged"
+                      checked={checkedPaths.has(f.path)}
+                      onCheck={(c) => toggleCheck(f.path, c)}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -612,7 +750,16 @@ export function StatusPanel({
         <div ref={unstagedZoneRef} style={dropZoneStyle("unstaged")}>
           {status.unstaged.length > 0 && (
             <div>
-              <SectionHeader label="変更あり（未ステージ）" />
+              {/* #127 マルチ選択: 未ステージセクションの全選択チェックボックス付きヘッダ */}
+              <SectionHeader
+                label="変更あり（未ステージ）"
+                checkboxRef={unstagedAllRef}
+                checkCount={unstagedChecked}
+                totalCount={status.unstaged.length}
+                onToggleAll={(checked) =>
+                  toggleSection(status.unstaged.map((f) => f.path), checked)
+                }
+              />
               <LayoutGroup id="unstaged">
                 <AnimatePresence initial={false}>
                   {status.unstaged.map((f) => (
@@ -627,6 +774,14 @@ export function StatusPanel({
                       onDragEnd={(info) => handleUnstagedDragEnd(f.path, info)}
                       repoPath={repoPath}
                       inlineDiffSource="unstaged"
+                      checked={checkedPaths.has(f.path)}
+                      onCheck={(c) => toggleCheck(f.path, c)}
+                      // #125 hunk 単位ステージ: ファイルパスを束ねて親へ委譲する。
+                      onStageHunk={
+                        onStageHunk
+                          ? (h) => onStageHunk(f.path, h)
+                          : undefined
+                      }
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -683,7 +838,16 @@ export function StatusPanel({
 
           {status.untracked.length > 0 && (
             <div>
-              <SectionHeader label="新しいファイル（未追跡）" />
+              {/* #127 マルチ選択: 未追跡セクションの全選択チェックボックス付きヘッダ */}
+              <SectionHeader
+                label="新しいファイル（未追跡）"
+                checkboxRef={untrackedAllRef}
+                checkCount={untrackedChecked}
+                totalCount={status.untracked.length}
+                onToggleAll={(checked) =>
+                  toggleSection(status.untracked, checked)
+                }
+              />
               <LayoutGroup id="untracked">
                 <AnimatePresence initial={false}>
                   {status.untracked.map((p) => (
@@ -698,6 +862,8 @@ export function StatusPanel({
                       onDragEnd={(info) => handleUnstagedDragEnd(p, info)}
                       repoPath={repoPath}
                       inlineDiffSource="unstaged"
+                      checked={checkedPaths.has(p)}
+                      onCheck={(c) => toggleCheck(p, c)}
                       actions={
                         <>
                           <StatusBadge kind="untracked" />
@@ -762,6 +928,88 @@ export function StatusPanel({
             items={buildMenuItems(contextMenu.path, contextMenu.source)}
             onClose={() => setContextMenu(null)}
           />
+        )}
+      </AnimatePresence>
+
+      {/* #127 マルチ選択: バッチアクションバー（選択が 1 件以上のときスライドイン）*/}
+      <AnimatePresence>
+        {totalChecked > 0 && (
+          <motion.div
+            key="batch-action-bar"
+            variants={slideInFromBottom}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            style={{
+              position: "sticky",
+              bottom: 0,
+              zIndex: 20,
+              padding: "10px 12px",
+              background: "var(--surface)",
+              borderTop: "1px solid var(--border)",
+              borderRadius: "0 0 var(--radius-sm) var(--radius-sm)",
+              boxShadow: "var(--shadow)",
+            }}
+          >
+            <HStack gap="8px" align="center" wrap="wrap">
+              <Text fontSize="12px" color="neutral.muted" flexShrink={0}>
+                {totalChecked} 件を選択中
+              </Text>
+
+              {/* ステージ済み選択がある → アンステージボタン */}
+              {checkedStaged.length > 0 && onUnstagePaths && (
+                <button
+                  className="btn btn-small"
+                  onClick={() => {
+                    onUnstagePaths(checkedStaged);
+                    clearChecked();
+                  }}
+                  title="選択したファイルをコミット対象から外します"
+                >
+                  アンステージ（{checkedStaged.length} 件）
+                </button>
+              )}
+
+              {/* 未ステージ・未追跡の選択がある → ステージ・破棄ボタン */}
+              {checkedUnstaged.length > 0 && onStagePaths && (
+                <button
+                  className="btn btn-small"
+                  onClick={() => {
+                    onStagePaths(checkedUnstaged);
+                    clearChecked();
+                  }}
+                  title="選択したファイルをコミット対象に加えます"
+                >
+                  ステージ（{checkedUnstaged.length} 件）
+                </button>
+              )}
+
+              {/* 未ステージ・未追跡の選択がある → 破棄ボタン（危険色）*/}
+              {checkedUnstaged.length > 0 && onDiscardPaths && (
+                <button
+                  className="btn btn-small"
+                  onClick={() => {
+                    onDiscardPaths(checkedUnstaged);
+                    clearChecked();
+                  }}
+                  title="選択した変更を破棄します（元に戻せません）"
+                  style={{ color: "var(--destructive)", borderColor: "var(--destructive-border)" }}
+                >
+                  破棄（{checkedUnstaged.length} 件）
+                </button>
+              )}
+
+              {/* 選択解除ボタン */}
+              <button
+                className="link"
+                onClick={clearChecked}
+                style={{ marginLeft: "auto" }}
+                title="選択をすべて解除します"
+              >
+                解除
+              </button>
+            </HStack>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

@@ -13,6 +13,7 @@ import {
   type Identity,
   type IdentityScope,
   type LogFilter,
+  type NetworkErrorKind,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -50,6 +51,9 @@ import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 シ
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
+import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette"; // #105 コマンドパレット
+import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -210,6 +214,13 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // #126 ネットワーク診断: ネットワーク操作のエラー種別と生メッセージ。
+  // null のときはダイアログ非表示。
+  const [networkErrorInfo, setNetworkErrorInfo] = useState<{
+    kind: NetworkErrorKind;
+    raw: string;
+  } | null>(null);
+
   // コンフリクト中ファイルの詳細（解消ウィザード用）。status.conflicted を補う形で
   // has_ancestor 等の情報を持つ。status の再取得に合わせて取り直す。
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
@@ -248,6 +259,9 @@ export default function App() {
 
   // #63 ショートカット: ヘルプダイアログの表示状態。
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // #105 コマンドパレット: Ctrl+K / ⌘K で開くパレットの表示状態。
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
@@ -492,6 +506,8 @@ export default function App() {
   // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
   // networkOp: true を渡すと実行中に isNetworkBusy を立て、完了・失敗時に必ず下ろす。
   // 成功・失敗の結果はトースト通知でも伝える（既存バナーと併用）。
+  // #126 ネットワーク診断: networkOp が true のとき、失敗したらエラーを種別分類して
+  // NetworkErrorDialog を表示する（バナーは出さずダイアログ優先にする）。
   const exec = useCallback(
     async (
       action: () => Promise<void>,
@@ -509,8 +525,21 @@ export default function App() {
       } catch (e) {
         setNotice(null);
         const msg = String(e);
-        setError(msg);
-        showToast(msg, "error");
+        if (opts.networkOp) {
+          // #126 ネットワーク診断: ネットワーク操作の失敗はダイアログで種別ごとに案内する。
+          // バナーは出さず、ダイアログだけ表示する（二重表示を避ける）。
+          try {
+            const kind = await api.classifyNetworkError(msg);
+            setNetworkErrorInfo({ kind, raw: msg });
+          } catch {
+            // 分類自体が失敗した場合は従来のエラーバナーにフォールバックする。
+            setError(msg);
+            showToast(msg, "error");
+          }
+        } else {
+          setError(msg);
+          showToast(msg, "error");
+        }
       } finally {
         if (opts.networkOp) setIsNetworkBusy(false);
       }
@@ -689,6 +718,22 @@ export default function App() {
     onPush: doPushCurrentBranch,
     onHelp: () => setShowShortcuts(true),
   });
+
+  // #105 コマンドパレット: Ctrl+K / ⌘K でパレットを開く。
+  // テキスト入力中でも開いてよい（issue 要件）ため、inText チェックは行わない。
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   // 取得（fetch）: リモートの最新情報だけを取り込む安全操作。確認なしで実行する。
   function doFetch() {
@@ -903,6 +948,60 @@ export default function App() {
     });
   }
 
+  // #105 コマンドパレット: リポジトリが開かれているときだけ使えるコマンド一覧。
+  // 既存の exec / guarded を通すことで安全チェックを二重化しない。
+  const paletteCommands: PaletteCommand[] = opened
+    ? [
+        {
+          id: "stage-all",
+          label: "すべてステージ",
+          description: "変更ファイルをすべてステージエリアに追加する",
+          run: () =>
+            void exec(() => api.stageAll(repoPath), {
+              refresh: REFRESH_BY_OP.stage,
+            }),
+        },
+        {
+          id: "commit",
+          label: "コミットする",
+          description: "ステージ済みの変更をコミットする",
+          run: doCommit,
+        },
+        {
+          id: "amend",
+          label: "直前を修正（amend）",
+          description: "直前のコミットに変更を追加・メッセージを書き換える",
+          run: doAmend,
+        },
+        {
+          id: "undo",
+          label: "取り消す（undo）",
+          description: "直前の操作を Undo する",
+          run: () => {
+            if (undoInfo) doUndo();
+          },
+        },
+        {
+          id: "fetch",
+          label: "取得（fetch）",
+          description: "リモートの最新情報だけを取得する（作業中ファイルは変わらない）",
+          run: doFetch,
+        },
+        {
+          id: "pull",
+          label: "取り込む（pull）",
+          description: "リモートの変更を安全に取り込む（fast-forward のみ）",
+          run: doPull,
+        },
+        {
+          id: "refresh",
+          label: "履歴を更新",
+          description: "ステータス・ブランチ・履歴を再取得する",
+          run: () => void refresh(),
+        },
+      ]
+    : [];
+
   if (!opened) {
     return (
       <WelcomeScreen
@@ -926,42 +1025,51 @@ export default function App() {
           </span>
         </div>
         <div className="topbar-actions">
-          <button
-            className="btn btn-small"
-            onClick={doFetch}
-            disabled={isNetworkBusy}
-            title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
-          >
-            {isNetworkBusy ? (
-              <>
-                <span className="network-spinner">🔄</span>取得中…
-              </>
-            ) : (
-              "🔄 取得"
-            )}
-          </button>
-          <button
-            className="btn btn-small"
-            onClick={doPull}
-            disabled={isNetworkBusy}
-            title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
-          >
-            {isNetworkBusy ? (
-              <>
-                <span className="network-spinner">⬇</span>取り込み中…
-              </>
-            ) : (
-              "⬇ 取り込む"
-            )}
-          </button>
-          {undoInfo && (
+          {/* #104 操作説明ツールチップ */}
+          <ExplainTooltip op="fetch">
             <button
-              className="btn btn-undo"
-              onClick={doUndo}
-              title={`直前の操作を取り消します [Ctrl+Z]`}
+              className="btn btn-small"
+              onClick={doFetch}
+              disabled={isNetworkBusy}
+              title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
             >
-              ↩ 取り消す: {undoInfo.description}
+              {isNetworkBusy ? (
+                <>
+                  <span className="network-spinner">🔄</span>取得中…
+                </>
+              ) : (
+                "🔄 取得"
+              )}
             </button>
+          </ExplainTooltip>
+          {/* #104 操作説明ツールチップ */}
+          <ExplainTooltip op="pull">
+            <button
+              className="btn btn-small"
+              onClick={doPull}
+              disabled={isNetworkBusy}
+              title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
+            >
+              {isNetworkBusy ? (
+                <>
+                  <span className="network-spinner">⬇</span>取り込み中…
+                </>
+              ) : (
+                "⬇ 取り込む"
+              )}
+            </button>
+          </ExplainTooltip>
+          {undoInfo && (
+            // #104 操作説明ツールチップ: undoInfo.op を使って対応する説明を表示する。
+            <ExplainTooltip op={undoInfo.op}>
+              <button
+                className="btn btn-undo"
+                onClick={doUndo}
+                title={`直前の操作を取り消します [Ctrl+Z]`}
+              >
+                ↩ 取り消す: {undoInfo.description}
+              </button>
+            </ExplainTooltip>
           )}
           <button
             className="btn btn-small"
@@ -1082,6 +1190,37 @@ export default function App() {
                     onDiscard={doDiscard}
                     onShowHistory={(p) => setHistoryPath(p)}
                     onBlame={(p) => void openBlame(p)}
+                    onStagePaths={/* #127 マルチ選択 */(paths) =>
+                      void exec(
+                        async () => {
+                          for (const p of paths) await api.stagePath(repoPath, p);
+                        },
+                        { refresh: REFRESH_BY_OP.stage },
+                      )
+                    }
+                    onUnstagePaths={(paths) =>
+                      void exec(
+                        async () => {
+                          for (const p of paths) await api.unstage(repoPath, p);
+                        },
+                        { refresh: REFRESH_BY_OP.unstage },
+                      )
+                    }
+                    onDiscardPaths={(paths) =>
+                      void guarded(
+                        `選択した ${paths.length} 件の変更を破棄`,
+                        "discard",
+                        async () => {
+                          for (const p of paths) await api.discardPath(repoPath, p);
+                        },
+                      )
+                    }
+                    // #125 hunk ステージ
+                    onStageHunk={(p, h) =>
+                      void exec(() => api.stageHunk(repoPath, p, h), {
+                        refresh: REFRESH_BY_OP.stage,
+                      })
+                    }
                   />
                 </motion.div>
               )
@@ -1156,22 +1295,28 @@ export default function App() {
               );
             })()}
             <div className="commit-actions">
-              <button
-                className="btn"
-                onClick={doCommit}
-                disabled={!commitMsg.trim()}
-                title="変更をコミットします [Ctrl+Enter]"
-              >
-                コミットする
-              </button>
-              <button
-                className="btn btn-small"
-                onClick={doAmend}
-                disabled={commits.length === 0}
-                title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
-              >
-                直前を修正
-              </button>
+              {/* #104 操作説明ツールチップ */}
+              <ExplainTooltip op="commit">
+                <button
+                  className="btn"
+                  onClick={doCommit}
+                  disabled={!commitMsg.trim()}
+                  title="変更をコミットします [Ctrl+Enter]"
+                >
+                  コミットする
+                </button>
+              </ExplainTooltip>
+              {/* #104 操作説明ツールチップ */}
+              <ExplainTooltip op="amend_commit">
+                <button
+                  className="btn btn-small"
+                  onClick={doAmend}
+                  disabled={commits.length === 0}
+                  title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
+                >
+                  直前を修正
+                </button>
+              </ExplainTooltip>
             </div>
           </div>
 
@@ -1391,6 +1536,22 @@ export default function App() {
       {/* #63 ショートカット: ヘルプダイアログ */}
       {showShortcuts && (
         <ShortcutHelpDialog onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {/* #105 コマンドパレット */}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={paletteCommands}
+      />
+
+      {/* #126 ネットワーク診断: fetch / pull / push のエラー種別ダイアログ */}
+      {networkErrorInfo && (
+        <NetworkErrorDialog
+          kind={networkErrorInfo.kind}
+          raw={networkErrorInfo.raw}
+          onClose={() => setNetworkErrorInfo(null)}
+        />
       )}
     </div>
   );
