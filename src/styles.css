@@ -277,14 +277,30 @@ textarea:focus-visible {
   flex-direction: column;
   gap: 8px;
 }
-/* 個別リポジトリカード。 */
+/* 個別リポジトリカード。「開く」ボタンと「削除」ボタンを横に並べる枠。 */
 .recent-repo-card {
   width: 100%;
-  text-align: left;
-  padding: 12px 16px;
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.recent-repo-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(9, 105, 218, 0.12);
+}
+/* カード内の「開く」領域（カードの大部分を占めるボタン）。 */
+.recent-repo-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
@@ -293,15 +309,10 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  transition: background 0.15s ease, border-color 0.15s ease,
-    box-shadow 0.15s ease;
+  transition: background 0.15s ease;
 }
-.recent-repo-card:hover {
+.recent-repo-open:hover {
   background: var(--btn-hover);
-  border-color: var(--accent);
-  box-shadow: 0 4px 12px rgba(9, 105, 218, 0.12);
 }
 /* フォルダアイコン（縮小しない）。 */
 .recent-repo-icon {
@@ -309,12 +320,112 @@ textarea:focus-visible {
   flex-shrink: 0;
   line-height: 1;
 }
-/* パスのテキスト: 長すぎる場合は末尾を省略。 */
+/* リポジトリ名 + パスの縦並び。 */
+.recent-repo-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+/* リポジトリ名（末尾のフォルダ名）を主役として強調。 */
+.recent-repo-name {
+  font-family: var(--font-sans, inherit);
+  font-weight: var(--font-weight-strong);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* パスのテキスト: 補助情報なので小さく薄く。長すぎる場合は末尾を省略。 */
 .recent-repo-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* 開いた時刻（相対表現）。右寄せで控えめに。 */
+.recent-repo-when {
+  flex-shrink: 0;
+  font-family: var(--font-sans, inherit);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* 履歴から削除する小さなボタン。普段は薄く、ホバーで赤くする。 */
+.recent-repo-remove {
+  flex-shrink: 0;
+  width: 36px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.recent-repo-remove:hover {
+  background: var(--btn-hover);
+  color: var(--destructive);
+}
+
+/* ---- ホーム画面（履歴あり） ---- */
+/* 履歴ありのホームは要素が多いので、ようこそ画面より上の余白を詰める。 */
+.welcome-home {
+  margin-top: 8vh;
+}
+/* 「おかえりなさい」の挨拶ヘッダー。 */
+.home-greeting {
+  width: 100%;
+  text-align: center;
+  margin-bottom: 8px;
+}
+/* ヘッダー内の小さなブランド名（noobGit）。 */
+.home-brand {
+  display: block;
+  font-size: 12px;
+  font-weight: var(--font-weight-strong);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.home-greeting h1 {
+  font-size: 28px;
+  margin-bottom: 4px;
+  letter-spacing: -0.02em;
+}
+/* 前回のリポジトリのセクション（最上段で目立たせる）。 */
+.home-primary-section {
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+}
+/* 前回のリポジトリカード: アクセント枠で続きを開く主導線を強調。 */
+.recent-repo-card-primary {
+  border-color: var(--accent);
+  box-shadow: 0 2px 10px rgba(9, 105, 218, 0.1);
+}
+.recent-repo-card-primary .recent-repo-open {
+  padding: 16px;
+}
+.recent-repo-card-primary .recent-repo-name {
+  font-size: 16px;
+}
+/* 別のリポジトリを開く副次セクション。 */
+.home-open-section {
+  width: 100%;
+  text-align: left;
+  margin-top: 32px;
+}
+/* 初回（ようこそ）画面の補足ヒント。 */
+.welcome-firsttime-hint {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
 }
 
 /* ---- inputs ---- */
