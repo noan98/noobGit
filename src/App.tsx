@@ -50,6 +50,7 @@ import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 シ
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
+import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -926,42 +927,51 @@ export default function App() {
           </span>
         </div>
         <div className="topbar-actions">
-          <button
-            className="btn btn-small"
-            onClick={doFetch}
-            disabled={isNetworkBusy}
-            title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
-          >
-            {isNetworkBusy ? (
-              <>
-                <span className="network-spinner">🔄</span>取得中…
-              </>
-            ) : (
-              "🔄 取得"
-            )}
-          </button>
-          <button
-            className="btn btn-small"
-            onClick={doPull}
-            disabled={isNetworkBusy}
-            title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
-          >
-            {isNetworkBusy ? (
-              <>
-                <span className="network-spinner">⬇</span>取り込み中…
-              </>
-            ) : (
-              "⬇ 取り込む"
-            )}
-          </button>
-          {undoInfo && (
+          {/* #104 操作説明ツールチップ */}
+          <ExplainTooltip op="fetch">
             <button
-              className="btn btn-undo"
-              onClick={doUndo}
-              title={`直前の操作を取り消します [Ctrl+Z]`}
+              className="btn btn-small"
+              onClick={doFetch}
+              disabled={isNetworkBusy}
+              title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
             >
-              ↩ 取り消す: {undoInfo.description}
+              {isNetworkBusy ? (
+                <>
+                  <span className="network-spinner">🔄</span>取得中…
+                </>
+              ) : (
+                "🔄 取得"
+              )}
             </button>
+          </ExplainTooltip>
+          {/* #104 操作説明ツールチップ */}
+          <ExplainTooltip op="pull">
+            <button
+              className="btn btn-small"
+              onClick={doPull}
+              disabled={isNetworkBusy}
+              title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
+            >
+              {isNetworkBusy ? (
+                <>
+                  <span className="network-spinner">⬇</span>取り込み中…
+                </>
+              ) : (
+                "⬇ 取り込む"
+              )}
+            </button>
+          </ExplainTooltip>
+          {undoInfo && (
+            // #104 操作説明ツールチップ: undoInfo.op を使って対応する説明を表示する。
+            <ExplainTooltip op={undoInfo.op}>
+              <button
+                className="btn btn-undo"
+                onClick={doUndo}
+                title={`直前の操作を取り消します [Ctrl+Z]`}
+              >
+                ↩ 取り消す: {undoInfo.description}
+              </button>
+            </ExplainTooltip>
           )}
           <button
             className="btn btn-small"
@@ -1156,22 +1166,28 @@ export default function App() {
               );
             })()}
             <div className="commit-actions">
-              <button
-                className="btn"
-                onClick={doCommit}
-                disabled={!commitMsg.trim()}
-                title="変更をコミットします [Ctrl+Enter]"
-              >
-                コミットする
-              </button>
-              <button
-                className="btn btn-small"
-                onClick={doAmend}
-                disabled={commits.length === 0}
-                title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
-              >
-                直前を修正
-              </button>
+              {/* #104 操作説明ツールチップ */}
+              <ExplainTooltip op="commit">
+                <button
+                  className="btn"
+                  onClick={doCommit}
+                  disabled={!commitMsg.trim()}
+                  title="変更をコミットします [Ctrl+Enter]"
+                >
+                  コミットする
+                </button>
+              </ExplainTooltip>
+              {/* #104 操作説明ツールチップ */}
+              <ExplainTooltip op="amend_commit">
+                <button
+                  className="btn btn-small"
+                  onClick={doAmend}
+                  disabled={commits.length === 0}
+                  title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
+                >
+                  直前を修正
+                </button>
+              </ExplainTooltip>
             </div>
           </div>
 
