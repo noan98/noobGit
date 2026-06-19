@@ -494,6 +494,68 @@ textarea {
   min-width: 0;
 }
 
+/* ---- #89 リサイズ可能レイアウト ---- */
+/* ResizableColumns コンテナ: flex で横並びにし、パディングと overflow は .columns と同じ。 */
+.resizable-columns {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 12px;
+  overflow: auto;
+  gap: 0;
+}
+
+/* 各カラム: flex-basis は JS から px で設定される。縦スクロールはカラム単位。 */
+.resizable-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0 6px;
+}
+.resizable-col:first-child {
+  padding-left: 0;
+}
+.resizable-col:last-child {
+  padding-right: 0;
+}
+
+/* リサイズハンドル（セパレーター）: 細い縦バー。
+   ホバー・ドラッグ中は --accent 色でハイライトし、CSS トランジションで滑らかに変化する。 */
+.resize-handle {
+  flex: 0 0 8px;
+  width: 8px;
+  cursor: col-resize;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+}
+
+/* ハンドルの視覚的な細バー（:before 疑似要素）。クリック領域は広く、見た目は細く。 */
+.resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+/* ホバー・ドラッグ中: バーを太くして --accent 色にする。 */
+.resize-handle--active::before {
+  background: var(--accent);
+  width: 3px;
+}
+
 /* ---- panel ---- */
 .panel {
   background: var(--panel);

@@ -48,6 +48,7 @@ import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
 import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
 import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 ショートカット
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
+import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -1030,7 +1031,9 @@ export default function App() {
         </div>
       )}
 
-      <main className="columns">
+      {/* #89 リサイズ可能レイアウト: ResizableColumns で 3 カラムをラップ */}
+      <ResizableColumns>
+        {/* カラム 1: ステージ・コミット・退避 */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1177,6 +1180,7 @@ export default function App() {
           />
         </section>
 
+        {/* カラム 2: 履歴 */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1240,6 +1244,7 @@ export default function App() {
           )}
         </section>
 
+        {/* カラム 3: ブランチ・タグ */}
         <section className="col">
           <AnimatePresence mode="wait">
             {repoLoading ? (
@@ -1326,7 +1331,7 @@ export default function App() {
             )}
           </AnimatePresence>
         </section>
-      </main>
+      </ResizableColumns>
 
       {guard && (
         <ConfirmDialog
