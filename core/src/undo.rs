@@ -99,6 +99,11 @@ pub fn can_undo(repo: &Repository) -> Result<bool> {
     Ok(!load(repo)?.is_empty())
 }
 
+/// 取り消し履歴の全エントリを返す（古い順。先頭が最初に記録された操作）。
+pub fn list(repo: &Repository) -> Result<Vec<UndoEntry>> {
+    load(repo)
+}
+
 /// 直前の操作を取り消す。取り消した操作の説明を返す。
 pub fn undo_last(repo: &Repository) -> Result<String> {
     let mut entries = load(repo)?;
@@ -348,6 +353,41 @@ mod tests {
             matches!(err2, CoreError::NothingToUndo(_)),
             "エントリ消費後は NothingToUndo になること: {err2:?}"
         );
+    }
+
+    // list() は古い順（先頭が最初に記録）でエントリを返し、件数が一致すること。
+    #[test]
+    fn list_returns_all_entries_in_push_order() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // 3件のエントリを順番に積む。
+        for i in 1..=3 {
+            push(
+                &repo,
+                UndoEntry {
+                    op: OperationKind::DeleteBranch,
+                    description: format!("操作{i}"),
+                    action: UndoAction::RecreateBranch {
+                        name: format!("branch-{i}"),
+                        target: target.clone(),
+                    },
+                },
+            )
+            .unwrap();
+        }
+
+        let entries = list(&repo).unwrap();
+        // 件数が一致する。
+        assert_eq!(entries.len(), 3);
+        // 古い順（push した順）で返ってくる。
+        assert_eq!(entries[0].description, "操作1");
+        assert_eq!(entries[1].description, "操作2");
+        assert_eq!(entries[2].description, "操作3");
     }
 
     // save が tmp ファイルを経由して rename するため、成功後に .tmp ファイルが残らないこと。
