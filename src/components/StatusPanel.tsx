@@ -6,6 +6,9 @@ import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
 import { fadeIn, transitions } from "../theme/motion";
+// #88 右クリックメニュー
+import { FileContextMenu } from "./FileContextMenu";
+import type { ContextMenuItem } from "./FileContextMenu";
 
 /*
  * StatusPanel — ファイル変更一覧（#91 カード UI リデザイン）。
@@ -83,11 +86,15 @@ function FileCard({
   isSelected,
   onSelect,
   actions,
+  // #88 右クリックメニュー
+  onContextMenu,
 }: {
   path: string;
   isSelected: boolean;
   onSelect: () => void;
   actions: React.ReactNode;
+  // #88 右クリックメニュー: カードの右クリック座標を親へ渡す。
+  onContextMenu?: (e: MouseEvent) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const { dir, name } = splitPath(path);
@@ -113,6 +120,8 @@ function FileCard({
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        // #88 右クリックメニュー: ブラウザのデフォルトメニューを抑制してコールバックを呼ぶ
+        onContextMenu={onContextMenu}
       >
         <HStack gap="8px" align="center" wrap="nowrap">
           {/* ファイルアイコン（拡張子絵文字）*/}
@@ -214,6 +223,14 @@ function SectionHeader({ label }: { label: string }) {
   );
 }
 
+// #88 右クリックメニュー: 表示中のコンテキストメニューの状態型。
+interface ContextMenuState {
+  path: string;
+  source: DiffSource;
+  x: number;
+  y: number;
+}
+
 export function StatusPanel({
   status,
   selected,
@@ -230,6 +247,54 @@ export function StatusPanel({
 
   const isSelected = (path: string, source: DiffSource) =>
     !!selected && selected.path === path && selected.source === source;
+
+  // #88 右クリックメニュー: 表示中のメニュー状態（null = 非表示）。
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  // #88 右クリックメニュー: 指定ファイル・セクションに対応したメニュー項目を生成する。
+  function buildMenuItems(path: string, source: DiffSource): ContextMenuItem[] {
+    if (source === "staged") {
+      return [
+        {
+          label: "アンステージする",
+          title: "コミット対象から外します（変更は残ります）",
+          onClick: () => onUnstage(path),
+        },
+        {
+          label: "差分を見る",
+          title: "ステージ済みの変更内容を確認します",
+          onClick: () => onSelect(path, "staged"),
+        },
+      ];
+    }
+    // 未ステージ・未追跡
+    return [
+      {
+        label: "ステージする",
+        title: "このファイルをコミット対象に加えます",
+        onClick: () => onStagePath(path),
+      },
+      {
+        label: "差分を見る",
+        title: "変更内容を確認します",
+        onClick: () => onSelect(path, source),
+      },
+      {
+        label: "変更を破棄",
+        danger: true,
+        title: "この変更を元に戻します（元に戻せません）",
+        onClick: () => onDiscard(path),
+      },
+    ];
+  }
+
+  // #88 右クリックメニュー: FileCard の onContextMenu ハンドラを生成する。
+  function handleContextMenu(path: string, source: DiffSource) {
+    return (e: MouseEvent) => {
+      e.preventDefault();
+      setContextMenu({ path, source, x: e.clientX, y: e.clientY });
+    };
+  }
 
   return (
     <div className="panel">
@@ -262,6 +327,7 @@ export function StatusPanel({
               path={f.path}
               isSelected={isSelected(f.path, "staged")}
               onSelect={() => onSelect(f.path, "staged")}
+              onContextMenu={handleContextMenu(f.path, "staged")}
               actions={
                 <>
                   <StatusBadge kind={f.kind} />
@@ -314,6 +380,7 @@ export function StatusPanel({
               path={f.path}
               isSelected={isSelected(f.path, "unstaged")}
               onSelect={() => onSelect(f.path, "unstaged")}
+              onContextMenu={handleContextMenu(f.path, "unstaged")}
               actions={
                 <>
                   <StatusBadge kind={f.kind} />
@@ -375,6 +442,7 @@ export function StatusPanel({
               path={p}
               isSelected={isSelected(p, "unstaged")}
               onSelect={() => onSelect(p, "unstaged")}
+              onContextMenu={handleContextMenu(p, "unstaged")}
               actions={
                 <>
                   <StatusBadge kind="untracked" />
@@ -419,6 +487,18 @@ export function StatusPanel({
           ))}
         </div>
       )}
+
+      {/* #88 右クリックメニュー: ポータルなしで fixed 配置のメニューを AnimatePresence でマウント/アンマウント */}
+      <AnimatePresence>
+        {contextMenu && (
+          <FileContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            items={buildMenuItems(contextMenu.path, contextMenu.source)}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
