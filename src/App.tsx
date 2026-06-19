@@ -1166,6 +1166,31 @@ export default function App() {
                     onDiscard={doDiscard}
                     onShowHistory={(p) => setHistoryPath(p)}
                     onBlame={(p) => void openBlame(p)}
+                    onStagePaths={/* #127 マルチ選択 */(paths) =>
+                      void exec(
+                        async () => {
+                          for (const p of paths) await api.stagePath(repoPath, p);
+                        },
+                        { refresh: REFRESH_BY_OP.stage },
+                      )
+                    }
+                    onUnstagePaths={(paths) =>
+                      void exec(
+                        async () => {
+                          for (const p of paths) await api.unstage(repoPath, p);
+                        },
+                        { refresh: REFRESH_BY_OP.unstage },
+                      )
+                    }
+                    onDiscardPaths={(paths) =>
+                      void guarded(
+                        `選択した ${paths.length} 件の変更を破棄`,
+                        "discard",
+                        async () => {
+                          for (const p of paths) await api.discardPath(repoPath, p);
+                        },
+                      )
+                    }
                   />
                 </motion.div>
               )
