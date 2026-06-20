@@ -154,6 +154,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   merge: FULL_REFRESH,
   // リモート削除はリモート一覧の再取得をアクション内で行うため空にする。
   remove_remote: {},
+  // ファイル復元はステージ済みの状態と undo 履歴が変わる。
+  restore_file: { status: true, undo: true },
 };
 
 interface Guard {
@@ -1693,6 +1695,17 @@ export default function App() {
           repoPath={repoPath}
           path={historyPath}
           onClose={() => setHistoryPath(null)}
+          onRestore={(commitId) => {
+            const path = historyPath;
+            void guarded(
+              `「${path}」をこのコミット時点に復元`,
+              "restore_file",
+              async () => {
+                await api.restoreFileFromCommit(repoPath, commitId, path);
+                showToast(`「${path}」を過去のコミット時点に復元してステージしました。`, "success");
+              },
+            );
+          }}
         />
       )}
 

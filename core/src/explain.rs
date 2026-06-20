@@ -175,6 +175,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "不要になったリモートの設定を整理するときに使います。削除後も同じ URL で再度追加できます。".into(),
             on_trouble: "削除したリモートは「リモートを追加」から同じ名前と URL で再登録できます。誤って削除してしまっても、URL が分かれば元に戻せます。".into(),
         },
+        OperationKind::RestoreFile => Explanation {
+            title: "ファイルを過去の内容に復元".into(),
+            what: "ファイルを過去のコミット時点の内容に戻します。".into(),
+            why: "特定のファイルだけを過去の状態に戻したいときに使います。今の変更は上書きされます。".into(),
+            on_trouble: "ステージされるので、誤ったときは Undo（アンステージ）で戻せます。上書き前の内容が必要なら事前に stash 退避を。".into(),
+        },
     }
 }
 
@@ -207,6 +213,7 @@ mod tests {
             OperationKind::Rebase,
             OperationKind::Merge,
             OperationKind::RemoveRemote,
+            OperationKind::RestoreFile,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);

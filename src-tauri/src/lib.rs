@@ -424,6 +424,20 @@ fn undo_last(repo_path: String) -> Result<String, String> {
     undo::undo_last(&r).map_err(|e| e.to_string())
 }
 
+/// 指定したコミット時点のファイル内容を作業ツリーに復元し、ステージする。
+///
+/// `commit_id` は復元元コミットのハッシュ（短縮形可）。`file_path` はリポジトリルートからの
+/// 相対パス。指定コミットに対象ファイルが存在しない場合は日本語エラーを返す。
+#[tauri::command]
+fn restore_file_from_commit(
+    repo_path: String,
+    commit_id: String,
+    file_path: String,
+) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::restore_file_from_commit(&r, &commit_id, &file_path).map_err(|e| e.to_string())
+}
+
 /// ステージしようとしているファイルが機密性の高いものかを検出する。
 ///
 /// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
@@ -522,6 +536,7 @@ pub fn run() {
             undo_last,
             check_sensitive,
             check_lfs_candidates,
+            restore_file_from_commit,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");

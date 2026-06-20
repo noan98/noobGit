@@ -32,6 +32,7 @@ const OP_LABEL: Record<OperationKind, string> = {
   rebase: "履歴の整理",
   merge: "ブランチの統合",
   remove_remote: "リモートを削除",
+  restore_file: "ファイルを復元",
 };
 
 const OP_ICON: Record<OperationKind, string> = {
@@ -57,6 +58,7 @@ const OP_ICON: Record<OperationKind, string> = {
   rebase: "🔧",
   merge: "🔗",
   remove_remote: "🔌",
+  restore_file: "⏮️",
 };
 
 // #48 Undo タイムライン: 取り消し履歴をタイムライン形式で表示するパネル。
