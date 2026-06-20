@@ -219,6 +219,15 @@ export interface SensitiveWarning {
   reason: string;
 }
 
+// #81 LFS ガイド: ステージしようとしたファイルが Git LFS 移行候補（大容量・バイナリ）だった場合の情報1件。
+// path はリポジトリルートからの相対パス、size_bytes は実ファイルサイズ（取得失敗時は 0）、
+// reason はなぜ候補かの日本語説明。
+export interface LfsCandidate {
+  path: string;
+  size_bytes: number;
+  reason: string;
+}
+
 // --- ラベル -----------------------------------------------------------------
 
 export const changeKindLabel: Record<ChangeKind, string> = {
@@ -376,4 +385,9 @@ export const api = {
   // 機密ファイルが含まれる場合は SensitiveWarning の配列を返す（空なら問題なし）。
   checkSensitive: (repoPath: string, paths: string[]) =>
     invoke<SensitiveWarning[]>("check_sensitive", { repoPath, paths }),
+
+  // #81 LFS ガイド: 指定パスが Git LFS 移行候補（大容量・バイナリ）かどうかを検出する。
+  // 候補ファイルが含まれる場合は LfsCandidate の配列を返す（空なら問題なし）。
+  checkLfsCandidates: (repoPath: string, paths: string[]) =>
+    invoke<LfsCandidate[]>("check_lfs_candidates", { repoPath, paths }),
 };

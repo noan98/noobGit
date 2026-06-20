@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::SensitiveWarning;
+use crate::model::{LfsCandidate, SensitiveWarning};
 
 /// noobGit が扱うGit操作の種別。説明・リスク判定の共通キーになる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,6 +508,78 @@ pub fn check_sensitive_files(paths: &[&str], repo_path: &Path) -> Vec<SensitiveW
     warnings
 }
 
+/// ステージしようとしているファイルが Git LFS 移行候補（大容量・バイナリ）かを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// `repo_path` はリポジトリルートの絶対パス（ファイルサイズ取得に使う）。
+/// 検出したファイルごとに [`LfsCandidate`] を返す。何も検出されなければ空ベクターを返す。
+///
+/// # 検出パターン
+/// - ファイルサイズが 5MB（5 * 1024 * 1024 バイト）以上
+/// - バイナリ拡張子: `.db .sqlite .sqlite3 .mdb .png .jpg .jpeg .gif
+///   `.mp4 .mov .avi .zip .tar .gz .7z .exe .dll .so`
+///
+/// 両方該当する場合は「5MB 超のバイナリファイルです」のようにまとめた理由を使う。
+pub fn check_lfs_candidates(paths: &[&str], repo_path: &Path) -> Vec<LfsCandidate> {
+    /// サイズ閾値（バイト）。これ以上なら候補。
+    const LFS_SIZE_THRESHOLD: u64 = 5 * 1024 * 1024;
+
+    /// バイナリとみなす拡張子リスト（小文字）。
+    const BINARY_EXTENSIONS: &[&str] = &[
+        "db", "sqlite", "sqlite3", "mdb", "png", "jpg", "jpeg", "gif", "mp4", "mov", "avi", "zip",
+        "tar", "gz", "7z", "exe", "dll", "so",
+    ];
+
+    let mut candidates = Vec::new();
+
+    for &path in paths {
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        let is_binary_ext = BINARY_EXTENSIONS.contains(&ext.as_str());
+
+        let full_path = repo_path.join(path);
+        let size_bytes = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+        let is_large = size_bytes >= LFS_SIZE_THRESHOLD;
+
+        if !is_binary_ext && !is_large {
+            continue;
+        }
+
+        let reason = match (is_large, is_binary_ext) {
+            (true, true) => format!(
+                "5MB を超えるバイナリファイルです（{:.1} MB）。\
+                 大きなバイナリを Git に直接コミットするとリポジトリが肥大化し、\
+                 クローンやプルが非常に遅くなります。Git LFS を使って別管理にすることをおすすめします。",
+                size_bytes as f64 / (1024.0 * 1024.0)
+            ),
+            (true, false) => format!(
+                "5MB を超える大きなファイルです（{:.1} MB）。\
+                 大きなファイルを Git に直接コミットするとリポジトリが肥大化し、\
+                 クローンやプルが遅くなります。Git LFS を使って別管理にすることをおすすめします。",
+                size_bytes as f64 / (1024.0 * 1024.0)
+            ),
+            (false, true) => format!(
+                "バイナリ形式のファイルです（拡張子 .{ext} ）。\
+                 画像・動画・圧縮ファイル・実行ファイルなどのバイナリを Git に直接コミットすると、\
+                 差分が取れずリポジトリが肥大化します。Git LFS を使って別管理にすることをおすすめします。"
+            ),
+            (false, false) => unreachable!(),
+        };
+
+        candidates.push(LfsCandidate {
+            path: path.to_string(),
+            size_bytes,
+            reason,
+        });
+    }
+
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,5 +911,114 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let warnings = check_sensitive_files(&["nonexistent.sql"], dir.path());
         assert!(warnings.is_empty(), "存在しない .sql は検出されないはず");
+    }
+
+    // --- check_lfs_candidates のテスト ---
+
+    #[test]
+    fn lfs_binary_extension_small_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小サイズでもバイナリ拡張子なら候補になる。
+        let png_path = dir.path().join("image.png");
+        std::fs::write(&png_path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let candidates = check_lfs_candidates(&["image.png"], dir.path());
+        assert_eq!(
+            candidates.len(),
+            1,
+            "バイナリ拡張子は小サイズでも検出されるはず"
+        );
+        assert_eq!(candidates[0].path, "image.png");
+        assert!(
+            candidates[0].reason.contains("バイナリ"),
+            "理由にバイナリと書かれているはず"
+        );
+    }
+
+    #[test]
+    fn lfs_various_binary_extensions_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 複数のバイナリ拡張子を検出する。
+        let exts = [
+            "a.jpg", "b.gif", "c.mp4", "d.zip", "e.exe", "f.dll", "g.so", "h.sqlite",
+        ];
+        for name in &exts {
+            std::fs::write(dir.path().join(name), b"dummy").unwrap();
+        }
+        let path_refs: Vec<&str> = exts.iter().map(|s| s.as_ref()).collect();
+        let candidates = check_lfs_candidates(&path_refs, dir.path());
+        assert_eq!(
+            candidates.len(),
+            exts.len(),
+            "すべてのバイナリ拡張子が検出されるはず"
+        );
+    }
+
+    #[test]
+    fn lfs_large_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 5MB + 1 バイトのファイルは大容量として候補になる。
+        let big_path = dir.path().join("data.bin");
+        let content = vec![0u8; 5 * 1024 * 1024 + 1];
+        std::fs::write(&big_path, &content).unwrap();
+        let candidates = check_lfs_candidates(&["data.bin"], dir.path());
+        assert_eq!(candidates.len(), 1, "5MB 超のファイルは検出されるはず");
+        assert_eq!(candidates[0].path, "data.bin");
+        assert!(
+            candidates[0].size_bytes > 5 * 1024 * 1024,
+            "size_bytes が正しく設定されているはず"
+        );
+    }
+
+    #[test]
+    fn lfs_exactly_5mb_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // ちょうど 5MB（= 閾値）も候補になる。
+        let path = dir.path().join("threshold.bin");
+        let content = vec![0u8; 5 * 1024 * 1024];
+        std::fs::write(&path, &content).unwrap();
+        let candidates = check_lfs_candidates(&["threshold.bin"], dir.path());
+        assert_eq!(candidates.len(), 1, "ちょうど 5MB は検出されるはず");
+    }
+
+    #[test]
+    fn lfs_small_text_file_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小さなテキストファイルは検出されない。
+        let txt_path = dir.path().join("main.rs");
+        std::fs::write(&txt_path, "fn main() {}").unwrap();
+        let candidates = check_lfs_candidates(&["main.rs"], dir.path());
+        assert!(
+            candidates.is_empty(),
+            "小さなテキストファイルは検出されないはず"
+        );
+    }
+
+    #[test]
+    fn lfs_normal_files_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 通常の小さなファイルはまとめて検出されない。
+        for name in &["README.md", "package.json", "index.ts", "Cargo.toml"] {
+            std::fs::write(dir.path().join(name), "content").unwrap();
+        }
+        let candidates = check_lfs_candidates(
+            &["README.md", "package.json", "index.ts", "Cargo.toml"],
+            dir.path(),
+        );
+        assert!(
+            candidates.is_empty(),
+            "通常のファイルは検出されないはず: {:?}",
+            candidates
+        );
+    }
+
+    #[test]
+    fn lfs_nonexistent_file_not_detected() {
+        // ファイルが存在しない場合はサイズ 0 とみなし、バイナリ拡張子でもなければ検出しない。
+        let dir = tempfile::TempDir::new().unwrap();
+        let candidates = check_lfs_candidates(&["nonexistent.txt"], dir.path());
+        assert!(
+            candidates.is_empty(),
+            "存在しないテキストファイルは検出されないはず"
+        );
     }
 }
