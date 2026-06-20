@@ -237,6 +237,19 @@ export interface LfsCandidate {
   reason: string;
 }
 
+// #131 reflog の可視化: HEAD の移動履歴の1エントリ。
+// old_oid は移動前、new_oid は移動後のコミット OID（40桁）。
+// short_id は new_oid の先頭7桁。message は生のメッセージ、short_message は日本語化した説明。
+// timestamp は Unix エポック秒。
+export interface ReflogEntry {
+  old_oid: string;
+  new_oid: string;
+  short_id: string;
+  message: string;
+  short_message: string;
+  timestamp: number;
+}
+
 // --- ラベル -----------------------------------------------------------------
 
 export const changeKindLabel: Record<ChangeKind, string> = {
@@ -414,4 +427,9 @@ export const api = {
   // git restore --source <commitId> -- <filePath> に相当する。
   restoreFileFromCommit: (repoPath: string, commitId: string, filePath: string) =>
     invoke<void>("restore_file_from_commit", { repoPath, commitId, filePath }),
+
+  // #131 reflog の可視化: HEAD の移動履歴を新しい順に最大 max 件返す。
+  // reflog が存在しないリポジトリでは空の配列を返す。
+  getReflog: (repoPath: string, max: number) =>
+    invoke<ReflogEntry[]>("get_reflog", { repoPath, max }),
 };

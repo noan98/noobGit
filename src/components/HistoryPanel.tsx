@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CommitInfo, LogFilter } from "../api";
+import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
 import { CommitGraph } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 
@@ -28,6 +28,11 @@ interface Props {
   onToggleSelect: (id: string) => void;
   // 選択済みコミットでリベースウィザードを開く。
   onStartRebase: () => void;
+  // #131 reflog: reflog タブでデータを取得するためのリポジトリパス。
+  repoPath: string;
+  // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
+  // 親（App）が guarded("reset_hard") に配線する。
+  onResetTo: (newOid: string) => void;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -101,6 +106,9 @@ function CopyHashButton({ shortId }: { shortId: string }) {
   );
 }
 
+// reflog の最大表示件数。最近の操作を一覧できる程度の件数にする。
+const REFLOG_MAX = 100;
+
 export function HistoryPanel({
   commits,
   currentBranch,
@@ -117,9 +125,41 @@ export function HistoryPanel({
   selectedIds,
   onToggleSelect,
   onStartRebase,
+  repoPath,
+  onResetTo,
 }: Props) {
   // #51 DAG グラフ — ON/OFF トグル状態。
   const [showGraph, setShowGraph] = useState(false);
+
+  // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
+  const [activeTab, setActiveTab] = useState<"commits" | "reflog">("commits");
+
+  // #131 reflog: reflog データとロード状態。
+  const [reflogEntries, setReflogEntries] = useState<ReflogEntry[]>([]);
+  const [reflogLoading, setReflogLoading] = useState(false);
+  const [reflogError, setReflogError] = useState<string | null>(null);
+
+  // reflog タブを開いたとき（または repoPath が変わったとき）にデータを取得する。
+  useEffect(() => {
+    if (activeTab !== "reflog" || !repoPath) return;
+    let cancelled = false;
+    setReflogLoading(true);
+    setReflogError(null);
+    void api
+      .getReflog(repoPath, REFLOG_MAX)
+      .then((entries) => {
+        if (!cancelled) setReflogEntries(entries);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setReflogError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setReflogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, repoPath]);
 
   // 検索ボックスの入力値。入力のたびに即時反映し、再取得はデバウンスして行う。
   const [messageQuery, setMessageQuery] = useState("");
@@ -151,178 +191,275 @@ export function HistoryPanel({
     <div className="panel">
       <div className="panel-head">
         <h2>履歴</h2>
-        {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
-        <button
-          className={`btn btn-small${showGraph ? " active" : ""}`}
-          onClick={() => setShowGraph((v) => !v)}
-          title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
-          aria-pressed={showGraph}
-        >
-          {showGraph ? "グラフ 非表示" : "グラフ 表示"}
-        </button>
-        {compareBaseId && (
-          <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
-            比較対象を選択中…
-          </span>
-        )}
-        {searching && (
-          <span className="history-searching" role="status">
-            <span className="network-spinner">🔄</span>検索中…
-          </span>
-        )}
-        {selectedCount > 0 && (
+        {/* #131 reflog: タブ切り替えボタン */}
+        <div className="history-tabs" role="tablist" aria-label="履歴の表示切り替え">
           <button
-            className="btn btn-small"
-            onClick={onStartRebase}
-            title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
+            role="tab"
+            aria-selected={activeTab === "commits"}
+            className={`btn btn-small${activeTab === "commits" ? " active" : ""}`}
+            onClick={() => setActiveTab("commits")}
+            title="コミット一覧を表示します"
           >
-            🧹 整理する… ({selectedCount})
+            コミット
           </button>
-        )}
-      </div>
-
-      {/* メッセージ・作者での絞り込み検索。入力は 300ms デバウンスして再取得する。 */}
-      <div className="history-search">
-        <input
-          type="search"
-          className="history-search-input"
-          value={messageQuery}
-          placeholder="メッセージで検索"
-          aria-label="コミットメッセージで検索"
-          onChange={(e) => setMessageQuery(e.target.value)}
-        />
-        <input
-          type="search"
-          className="history-search-input"
-          value={authorQuery}
-          placeholder="作者で検索（名前・メール）"
-          aria-label="作者で検索"
-          onChange={(e) => setAuthorQuery(e.target.value)}
-        />
-      </div>
-
-      {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
-      {showGraph && commits.length > 0 && (
-        <CommitGraph commits={commits} />
-      )}
-
-      {commits.length === 0 ? (
-        isSearching ? (
-          <EmptyState
-            icon="🔍"
-            title="一致するコミットがありません"
-            description="検索条件を変えるか、入力を消すとすべての履歴に戻ります。"
-          />
-        ) : (
-          <EmptyState
-            icon="📝"
-            title="まだコミットがありません"
-            description="最初のコミットを作って、変更の記録を始めましょう。"
-            action={{ label: "コミットへ", onClick: onGoToCommit }}
-          />
-        )
-      ) : (
-        <>
-          <ul className="commits">
-            {commits.map((c, idx) => {
-              const isHead = idx === 0;
-              const palette = authorPalette(c.author_name);
-              const initials = authorInitials(c.author_name);
-              const isCompareBase = compareBaseId === c.id;
-              return (
-                <li
-                  key={c.id}
-                  className={`commit-row${isCompareBase ? " compare-base" : ""}`}
-                >
-                  {/* リベース対象の選択チェックボックス */}
-                  <input
-                    type="checkbox"
-                    className="commit-select"
-                    checked={selectedIds.has(c.id)}
-                    onChange={() => onToggleSelect(c.id)}
-                    title="このコミットをリベース（整理）の対象に選ぶ"
-                    aria-label={`コミット ${c.short_id} を選択`}
-                  />
-
-                  {/* 著者アバター */}
-                  <div
-                    className="commit-avatar"
-                    style={{ background: palette.bg, color: palette.fg }}
-                    title={c.author_name}
-                    aria-hidden="true"
-                  >
-                    {initials}
-                  </div>
-
-                  {/* メイン情報 */}
-                  <div className="commit-body">
-                    <div className="commit-top">
-                      <span className="summary">
-                        {c.summary || "(メッセージなし)"}
-                      </span>
-                      {isHead && currentBranch && (
-                        <span className="branch-badge" title="現在のブランチ">
-                          {currentBranch}
-                        </span>
-                      )}
-                    </div>
-                    <div className="commit-bottom">
-                      <span className="meta">{c.author_name}</span>
-                      <span className="meta-sep">·</span>
-                      <span className="meta" title={new Date(c.time * 1000).toLocaleString("ja-JP")}>
-                        {formatRelativeTime(c.time)}
-                      </span>
-                      <CopyHashButton shortId={c.short_id} />
-                    </div>
-                  </div>
-
-                  {/* 操作ボタン */}
-                  <div className="commit-actions-inline">
-                    {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
-                    <button
-                      className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
-                      title={
-                        isCompareBase
-                          ? "比較対象（基準）に選択中。もう一度押すと解除します"
-                          : compareBaseId
-                            ? "このコミットとの差分を表示します"
-                            : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
-                      }
-                      onClick={() => onCompareSelect(c)}
-                    >
-                      {isCompareBase ? "基準" : "比較"}
-                    </button>
-                    <button
-                      className="link commit-cherry-pick-btn"
-                      title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
-                      onClick={() => onCherryPick(c)}
-                    >
-                      コピー
-                    </button>
-                    <button
-                      className="link danger commit-reset-btn"
-                      title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
-                      onClick={() => onReset(c)}
-                    >
-                      戻す
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          {hasMore && (
-            <div className="load-more">
+          <button
+            role="tab"
+            aria-selected={activeTab === "reflog"}
+            className={`btn btn-small${activeTab === "reflog" ? " active" : ""}`}
+            onClick={() => setActiveTab("reflog")}
+            title="HEAD の移動履歴（reflog）を表示します。消えたコミットを復元できます。"
+          >
+            reflog
+          </button>
+        </div>
+        {/* コミットタブ専用のコントロール */}
+        {activeTab === "commits" && (
+          <>
+            {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+            <button
+              className={`btn btn-small${showGraph ? " active" : ""}`}
+              onClick={() => setShowGraph((v) => !v)}
+              title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+              aria-pressed={showGraph}
+            >
+              {showGraph ? "グラフ 非表示" : "グラフ 表示"}
+            </button>
+            {compareBaseId && (
+              <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
+                比較対象を選択中…
+              </span>
+            )}
+            {searching && (
+              <span className="history-searching" role="status">
+                <span className="network-spinner">🔄</span>検索中…
+              </span>
+            )}
+            {selectedCount > 0 && (
               <button
                 className="btn btn-small"
-                onClick={onLoadMore}
-                disabled={loadingMore}
+                onClick={onStartRebase}
+                title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
               >
-                {loadingMore ? "読み込み中…" : "もっと見る"}
+                🧹 整理する… ({selectedCount})
               </button>
-            </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* コミットタブ */}
+      {activeTab === "commits" && (
+        <>
+          {/* メッセージ・作者での絞り込み検索。入力は 300ms デバウンスして再取得する。 */}
+          <div className="history-search">
+            <input
+              type="search"
+              className="history-search-input"
+              value={messageQuery}
+              placeholder="メッセージで検索"
+              aria-label="コミットメッセージで検索"
+              onChange={(e) => setMessageQuery(e.target.value)}
+            />
+            <input
+              type="search"
+              className="history-search-input"
+              value={authorQuery}
+              placeholder="作者で検索（名前・メール）"
+              aria-label="作者で検索"
+              onChange={(e) => setAuthorQuery(e.target.value)}
+            />
+          </div>
+
+          {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
+          {showGraph && commits.length > 0 && (
+            <CommitGraph commits={commits} />
+          )}
+
+          {commits.length === 0 ? (
+            isSearching ? (
+              <EmptyState
+                icon="🔍"
+                title="一致するコミットがありません"
+                description="検索条件を変えるか、入力を消すとすべての履歴に戻ります。"
+              />
+            ) : (
+              <EmptyState
+                icon="📝"
+                title="まだコミットがありません"
+                description="最初のコミットを作って、変更の記録を始めましょう。"
+                action={{ label: "コミットへ", onClick: onGoToCommit }}
+              />
+            )
+          ) : (
+            <>
+              <ul className="commits">
+                {commits.map((c, idx) => {
+                  const isHead = idx === 0;
+                  const palette = authorPalette(c.author_name);
+                  const initials = authorInitials(c.author_name);
+                  const isCompareBase = compareBaseId === c.id;
+                  return (
+                    <li
+                      key={c.id}
+                      className={`commit-row${isCompareBase ? " compare-base" : ""}`}
+                    >
+                      {/* リベース対象の選択チェックボックス */}
+                      <input
+                        type="checkbox"
+                        className="commit-select"
+                        checked={selectedIds.has(c.id)}
+                        onChange={() => onToggleSelect(c.id)}
+                        title="このコミットをリベース（整理）の対象に選ぶ"
+                        aria-label={`コミット ${c.short_id} を選択`}
+                      />
+
+                      {/* 著者アバター */}
+                      <div
+                        className="commit-avatar"
+                        style={{ background: palette.bg, color: palette.fg }}
+                        title={c.author_name}
+                        aria-hidden="true"
+                      >
+                        {initials}
+                      </div>
+
+                      {/* メイン情報 */}
+                      <div className="commit-body">
+                        <div className="commit-top">
+                          <span className="summary">
+                            {c.summary || "(メッセージなし)"}
+                          </span>
+                          {isHead && currentBranch && (
+                            <span className="branch-badge" title="現在のブランチ">
+                              {currentBranch}
+                            </span>
+                          )}
+                        </div>
+                        <div className="commit-bottom">
+                          <span className="meta">{c.author_name}</span>
+                          <span className="meta-sep">·</span>
+                          <span className="meta" title={new Date(c.time * 1000).toLocaleString("ja-JP")}>
+                            {formatRelativeTime(c.time)}
+                          </span>
+                          <CopyHashButton shortId={c.short_id} />
+                        </div>
+                      </div>
+
+                      {/* 操作ボタン */}
+                      <div className="commit-actions-inline">
+                        {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
+                        <button
+                          className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
+                          title={
+                            isCompareBase
+                              ? "比較対象（基準）に選択中。もう一度押すと解除します"
+                              : compareBaseId
+                                ? "このコミットとの差分を表示します"
+                                : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
+                          }
+                          onClick={() => onCompareSelect(c)}
+                        >
+                          {isCompareBase ? "基準" : "比較"}
+                        </button>
+                        <button
+                          className="link commit-cherry-pick-btn"
+                          title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
+                          onClick={() => onCherryPick(c)}
+                        >
+                          コピー
+                        </button>
+                        <button
+                          className="link danger commit-reset-btn"
+                          title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                          onClick={() => onReset(c)}
+                        >
+                          戻す
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              {hasMore && (
+                <div className="load-more">
+                  <button
+                    className="btn btn-small"
+                    onClick={onLoadMore}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? "読み込み中…" : "もっと見る"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </>
+      )}
+
+      {/* #131 reflog タブ: HEAD の移動履歴を表示する */}
+      {activeTab === "reflog" && (
+        <div className="reflog-tab">
+          <p className="reflog-description">
+            過去の操作で HEAD が移動した履歴です。「消えた」コミットもここから見つけて戻せます。
+          </p>
+          {reflogLoading && (
+            <div className="reflog-loading" role="status">
+              <span className="network-spinner">🔄</span>読み込み中…
+            </div>
+          )}
+          {reflogError && (
+            <div className="reflog-error">
+              reflog の取得に失敗しました: {reflogError}
+            </div>
+          )}
+          {!reflogLoading && !reflogError && reflogEntries.length === 0 && (
+            <EmptyState
+              icon="📋"
+              title="reflog がありません"
+              description="まだ操作履歴がありません。コミットや操作を行うと記録されます。"
+            />
+          )}
+          {!reflogLoading && !reflogError && reflogEntries.length > 0 && (
+            <ul className="reflog-list">
+              {reflogEntries.map((entry, idx) => (
+                <li key={idx} className="reflog-row">
+                  {/* 操作種別バッジ */}
+                  <div className="reflog-kind">{entry.short_message}</div>
+                  {/* 詳細情報 */}
+                  <div className="reflog-body">
+                    <div className="reflog-top">
+                      <code className="reflog-hash">{entry.short_id}</code>
+                      <span
+                        className="reflog-raw-message"
+                        title={entry.message}
+                      >
+                        {entry.message.length > 60
+                          ? `${entry.message.slice(0, 60)}…`
+                          : entry.message}
+                      </span>
+                    </div>
+                    <div className="reflog-bottom">
+                      <span
+                        className="meta"
+                        title={new Date(entry.timestamp * 1000).toLocaleString("ja-JP")}
+                      >
+                        {formatRelativeTime(entry.timestamp)}
+                      </span>
+                    </div>
+                  </div>
+                  {/* 「この時点に戻す」ボタン */}
+                  <button
+                    className="link danger reflog-reset-btn"
+                    title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
+                    onClick={() => onResetTo(entry.new_oid)}
+                  >
+                    戻す
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

@@ -1565,6 +1565,14 @@ export default function App() {
                   selectedIds={selectedCommitIds}
                   onToggleSelect={toggleCommitSelect}
                   onStartRebase={() => setShowRebase(true)}
+                  repoPath={repoPath}
+                  onResetTo={(newOid) =>
+                    void guarded(
+                      `reflog: コミット ${newOid.slice(0, 7)} までハードリセット`,
+                      "reset_hard",
+                      () => api.resetHard(repoPath, newOid),
+                    )
+                  }
                 />
               </motion.div>
             )}

@@ -297,6 +297,25 @@ pub struct LfsCandidate {
     pub reason: String,
 }
 
+/// reflog（HEAD の移動履歴）の1エントリ。
+///
+/// `old_oid` が全ゼロ文字列の場合は「以前の状態が無い」（クローン直後など）を意味する。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflogEntry {
+    /// 移動前のコミット OID（40桁）。以前の状態が無い場合は全ゼロ。
+    pub old_oid: String,
+    /// 移動後のコミット OID（40桁）。
+    pub new_oid: String,
+    /// `new_oid` の短縮形（先頭7桁）。
+    pub short_id: String,
+    /// git が記録した生のメッセージ（例: "commit: ...", "reset: ..."）。
+    pub message: String,
+    /// 生メッセージを日本語に変換した、操作の短い説明。
+    pub short_message: String,
+    /// このエントリのコミット日時（Unix エポック秒）。
+    pub timestamp: i64,
+}
+
 /// merge（ブランチ統合）の結果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
