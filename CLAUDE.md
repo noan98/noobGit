@@ -94,6 +94,18 @@ Rust の型は serde でシリアライズされ、TypeScript で消費される
 python3 scripts/check_handlers.py
 ```
 
+### enum 型契約の自動検証
+
+`scripts/check_type_contract.py` が `core/` の Rust enum バリアントと `src/api.ts`
+の TypeScript 文字列リテラル union の一致を検証する。対象は `OperationKind`,
+`RiskLevel`, `ChangeKind`, `DiffLineKind`, `NetworkErrorKind`。
+CI の rust ジョブ（core 変更時）と frontend ジョブ（api.ts 変更時）の両方で
+自動実行される。手元で確認したい場合:
+
+```bash
+python3 scripts/check_type_contract.py
+```
+
 ### core 型を変更したときのチェックリスト
 
 CI は `cargo clippy` と `npm run typecheck` で型の整合性を検証するが、
