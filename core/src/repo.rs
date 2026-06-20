@@ -3,7 +3,7 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RepoStatus, TagInfo,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RemoteInfo, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -225,6 +225,40 @@ pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
             target_id: id,
             name: name.to_string(),
             message,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// リモート一覧を返す（名前順）。
+///
+/// 各リモートの fetch URL と push URL を取得する。push URL が fetch URL と同じか
+/// 設定されていない場合は `push_url` を `None` にして返す（UI での表示を簡潔にするため）。
+pub fn list_remotes(repo: &Repository) -> Result<Vec<RemoteInfo>> {
+    let names = repo.remotes().map_err(|e| {
+        CoreError::Git(format!("リモート一覧の取得に失敗しました: {}", e.message()))
+    })?;
+
+    let mut out = Vec::new();
+    for name in names.iter().flatten() {
+        let remote = match repo.find_remote(name) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let fetch_url = remote.url().unwrap_or("").to_string();
+        let push_raw = remote.pushurl().unwrap_or("");
+        // push URL が空か fetch URL と同じなら None とする（UI を簡潔に保つ）。
+        let push_url = if push_raw.is_empty() || push_raw == fetch_url {
+            None
+        } else {
+            Some(push_raw.to_string())
+        };
+        out.push(RemoteInfo {
+            name: name.to_string(),
+            fetch_url,
+            push_url,
         });
     }
 

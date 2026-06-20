@@ -963,6 +963,77 @@ pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// リモートリポジトリを追加する。
+///
+/// `name` はリモート名（例: "origin"）、`url` は fetch 用 URL。
+/// 同名リモートが既にある場合や名前が空の場合は日本語エラーを返す。
+/// undo は記録しない（再追加で復元できるため）。
+pub fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください（例: origin）。".to_string(),
+        ));
+    }
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "URL を入力してください。".to_string(),
+        ));
+    }
+    repo.remote(name, url).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」を追加できませんでした: {}",
+            e.message()
+        ))
+    })?;
+    Ok(())
+}
+
+/// リモートリポジトリを削除する。
+///
+/// 指定した名前のリモートが無い場合は日本語エラーを返す。
+/// undo は記録しない（再追加で復元できるため）。
+pub fn remove_remote(repo: &Repository, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください。".to_string(),
+        ));
+    }
+    repo.remote_delete(name).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」を削除できませんでした: {}",
+            e.message()
+        ))
+    })
+}
+
+/// リモートリポジトリの fetch URL を変更する。
+///
+/// 指定した名前のリモートが無い場合は日本語エラーを返す。
+/// undo は記録しない（再変更で復元できるため）。
+pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください。".to_string(),
+        ));
+    }
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "URL を入力してください。".to_string(),
+        ));
+    }
+    repo.remote_set_url(name, url).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」の URL を変更できませんでした: {}",
+            e.message()
+        ))
+    })
+}
+
 /// リモートから最新を取得し、リモート追跡ブランチ（例: `origin/main`）を更新する。
 ///
 /// 作業ツリー・インデックス・現在ブランチには一切触れない安全操作。取り込む前に
@@ -3100,5 +3171,70 @@ mod tests {
         ));
         // どちらの失敗でも .gitignore は作られない。
         assert!(crate::repo::read_gitignore(&repo).unwrap().is_none());
+    }
+
+    // --- リモート操作テスト ---
+
+    #[test]
+    fn remote_add_increases_list() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        let before = crate::repo::list_remotes(&repo).unwrap();
+        assert!(before.is_empty(), "初期状態ではリモートが無いはず");
+
+        add_remote(&repo, "origin", "https://example.com/repo.git").unwrap();
+
+        let after = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "origin");
+        assert_eq!(after[0].fetch_url, "https://example.com/repo.git");
+        assert!(after[0].push_url.is_none());
+    }
+
+    #[test]
+    fn remote_set_url_changes_fetch_url() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        add_remote(&repo, "origin", "https://old.example.com/repo.git").unwrap();
+        set_remote_url(&repo, "origin", "https://new.example.com/repo.git").unwrap();
+
+        let remotes = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].fetch_url, "https://new.example.com/repo.git");
+    }
+
+    #[test]
+    fn remote_remove_decreases_list() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        add_remote(&repo, "origin", "https://example.com/repo.git").unwrap();
+        add_remote(&repo, "upstream", "https://upstream.example.com/repo.git").unwrap();
+
+        let before = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(before.len(), 2);
+
+        remove_remote(&repo, "origin").unwrap();
+
+        let after = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "upstream");
+    }
+
+    #[test]
+    fn remote_add_rejects_empty_name_and_url() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        assert!(matches!(
+            add_remote(&repo, "  ", "https://example.com").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            add_remote(&repo, "origin", "  ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
     }
 }

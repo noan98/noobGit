@@ -10,8 +10,8 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, RepoStatus, SensitiveWarning, StashInfo,
-    TagInfo,
+    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, RemoteInfo, RepoStatus, SensitiveWarning,
+    StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -367,6 +367,34 @@ fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_tag(&r, &name).map_err(|e| e.to_string())
 }
 
+/// リモートリポジトリの一覧を返す（名前順）。
+#[tauri::command]
+fn list_remotes(repo_path: String) -> Result<Vec<RemoteInfo>, String> {
+    let r = open(&repo_path)?;
+    repo::list_remotes(&r).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリを追加する。
+#[tauri::command]
+fn add_remote(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::add_remote(&r, &name, &url).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリを削除する。
+#[tauri::command]
+fn remove_remote(repo_path: String, name: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::remove_remote(&r, &name).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリの fetch URL を変更する。
+#[tauri::command]
+fn set_remote_url(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::set_remote_url(&r, &name, &url).map_err(|e| e.to_string())
+}
+
 /// ネットワーク操作のエラーメッセージを種別に分類する。
 ///
 /// フロントエンドが fetch / pull / push の失敗時にエラー文字列をここに渡すと、
@@ -484,6 +512,10 @@ pub fn run() {
             list_tags,
             create_tag,
             delete_tag,
+            list_remotes,
+            add_remote,
+            remove_remote,
+            set_remote_url,
             classify_network_error_cmd,
             get_undo_journal,
             peek_undo,

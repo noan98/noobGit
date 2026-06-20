@@ -229,6 +229,18 @@ pub struct TagInfo {
     pub message: Option<String>,
 }
 
+/// リモート1件の情報。
+///
+/// `fetch_url` はデータを取得するときのURL（ほとんどの場合 push_url も同じ）。
+/// `push_url` は送信先のURLで、fetch_url と同じか未設定の場合は `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: String,
+    /// push URL（fetch URL と異なる場合のみ Some）。
+    pub push_url: Option<String>,
+}
+
 /// fetch（リモートの取得）の結果サマリ。
 ///
 /// fetch はリモート追跡ブランチ（例: `origin/main`）を最新化するだけで、作業中の
