@@ -271,6 +271,20 @@ pub struct SensitiveWarning {
     pub reason: String,
 }
 
+/// ステージしようとしたファイルが Git LFS 移行候補（大容量・バイナリ）だった場合の情報1件。
+///
+/// `path` はリポジトリルートからの相対パス、`size_bytes` は実ファイルサイズ（取得失敗時は 0）、
+/// `reason` はなぜ候補かの平易な日本語の説明（ユーザーに直接表示する）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LfsCandidate {
+    /// リポジトリルートからの相対パス。
+    pub path: String,
+    /// 実ファイルサイズ（バイト）。取得失敗時は 0。
+    pub size_bytes: u64,
+    /// なぜ候補か（日本語。例:「5MB を超える大きなファイルです」「バイナリ形式（画像・動画など）です」）。
+    pub reason: String,
+}
+
 /// merge（ブランチ統合）の結果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

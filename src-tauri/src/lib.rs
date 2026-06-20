@@ -10,7 +10,8 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, MergeOutcome, PullOutcome, RepoStatus, SensitiveWarning, StashInfo, TagInfo,
+    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, RepoStatus, SensitiveWarning, StashInfo,
+    TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -414,6 +415,27 @@ fn check_sensitive(repo_path: String, paths: Vec<String>) -> Result<Vec<Sensitiv
     ))
 }
 
+/// ステージしようとしているファイルが Git LFS 移行候補（大容量・バイナリ）かを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// 候補ファイルが見つかった場合、情報を [`LfsCandidate`] の一覧で返す。
+/// 何も見つからなければ空の配列を返す。
+#[tauri::command]
+fn check_lfs_candidates(
+    repo_path: String,
+    paths: Vec<String>,
+) -> Result<Vec<LfsCandidate>, String> {
+    let r = open(&repo_path)?;
+    let workdir = r
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&repo_path));
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    Ok(noobgit_core::safety::check_lfs_candidates(
+        &path_refs, &workdir,
+    ))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -467,6 +489,7 @@ pub fn run() {
             peek_undo,
             undo_last,
             check_sensitive,
+            check_lfs_candidates,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");
