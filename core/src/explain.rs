@@ -169,6 +169,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "分岐して開発した機能を統合するために使います。コンフリクト（同じ箇所への競合する変更）が起きた場合は、コンフリクト解消ウィザードで対処できます。".into(),
             on_trouble: "コンフリクトが発生した場合は、ウィザードの案内に従って競合を解消してください。マージ自体を取りやめたいときは Undo を使ってください。".into(),
         },
+        OperationKind::RemoveRemote => Explanation {
+            title: "リモートを削除".into(),
+            what: "指定したリモートリポジトリの接続設定を削除します。コミットや作業中のファイルには一切影響しません。".into(),
+            why: "不要になったリモートの設定を整理するときに使います。削除後も同じ URL で再度追加できます。".into(),
+            on_trouble: "削除したリモートは「リモートを追加」から同じ名前と URL で再登録できます。誤って削除してしまっても、URL が分かれば元に戻せます。".into(),
+        },
     }
 }
 
@@ -200,6 +206,7 @@ mod tests {
             OperationKind::DeleteTag,
             OperationKind::Rebase,
             OperationKind::Merge,
+            OperationKind::RemoveRemote,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);

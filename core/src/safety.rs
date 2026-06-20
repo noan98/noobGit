@@ -29,6 +29,7 @@ pub enum OperationKind {
     DeleteTag,
     Rebase,
     Merge,
+    RemoveRemote,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -366,6 +367,17 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reasons: vec![
                 "別ブランチの変更をこのブランチに取り込みます（マージ）。".to_string(),
                 "コンフリクト（競合）が起きた場合は、コンフリクト解消ウィザードで対処できます。直後なら Undo で取り消せます。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
+
+        OperationKind::RemoveRemote => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "リモートの設定を削除します。コミットや作業中のファイルには影響しません。".to_string(),
+                "そのリモートに push/pull できなくなります。設定はあとから再度追加できます。".to_string(),
             ],
             reversible: true,
             permanent_data_loss: false,
@@ -778,6 +790,7 @@ mod tests {
             OperationKind::DeleteTag,
             OperationKind::Rebase,
             OperationKind::Merge,
+            OperationKind::RemoveRemote,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }

@@ -133,7 +133,8 @@ export type OperationKind =
   | "create_tag"
   | "delete_tag"
   | "rebase"
-  | "merge";
+  | "merge"
+  | "remove_remote";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -164,6 +165,13 @@ export interface StashInfo {
   id: string;
   // この退避に含まれる変更ファイル数（一覧表示用の概要）。
   file_count: number;
+}
+
+// リモートリポジトリ1件の情報。push_url は fetch と異なる場合のみ文字列、同じか未設定なら null。
+export interface RemoteInfo {
+  name: string;
+  fetch_url: string;
+  push_url: string | null;
 }
 
 // タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
@@ -368,6 +376,16 @@ export const api = {
     }),
   deleteTag: (repoPath: string, name: string) =>
     invoke<void>("delete_tag", { repoPath, name }),
+
+  // #71 リモート管理: リモートリポジトリの一覧・追加・URL変更・削除。
+  listRemotes: (repoPath: string) =>
+    invoke<RemoteInfo[]>("list_remotes", { repoPath }),
+  addRemote: (repoPath: string, name: string, url: string) =>
+    invoke<void>("add_remote", { repoPath, name, url }),
+  removeRemote: (repoPath: string, name: string) =>
+    invoke<void>("remove_remote", { repoPath, name }),
+  setRemoteUrl: (repoPath: string, name: string, url: string) =>
+    invoke<void>("set_remote_url", { repoPath, name, url }),
 
   // 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
   getUndoJournal: (repoPath: string) =>

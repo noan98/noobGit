@@ -21,6 +21,7 @@ import {
   type SensitiveWarning,
   type StashInfo,
   type TagInfo,
+  type RemoteInfo,
   type UndoEntry,
 } from "./api";
 import { showToast } from "./components/Toaster";
@@ -30,6 +31,7 @@ import { StashPanel } from "./components/StashPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BranchPanel } from "./components/BranchPanel";
 import { TagPanel } from "./components/TagPanel";
+import { RemotePanel } from "./components/RemotePanel"; // #71 リモート管理
 import {
   StatusPanelSkeleton,
   HistoryPanelSkeleton,
@@ -150,6 +152,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // マージは HEAD を動かすので status・log・ブランチ関係が変わる。undo も積まれる。
   // コンフリクト時も status を取り直してコンフリクトを検出する。
   merge: FULL_REFRESH,
+  // リモート削除はリモート一覧の再取得をアクション内で行うため空にする。
+  remove_remote: {},
 };
 
 interface Guard {
@@ -180,6 +184,7 @@ export default function App() {
   const [undoJournal, setUndoJournal] = useState<UndoEntry[]>([]); // #48 Undo タイムライン
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
+  const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
 
   // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
   const [logFilter, setLogFilter] = useState<LogFilter>({});
@@ -337,12 +342,23 @@ export default function App() {
     }
   }, [repoPath]);
 
+  // #71 リモート一覧の取得。失敗しても画面表示は止めない。
+  const loadRemotes = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      setRemotes(await api.listRemotes(repoPath));
+    } catch {
+      setRemotes([]);
+    }
+  }, [repoPath]);
+
   useEffect(() => {
     if (opened) {
       void refresh();
       void loadIdentity();
+      void loadRemotes(); // #71 リモート一覧
     }
-  }, [opened, refresh, loadIdentity]);
+  }, [opened, refresh, loadIdentity, loadRemotes]);
 
   // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
   // コンフリクト）で呼ぶコマンドが変わる。
@@ -1025,6 +1041,35 @@ export default function App() {
     });
   }
 
+  // #71 リモート管理: 追加・URL変更・削除。
+  function doAddRemote(name: string, url: string) {
+    void exec(
+      async () => {
+        await api.addRemote(repoPath, name, url);
+        await loadRemotes();
+      },
+      { successMsg: `リモート「${name}」を追加しました。`, refresh: {} },
+    );
+  }
+
+  function doSetRemoteUrl(name: string, url: string) {
+    void exec(
+      async () => {
+        await api.setRemoteUrl(repoPath, name, url);
+        await loadRemotes();
+      },
+      { successMsg: `リモート「${name}」の URL を変更しました。`, refresh: {} },
+    );
+  }
+
+  function doRemoveRemote(name: string) {
+    void guarded(`リモート「${name}」の削除`, "remove_remote", async () => {
+      await api.removeRemote(repoPath, name);
+      showToast(`リモート「${name}」を削除しました。`, "success");
+      await loadRemotes();
+    });
+  }
+
   // リベース対象のチェックボックスを切り替える。
   function toggleCommitSelect(id: string) {
     setSelectedCommitIds((prev) => {
@@ -1616,6 +1661,13 @@ export default function App() {
                   canTag={commits.length > 0}
                   onCreate={doCreateTag}
                   onDelete={doDeleteTag}
+                />
+                {/* #71 リモート管理: リモートの一覧・追加・URL変更・削除。 */}
+                <RemotePanel
+                  remotes={remotes}
+                  onAdd={doAddRemote}
+                  onSetUrl={doSetRemoteUrl}
+                  onRemove={doRemoveRemote}
                 />
                 {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
                 <UndoTimeline entries={[...undoJournal].reverse()} />
