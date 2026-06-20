@@ -259,6 +259,18 @@ pub enum PullOutcome {
     },
 }
 
+/// ステージしようとしたファイルが機密性の高いものだった場合の警告1件。
+///
+/// `path` はリポジトリルートからの相対パス、`reason` はなぜ危険かの
+/// 平易な日本語の説明（ユーザーに直接表示する）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensitiveWarning {
+    /// リポジトリルートからの相対パス。
+    pub path: String,
+    /// なぜ危険か（日本語。例:「.env は環境変数・秘密情報を含むことが多いファイルです」）。
+    pub reason: String,
+}
+
 /// merge（ブランチ統合）の結果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

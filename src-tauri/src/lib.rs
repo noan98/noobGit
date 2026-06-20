@@ -10,7 +10,7 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, MergeOutcome, PullOutcome, RepoStatus, StashInfo, TagInfo,
+    FileDiff, MergeOutcome, PullOutcome, RepoStatus, SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -395,6 +395,25 @@ fn undo_last(repo_path: String) -> Result<String, String> {
     undo::undo_last(&r).map_err(|e| e.to_string())
 }
 
+/// ステージしようとしているファイルが機密性の高いものかを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// 機密ファイルが見つかった場合、その理由を日本語で説明した [`SensitiveWarning`] の一覧を返す。
+/// 何も見つからなければ空の配列を返す。
+#[tauri::command]
+fn check_sensitive(repo_path: String, paths: Vec<String>) -> Result<Vec<SensitiveWarning>, String> {
+    let r = open(&repo_path)?;
+    // リポジトリの作業ツリーのルートパスを使う。bare の場合は repo_path をそのまま使う。
+    let workdir = r
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&repo_path));
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    Ok(noobgit_core::safety::check_sensitive_files(
+        &path_refs, &workdir,
+    ))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -447,6 +466,7 @@ pub fn run() {
             get_undo_journal,
             peek_undo,
             undo_last,
+            check_sensitive,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");
