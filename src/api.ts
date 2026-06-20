@@ -133,7 +133,9 @@ export type OperationKind =
   | "create_tag"
   | "delete_tag"
   | "rebase"
-  | "merge";
+  | "merge"
+  | "remove_remote"
+  | "restore_file";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -164,6 +166,13 @@ export interface StashInfo {
   id: string;
   // この退避に含まれる変更ファイル数（一覧表示用の概要）。
   file_count: number;
+}
+
+// リモートリポジトリ1件の情報。push_url は fetch と異なる場合のみ文字列、同じか未設定なら null。
+export interface RemoteInfo {
+  name: string;
+  fetch_url: string;
+  push_url: string | null;
 }
 
 // タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
@@ -210,6 +219,35 @@ export type NetworkErrorKind =
 export interface Identity {
   name: string | null;
   email: string | null;
+}
+
+// #69 機密ファイル検出: ステージしようとしたファイルが機密性の高いものだった場合の警告1件。
+// path はリポジトリルートからの相対パス、reason はなぜ危険かの日本語説明。
+export interface SensitiveWarning {
+  path: string;
+  reason: string;
+}
+
+// #81 LFS ガイド: ステージしようとしたファイルが Git LFS 移行候補（大容量・バイナリ）だった場合の情報1件。
+// path はリポジトリルートからの相対パス、size_bytes は実ファイルサイズ（取得失敗時は 0）、
+// reason はなぜ候補かの日本語説明。
+export interface LfsCandidate {
+  path: string;
+  size_bytes: number;
+  reason: string;
+}
+
+// #131 reflog の可視化: HEAD の移動履歴の1エントリ。
+// old_oid は移動前、new_oid は移動後のコミット OID（40桁）。
+// short_id は new_oid の先頭7桁。message は生のメッセージ、short_message は日本語化した説明。
+// timestamp は Unix エポック秒。
+export interface ReflogEntry {
+  old_oid: string;
+  new_oid: string;
+  short_id: string;
+  message: string;
+  short_message: string;
+  timestamp: number;
 }
 
 // --- ラベル -----------------------------------------------------------------
@@ -353,6 +391,16 @@ export const api = {
   deleteTag: (repoPath: string, name: string) =>
     invoke<void>("delete_tag", { repoPath, name }),
 
+  // #71 リモート管理: リモートリポジトリの一覧・追加・URL変更・削除。
+  listRemotes: (repoPath: string) =>
+    invoke<RemoteInfo[]>("list_remotes", { repoPath }),
+  addRemote: (repoPath: string, name: string, url: string) =>
+    invoke<void>("add_remote", { repoPath, name, url }),
+  removeRemote: (repoPath: string, name: string) =>
+    invoke<void>("remove_remote", { repoPath, name }),
+  setRemoteUrl: (repoPath: string, name: string, url: string) =>
+    invoke<void>("set_remote_url", { repoPath, name, url }),
+
   // 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
   getUndoJournal: (repoPath: string) =>
     invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
@@ -364,4 +412,24 @@ export const api = {
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。
   classifyNetworkError: (message: string) =>
     invoke<NetworkErrorKind>("classify_network_error_cmd", { message }),
+
+  // #69 機密ファイル検出: 指定パスが機密性の高いファイルかどうかを検出する。
+  // 機密ファイルが含まれる場合は SensitiveWarning の配列を返す（空なら問題なし）。
+  checkSensitive: (repoPath: string, paths: string[]) =>
+    invoke<SensitiveWarning[]>("check_sensitive", { repoPath, paths }),
+
+  // #81 LFS ガイド: 指定パスが Git LFS 移行候補（大容量・バイナリ）かどうかを検出する。
+  // 候補ファイルが含まれる場合は LfsCandidate の配列を返す（空なら問題なし）。
+  checkLfsCandidates: (repoPath: string, paths: string[]) =>
+    invoke<LfsCandidate[]>("check_lfs_candidates", { repoPath, paths }),
+
+  // #130 ファイル復元: 指定コミット時点のファイル内容を作業ツリーに復元し、ステージする。
+  // git restore --source <commitId> -- <filePath> に相当する。
+  restoreFileFromCommit: (repoPath: string, commitId: string, filePath: string) =>
+    invoke<void>("restore_file_from_commit", { repoPath, commitId, filePath }),
+
+  // #131 reflog の可視化: HEAD の移動履歴を新しい順に最大 max 件返す。
+  // reflog が存在しないリポジトリでは空の配列を返す。
+  getReflog: (repoPath: string, max: number) =>
+    invoke<ReflogEntry[]>("get_reflog", { repoPath, max }),
 };

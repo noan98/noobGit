@@ -10,7 +10,8 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, MergeOutcome, PullOutcome, RepoStatus, StashInfo, TagInfo,
+    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -366,6 +367,34 @@ fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_tag(&r, &name).map_err(|e| e.to_string())
 }
 
+/// リモートリポジトリの一覧を返す（名前順）。
+#[tauri::command]
+fn list_remotes(repo_path: String) -> Result<Vec<RemoteInfo>, String> {
+    let r = open(&repo_path)?;
+    repo::list_remotes(&r).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリを追加する。
+#[tauri::command]
+fn add_remote(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::add_remote(&r, &name, &url).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリを削除する。
+#[tauri::command]
+fn remove_remote(repo_path: String, name: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::remove_remote(&r, &name).map_err(|e| e.to_string())
+}
+
+/// リモートリポジトリの fetch URL を変更する。
+#[tauri::command]
+fn set_remote_url(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::set_remote_url(&r, &name, &url).map_err(|e| e.to_string())
+}
+
 /// ネットワーク操作のエラーメッセージを種別に分類する。
 ///
 /// フロントエンドが fetch / pull / push の失敗時にエラー文字列をここに渡すと、
@@ -393,6 +422,70 @@ fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
 fn undo_last(repo_path: String) -> Result<String, String> {
     let r = open(&repo_path)?;
     undo::undo_last(&r).map_err(|e| e.to_string())
+}
+
+/// 指定したコミット時点のファイル内容を作業ツリーに復元し、ステージする。
+///
+/// `commit_id` は復元元コミットのハッシュ（短縮形可）。`file_path` はリポジトリルートからの
+/// 相対パス。指定コミットに対象ファイルが存在しない場合は日本語エラーを返す。
+#[tauri::command]
+fn restore_file_from_commit(
+    repo_path: String,
+    commit_id: String,
+    file_path: String,
+) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::restore_file_from_commit(&r, &commit_id, &file_path).map_err(|e| e.to_string())
+}
+
+/// HEAD の reflog（移動履歴）を新しい順に最大 `max` 件返す。
+///
+/// 各エントリには移動前後の OID・短縮形・生メッセージ・日本語化した操作説明・
+/// タイムスタンプを含む。reflog が存在しないリポジトリでは空の配列を返す。
+#[tauri::command]
+fn get_reflog(repo_path: String, max: usize) -> Result<Vec<ReflogEntry>, String> {
+    let r = open(&repo_path)?;
+    repo::read_reflog(&r, max).map_err(|e| e.to_string())
+}
+
+/// ステージしようとしているファイルが機密性の高いものかを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// 機密ファイルが見つかった場合、その理由を日本語で説明した [`SensitiveWarning`] の一覧を返す。
+/// 何も見つからなければ空の配列を返す。
+#[tauri::command]
+fn check_sensitive(repo_path: String, paths: Vec<String>) -> Result<Vec<SensitiveWarning>, String> {
+    let r = open(&repo_path)?;
+    // リポジトリの作業ツリーのルートパスを使う。bare の場合は repo_path をそのまま使う。
+    let workdir = r
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&repo_path));
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    Ok(noobgit_core::safety::check_sensitive_files(
+        &path_refs, &workdir,
+    ))
+}
+
+/// ステージしようとしているファイルが Git LFS 移行候補（大容量・バイナリ）かを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// 候補ファイルが見つかった場合、情報を [`LfsCandidate`] の一覧で返す。
+/// 何も見つからなければ空の配列を返す。
+#[tauri::command]
+fn check_lfs_candidates(
+    repo_path: String,
+    paths: Vec<String>,
+) -> Result<Vec<LfsCandidate>, String> {
+    let r = open(&repo_path)?;
+    let workdir = r
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&repo_path));
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    Ok(noobgit_core::safety::check_lfs_candidates(
+        &path_refs, &workdir,
+    ))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -443,10 +536,18 @@ pub fn run() {
             list_tags,
             create_tag,
             delete_tag,
+            list_remotes,
+            add_remote,
+            remove_remote,
+            set_remote_url,
             classify_network_error_cmd,
             get_undo_journal,
             peek_undo,
             undo_last,
+            check_sensitive,
+            check_lfs_candidates,
+            restore_file_from_commit,
+            get_reflog,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");

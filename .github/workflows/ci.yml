@@ -77,6 +77,15 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # Rust enum バリアントと TypeScript 型リテラルの一致を静的に検証する。
+      # src/api.ts だけ変更した場合でもここで乖離を検出できる。
+      - name: Rust-TypeScript 型契約チェック
+        run: python3 scripts/check_type_contract.py
+
+      # Vitest によるユニットテストを実行する（ConfirmDialog / api ラッパーなど）。
+      - name: フロントエンドユニットテスト
+        run: npm run test
+
       # build は `tsc && vite build` なので型チェックを内包する。
       - name: Type-check and build
         run: npm run build
@@ -168,6 +177,11 @@ jobs:
       # コンパイル前に実行して早期失敗させる。
       - name: Tauriコマンド登録漏れチェック
         run: python3 scripts/check_handlers.py
+
+      # Rust enum バリアントと TypeScript 型リテラルの一致を静的に検証する。
+      # core/ の型を変更した場合に api.ts との乖離を早期検出する。
+      - name: Rust-TypeScript 型契約チェック
+        run: python3 scripts/check_type_contract.py
 
       # clippy は rustc ドライバなので型チェック (cargo check 相当) を内包する。
       # 別途 cargo check を走らせると二重コンパイルになるため clippy に集約。

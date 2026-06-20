@@ -169,6 +169,18 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "分岐して開発した機能を統合するために使います。コンフリクト（同じ箇所への競合する変更）が起きた場合は、コンフリクト解消ウィザードで対処できます。".into(),
             on_trouble: "コンフリクトが発生した場合は、ウィザードの案内に従って競合を解消してください。マージ自体を取りやめたいときは Undo を使ってください。".into(),
         },
+        OperationKind::RemoveRemote => Explanation {
+            title: "リモートを削除".into(),
+            what: "指定したリモートリポジトリの接続設定を削除します。コミットや作業中のファイルには一切影響しません。".into(),
+            why: "不要になったリモートの設定を整理するときに使います。削除後も同じ URL で再度追加できます。".into(),
+            on_trouble: "削除したリモートは「リモートを追加」から同じ名前と URL で再登録できます。誤って削除してしまっても、URL が分かれば元に戻せます。".into(),
+        },
+        OperationKind::RestoreFile => Explanation {
+            title: "ファイルを過去の内容に復元".into(),
+            what: "ファイルを過去のコミット時点の内容に戻します。".into(),
+            why: "特定のファイルだけを過去の状態に戻したいときに使います。今の変更は上書きされます。".into(),
+            on_trouble: "ステージされるので、誤ったときは Undo（アンステージ）で戻せます。上書き前の内容が必要なら事前に stash 退避を。".into(),
+        },
     }
 }
 
@@ -200,6 +212,8 @@ mod tests {
             OperationKind::DeleteTag,
             OperationKind::Rebase,
             OperationKind::Merge,
+            OperationKind::RemoveRemote,
+            OperationKind::RestoreFile,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);

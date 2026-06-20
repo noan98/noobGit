@@ -229,6 +229,18 @@ pub struct TagInfo {
     pub message: Option<String>,
 }
 
+/// リモート1件の情報。
+///
+/// `fetch_url` はデータを取得するときのURL（ほとんどの場合 push_url も同じ）。
+/// `push_url` は送信先のURLで、fetch_url と同じか未設定の場合は `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: String,
+    /// push URL（fetch URL と異なる場合のみ Some）。
+    pub push_url: Option<String>,
+}
+
 /// fetch（リモートの取得）の結果サマリ。
 ///
 /// fetch はリモート追跡ブランチ（例: `origin/main`）を最新化するだけで、作業中の
@@ -257,6 +269,51 @@ pub enum PullOutcome {
         /// 前進後の、現在ブランチの最新コミット。
         commit: CommitInfo,
     },
+}
+
+/// ステージしようとしたファイルが機密性の高いものだった場合の警告1件。
+///
+/// `path` はリポジトリルートからの相対パス、`reason` はなぜ危険かの
+/// 平易な日本語の説明（ユーザーに直接表示する）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensitiveWarning {
+    /// リポジトリルートからの相対パス。
+    pub path: String,
+    /// なぜ危険か（日本語。例:「.env は環境変数・秘密情報を含むことが多いファイルです」）。
+    pub reason: String,
+}
+
+/// ステージしようとしたファイルが Git LFS 移行候補（大容量・バイナリ）だった場合の情報1件。
+///
+/// `path` はリポジトリルートからの相対パス、`size_bytes` は実ファイルサイズ（取得失敗時は 0）、
+/// `reason` はなぜ候補かの平易な日本語の説明（ユーザーに直接表示する）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LfsCandidate {
+    /// リポジトリルートからの相対パス。
+    pub path: String,
+    /// 実ファイルサイズ（バイト）。取得失敗時は 0。
+    pub size_bytes: u64,
+    /// なぜ候補か（日本語。例:「5MB を超える大きなファイルです」「バイナリ形式（画像・動画など）です」）。
+    pub reason: String,
+}
+
+/// reflog（HEAD の移動履歴）の1エントリ。
+///
+/// `old_oid` が全ゼロ文字列の場合は「以前の状態が無い」（クローン直後など）を意味する。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflogEntry {
+    /// 移動前のコミット OID（40桁）。以前の状態が無い場合は全ゼロ。
+    pub old_oid: String,
+    /// 移動後のコミット OID（40桁）。
+    pub new_oid: String,
+    /// `new_oid` の短縮形（先頭7桁）。
+    pub short_id: String,
+    /// git が記録した生のメッセージ（例: "commit: ...", "reset: ..."）。
+    pub message: String,
+    /// 生メッセージを日本語に変換した、操作の短い説明。
+    pub short_message: String,
+    /// このエントリのコミット日時（Unix エポック秒）。
+    pub timestamp: i64,
 }
 
 /// merge（ブランチ統合）の結果。

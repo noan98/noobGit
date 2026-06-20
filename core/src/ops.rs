@@ -963,6 +963,77 @@ pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// リモートリポジトリを追加する。
+///
+/// `name` はリモート名（例: "origin"）、`url` は fetch 用 URL。
+/// 同名リモートが既にある場合や名前が空の場合は日本語エラーを返す。
+/// undo は記録しない（再追加で復元できるため）。
+pub fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください（例: origin）。".to_string(),
+        ));
+    }
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "URL を入力してください。".to_string(),
+        ));
+    }
+    repo.remote(name, url).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」を追加できませんでした: {}",
+            e.message()
+        ))
+    })?;
+    Ok(())
+}
+
+/// リモートリポジトリを削除する。
+///
+/// 指定した名前のリモートが無い場合は日本語エラーを返す。
+/// undo は記録しない（再追加で復元できるため）。
+pub fn remove_remote(repo: &Repository, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください。".to_string(),
+        ));
+    }
+    repo.remote_delete(name).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」を削除できませんでした: {}",
+            e.message()
+        ))
+    })
+}
+
+/// リモートリポジトリの fetch URL を変更する。
+///
+/// 指定した名前のリモートが無い場合は日本語エラーを返す。
+/// undo は記録しない（再変更で復元できるため）。
+pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リモート名を入力してください。".to_string(),
+        ));
+    }
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "URL を入力してください。".to_string(),
+        ));
+    }
+    repo.remote_set_url(name, url).map_err(|e| {
+        CoreError::InvalidInput(format!(
+            "リモート「{name}」の URL を変更できませんでした: {}",
+            e.message()
+        ))
+    })
+}
+
 /// リモートから最新を取得し、リモート追跡ブランチ（例: `origin/main`）を更新する。
 ///
 /// 作業ツリー・インデックス・現在ブランチには一切触れない安全操作。取り込む前に
@@ -1499,6 +1570,100 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
     Ok(MergeOutcome::Merged {
         commit: commit_info(&new_commit),
     })
+}
+
+/// 指定したコミット時点のファイル内容を作業ツリーに復元し、ステージする。
+///
+/// `commit_id` は復元元コミットのハッシュ（短縮形可）。`file_path` はリポジトリルートからの
+/// 相対パス。`git restore --source <commit> -- <path>` に相当する。
+///
+/// - 指定コミットのツリーから対象 blob を取り出し、作業ツリーへ書き込む（上書き）。
+/// - その内容をインデックスにもステージする。
+/// - 指定コミットに対象ファイルが存在しなければ日本語エラーを返す。
+/// - undo: ステージした分を戻せるよう `UnstagePath` を記録する（ベストエフォート）。
+///   上書き自体は不可逆であることは explain.rs と confirm ダイアログで伝える。
+pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &str) -> Result<()> {
+    let commit_id = commit_id.trim();
+    let file_path = file_path.trim();
+
+    if commit_id.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "復元元のコミットを指定してください。".to_string(),
+        ));
+    }
+    if file_path.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "復元するファイルのパスを指定してください。".to_string(),
+        ));
+    }
+
+    // 作業ツリー外を指す相対パスは拒否する（安全のため）。
+    let rel = Path::new(file_path);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(CoreError::InvalidInput(format!(
+            "不正なパスです: {file_path}"
+        )));
+    }
+
+    // コミット ID を解決してコミットオブジェクトを得る。
+    let obj = repo.revparse_single(commit_id).map_err(|_| {
+        CoreError::InvalidInput(format!(
+            "指定したコミット「{commit_id}」が見つかりませんでした。コミット ID を確認してください。"
+        ))
+    })?;
+    let commit = obj.peel_to_commit().map_err(|_| {
+        CoreError::InvalidInput(format!("「{commit_id}」はコミットではありません。"))
+    })?;
+
+    // コミットのツリーから対象パスのエントリを取得する。
+    let tree = commit.tree()?;
+    let entry = tree.get_path(rel).map_err(|_| {
+        CoreError::InvalidInput(format!(
+            "コミット「{commit_id}」にファイル「{file_path}」が見つかりませんでした。\
+             そのコミット時点では存在しないファイルです。"
+        ))
+    })?;
+
+    // blob を取り出してバイト列を得る。
+    let blob = repo.find_blob(entry.id()).map_err(|_| {
+        CoreError::InvalidInput(format!(
+            "コミット「{commit_id}」の「{file_path}」の内容を取得できませんでした。"
+        ))
+    })?;
+    let content = blob.content();
+
+    // 作業ツリーへ書き込む（親ディレクトリが無ければ作成する）。
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
+    let dest = workdir.join(rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CoreError::Git(format!("ディレクトリを作成できませんでした: {e}")))?;
+    }
+    std::fs::write(&dest, content)
+        .map_err(|e| CoreError::Git(format!("ファイルを書き込めませんでした: {e}")))?;
+
+    // インデックスにもステージする。
+    let mut index = repo.index()?;
+    index
+        .add_path(rel)
+        .map_err(|e| CoreError::Git(format!("ステージに失敗しました: {}", e.message())))?;
+    index.write()?;
+
+    // undo: ステージを戻せるよう UnstagePath を記録する（ベストエフォート）。
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::RestoreFile,
+            description: format!("「{file_path}」のコミット時点への復元を取り消す（アンステージ）"),
+            action: UndoAction::UnstagePath {
+                path: file_path.to_string(),
+            },
+        },
+    );
+
+    Ok(())
 }
 
 fn first_line(s: &str) -> &str {
@@ -3100,5 +3265,133 @@ mod tests {
         ));
         // どちらの失敗でも .gitignore は作られない。
         assert!(crate::repo::read_gitignore(&repo).unwrap().is_none());
+    }
+
+    // --- リモート操作テスト ---
+
+    #[test]
+    fn remote_add_increases_list() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        let before = crate::repo::list_remotes(&repo).unwrap();
+        assert!(before.is_empty(), "初期状態ではリモートが無いはず");
+
+        add_remote(&repo, "origin", "https://example.com/repo.git").unwrap();
+
+        let after = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "origin");
+        assert_eq!(after[0].fetch_url, "https://example.com/repo.git");
+        assert!(after[0].push_url.is_none());
+    }
+
+    #[test]
+    fn remote_set_url_changes_fetch_url() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        add_remote(&repo, "origin", "https://old.example.com/repo.git").unwrap();
+        set_remote_url(&repo, "origin", "https://new.example.com/repo.git").unwrap();
+
+        let remotes = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].fetch_url, "https://new.example.com/repo.git");
+    }
+
+    #[test]
+    fn remote_remove_decreases_list() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        add_remote(&repo, "origin", "https://example.com/repo.git").unwrap();
+        add_remote(&repo, "upstream", "https://upstream.example.com/repo.git").unwrap();
+
+        let before = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(before.len(), 2);
+
+        remove_remote(&repo, "origin").unwrap();
+
+        let after = crate::repo::list_remotes(&repo).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "upstream");
+    }
+
+    #[test]
+    fn remote_add_rejects_empty_name_and_url() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        assert!(matches!(
+            add_remote(&repo, "  ", "https://example.com").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            add_remote(&repo, "origin", "  ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    // --- restore_file_from_commit のテスト ---
+
+    // 2 回コミットして内容を変えた後、古いコミット ID で復元すると古い内容に戻りステージされる。
+    #[test]
+    fn restore_file_from_commit_restores_old_content_and_stages() {
+        let fx = TestRepo::new();
+        fx.write_file("hello.txt", "初版の内容\n");
+        fx.stage_all();
+        fx.commit("c1: 初版");
+        let old_oid = fx.head_oid().to_string();
+
+        fx.write_file("hello.txt", "改訂版の内容\n");
+        fx.stage_all();
+        fx.commit("c2: 改訂");
+
+        // 現在の作業ツリーは改訂版。
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("hello.txt")).unwrap(),
+            "改訂版の内容\n"
+        );
+
+        // 古いコミット（c1）時点に復元する。
+        let repo = fx.open();
+        restore_file_from_commit(&repo, &old_oid, "hello.txt").unwrap();
+
+        // 作業ツリーが初版に戻る。
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("hello.txt")).unwrap(),
+            "初版の内容\n"
+        );
+
+        // ステージされている（status.staged に含まれる）。
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.iter().any(|f| f.path == "hello.txt"),
+            "hello.txt がステージされているはず: {st:?}"
+        );
+
+        // undo エントリ（UnstagePath）が記録されている。
+        let entry = crate::undo::peek(&repo).unwrap().unwrap();
+        assert!(matches!(
+            entry.action,
+            crate::undo::UndoAction::UnstagePath { ref path } if path == "hello.txt"
+        ));
+    }
+
+    // 指定コミットに存在しないパスを指定すると InvalidInput エラーを返す。
+    #[test]
+    fn restore_file_from_commit_errors_on_missing_path() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "内容");
+        fx.stage_all();
+        fx.commit("c1");
+        let oid = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let err = restore_file_from_commit(&repo, &oid, "nonexistent.txt").unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidInput(_)),
+            "存在しないパスは InvalidInput エラー: {err:?}"
+        );
     }
 }

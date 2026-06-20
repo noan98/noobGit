@@ -27,7 +27,7 @@ pub use explain::{explain, Explanation};
 pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{
     BranchInfo, ChangeKind, CommitInfo, DiffLine, DiffLineKind, FetchOutcome, FileChange, FileDiff,
-    PullOutcome, RepoStatus, StashInfo,
+    LfsCandidate, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo,
 };
 pub use safety::{assess, OperationKind, RiskAssessment, RiskLevel, SafetyContext};
 pub use undo::{can_undo, peek, undo_last, UndoAction, UndoEntry};

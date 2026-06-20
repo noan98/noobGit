@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+
+use crate::model::{LfsCandidate, SensitiveWarning};
 
 /// noobGit が扱うGit操作の種別。説明・リスク判定の共通キーになる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +29,8 @@ pub enum OperationKind {
     DeleteTag,
     Rebase,
     Merge,
+    RemoveRemote,
+    RestoreFile,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -367,7 +373,237 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             permanent_data_loss: false,
             recommended_alternative: None,
         },
+
+        OperationKind::RemoveRemote => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "リモートの設定を削除します。コミットや作業中のファイルには影響しません。".to_string(),
+                "そのリモートに push/pull できなくなります。設定はあとから再度追加できます。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
+
+        OperationKind::RestoreFile => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "ファイルを過去のコミット時点の内容に上書きします。".to_string(),
+                "いまの変更が上書きされます。心配なら先に stash で退避できます。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "不安なときは先に stash で退避してから実行すると安全です。".to_string(),
+            ),
+        },
     }
+}
+
+/// ステージしようとしているファイルが機密性の高いものかを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// `repo_path` はリポジトリルートの絶対パス（`.sql` のサイズ判定に使う）。
+/// 検出したファイルごとに [`SensitiveWarning`] を返す。何も検出されなければ空ベクターを返す。
+///
+/// # 検出パターン
+/// - `.env`、`.env.*`（`.env` で始まる任意のファイル名）
+/// - 拡張子 `.pem`、`.key`、`.p12`、`.pfx`（秘密鍵・証明書）
+/// - ファイル名 `id_rsa`、`id_ed25519`、`id_ecdsa`（SSH 秘密鍵）
+/// - 拡張子 `.db`、`.sqlite`、`.sqlite3`（データベースファイル）
+/// - 拡張子 `.sql` でかつファイルサイズが 500 KB 超（DB ダンプの可能性）
+/// - ファイル名 `credentials.json`、`secrets.json`、`service-account.json`（クラウド認証情報）
+pub fn check_sensitive_files(paths: &[&str], repo_path: &Path) -> Vec<SensitiveWarning> {
+    /// .sql ファイルの閾値（バイト）。これを超えたら DB ダンプとみなして警告する。
+    const SQL_SIZE_THRESHOLD: u64 = 500 * 1024;
+
+    let mut warnings = Vec::new();
+
+    for &path in paths {
+        // パスのファイル名部分（最後のコンポーネント）で判定する。
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let lower = file_name.to_lowercase();
+
+        // ファイル名の拡張子を取り出す（小文字）。
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        // --- 検出ロジック ---
+
+        // .env、.env.* : 環境変数・秘密情報を含むことが多い
+        if lower == ".env" || lower.starts_with(".env.") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は環境変数や API キー・データベースパスワードなどの秘密情報を含むことが多いファイルです。\
+                     Git で管理すると push した瞬間に全員に見えてしまいます。\
+                     .gitignore に追加して管理対象から外すことを強くおすすめします。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+
+        // SSH 秘密鍵ファイル名
+        if lower == "id_rsa" || lower == "id_ed25519" || lower == "id_ecdsa" {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は SSH の秘密鍵ファイルです。\
+                     このファイルが漏洩すると、対になる公開鍵が設定されているサーバーへ不正アクセスされる恐れがあります。\
+                     秘密鍵は絶対に Git で管理してはいけません。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+
+        // 秘密鍵・証明書の拡張子
+        if matches!(ext.as_str(), "pem" | "key" | "p12" | "pfx") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は秘密鍵または証明書ファイルです（拡張子 .{} ）。\
+                     このファイルが漏洩すると、通信の暗号化が破られたりサーバーへ不正アクセスされたりする恐れがあります。\
+                     秘密鍵・証明書は Git で管理せず、安全な鍵管理の仕組みを使ってください。",
+                    file_name, ext
+                ),
+            });
+            continue;
+        }
+
+        // データベースファイル
+        if matches!(ext.as_str(), "db" | "sqlite" | "sqlite3") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」はデータベースファイルです（拡張子 .{} ）。\
+                     ユーザー情報やパスワードハッシュなどの個人情報が含まれている可能性があります。\
+                     データベースファイルは通常 .gitignore で管理対象外にします。",
+                    file_name, ext
+                ),
+            });
+            continue;
+        }
+
+        // .sql ファイル（サイズが大きい場合のみ DB ダンプとみなす）
+        if ext == "sql" {
+            let full_path = repo_path.join(path);
+            let size = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+            if size > SQL_SIZE_THRESHOLD {
+                warnings.push(SensitiveWarning {
+                    path: path.to_string(),
+                    reason: format!(
+                        "「{}」は大きな SQL ファイルです（{} KB）。\
+                         データベースのダンプファイルには個人情報やパスワードハッシュが含まれることがあり、\
+                         Git で管理すると履歴に残り続けます。\
+                         本当にコミットする必要があるか確認してください。",
+                        file_name,
+                        size / 1024
+                    ),
+                });
+                continue;
+            }
+        }
+
+        // クラウド認証情報ファイル
+        if matches!(
+            lower.as_str(),
+            "credentials.json" | "secrets.json" | "service-account.json"
+        ) {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」はクラウドサービスの認証情報ファイルです。\
+                     API キーやサービスアカウントの秘密鍵が含まれており、\
+                     漏洩するとクラウドリソースへの不正アクセスや高額請求の原因になります。\
+                     .gitignore に追加して管理対象から外してください。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+    }
+
+    warnings
+}
+
+/// ステージしようとしているファイルが Git LFS 移行候補（大容量・バイナリ）かを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// `repo_path` はリポジトリルートの絶対パス（ファイルサイズ取得に使う）。
+/// 検出したファイルごとに [`LfsCandidate`] を返す。何も検出されなければ空ベクターを返す。
+///
+/// # 検出パターン
+/// - ファイルサイズが 5MB（5 * 1024 * 1024 バイト）以上
+/// - バイナリ拡張子: `.db .sqlite .sqlite3 .mdb .png .jpg .jpeg .gif
+///   `.mp4 .mov .avi .zip .tar .gz .7z .exe .dll .so`
+///
+/// 両方該当する場合は「5MB 超のバイナリファイルです」のようにまとめた理由を使う。
+pub fn check_lfs_candidates(paths: &[&str], repo_path: &Path) -> Vec<LfsCandidate> {
+    /// サイズ閾値（バイト）。これ以上なら候補。
+    const LFS_SIZE_THRESHOLD: u64 = 5 * 1024 * 1024;
+
+    /// バイナリとみなす拡張子リスト（小文字）。
+    const BINARY_EXTENSIONS: &[&str] = &[
+        "db", "sqlite", "sqlite3", "mdb", "png", "jpg", "jpeg", "gif", "mp4", "mov", "avi", "zip",
+        "tar", "gz", "7z", "exe", "dll", "so",
+    ];
+
+    let mut candidates = Vec::new();
+
+    for &path in paths {
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        let is_binary_ext = BINARY_EXTENSIONS.contains(&ext.as_str());
+
+        let full_path = repo_path.join(path);
+        let size_bytes = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+        let is_large = size_bytes >= LFS_SIZE_THRESHOLD;
+
+        if !is_binary_ext && !is_large {
+            continue;
+        }
+
+        let reason = match (is_large, is_binary_ext) {
+            (true, true) => format!(
+                "5MB を超えるバイナリファイルです（{:.1} MB）。\
+                 大きなバイナリを Git に直接コミットするとリポジトリが肥大化し、\
+                 クローンやプルが非常に遅くなります。Git LFS を使って別管理にすることをおすすめします。",
+                size_bytes as f64 / (1024.0 * 1024.0)
+            ),
+            (true, false) => format!(
+                "5MB を超える大きなファイルです（{:.1} MB）。\
+                 大きなファイルを Git に直接コミットするとリポジトリが肥大化し、\
+                 クローンやプルが遅くなります。Git LFS を使って別管理にすることをおすすめします。",
+                size_bytes as f64 / (1024.0 * 1024.0)
+            ),
+            (false, true) => format!(
+                "バイナリ形式のファイルです（拡張子 .{ext} ）。\
+                 画像・動画・圧縮ファイル・実行ファイルなどのバイナリを Git に直接コミットすると、\
+                 差分が取れずリポジトリが肥大化します。Git LFS を使って別管理にすることをおすすめします。"
+            ),
+            (false, false) => unreachable!(),
+        };
+
+        candidates.push(LfsCandidate {
+            path: path.to_string(),
+            size_bytes,
+            reason,
+        });
+    }
+
+    candidates
 }
 
 #[cfg(test)]
@@ -568,6 +804,8 @@ mod tests {
             OperationKind::DeleteTag,
             OperationKind::Rebase,
             OperationKind::Merge,
+            OperationKind::RemoveRemote,
+            OperationKind::RestoreFile,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }
@@ -591,6 +829,224 @@ mod tests {
         assert_eq!(
             assess(OperationKind::DeleteBranch, &ctx).level,
             RiskLevel::Destructive
+        );
+    }
+
+    // --- check_sensitive_files のテスト ---
+
+    #[test]
+    fn env_file_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&[".env"], dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].path, ".env");
+    }
+
+    #[test]
+    fn env_variants_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // .env.local / .env.production なども検出する。
+        let warnings = check_sensitive_files(
+            &[".env.local", ".env.production", ".env.staging"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn id_rsa_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["id_rsa"], dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].path, "id_rsa");
+    }
+
+    #[test]
+    fn ssh_key_variants_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["id_ed25519", "id_ecdsa"], dir.path());
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn pem_key_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["server.pem", "private.key", "cert.p12", "bundle.pfx"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 4);
+    }
+
+    #[test]
+    fn db_files_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings =
+            check_sensitive_files(&["app.db", "local.sqlite", "data.sqlite3"], dir.path());
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn credential_json_files_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["credentials.json", "secrets.json", "service-account.json"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn normal_files_are_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["src/main.rs", "README.md", "package.json", "index.ts"],
+            dir.path(),
+        );
+        assert!(
+            warnings.is_empty(),
+            "通常のファイルは検出されないはず: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn sql_small_file_is_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小さい .sql ファイルは警告しない（サイズ閾値以下）。
+        let sql_path = dir.path().join("schema.sql");
+        std::fs::write(&sql_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);").unwrap();
+        let warnings = check_sensitive_files(&["schema.sql"], dir.path());
+        assert!(warnings.is_empty(), "小さい .sql は検出されないはず");
+    }
+
+    #[test]
+    fn sql_large_file_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 500 KB を超える .sql ファイルは警告する（DB ダンプの可能性）。
+        let sql_path = dir.path().join("dump.sql");
+        // 501 KB のダミーデータを書く。
+        let big_content = "-- dump\n".repeat(501 * 1024 / 8);
+        std::fs::write(&sql_path, big_content).unwrap();
+        let warnings = check_sensitive_files(&["dump.sql"], dir.path());
+        assert_eq!(warnings.len(), 1, "大きい .sql は検出されるはず");
+        assert_eq!(warnings[0].path, "dump.sql");
+    }
+
+    #[test]
+    fn sql_file_without_size_info_is_not_detected() {
+        // ファイルが存在しない場合はサイズ 0 とみなし、閾値以下なので検出しない。
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["nonexistent.sql"], dir.path());
+        assert!(warnings.is_empty(), "存在しない .sql は検出されないはず");
+    }
+
+    // --- check_lfs_candidates のテスト ---
+
+    #[test]
+    fn lfs_binary_extension_small_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小サイズでもバイナリ拡張子なら候補になる。
+        let png_path = dir.path().join("image.png");
+        std::fs::write(&png_path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let candidates = check_lfs_candidates(&["image.png"], dir.path());
+        assert_eq!(
+            candidates.len(),
+            1,
+            "バイナリ拡張子は小サイズでも検出されるはず"
+        );
+        assert_eq!(candidates[0].path, "image.png");
+        assert!(
+            candidates[0].reason.contains("バイナリ"),
+            "理由にバイナリと書かれているはず"
+        );
+    }
+
+    #[test]
+    fn lfs_various_binary_extensions_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 複数のバイナリ拡張子を検出する。
+        let exts = [
+            "a.jpg", "b.gif", "c.mp4", "d.zip", "e.exe", "f.dll", "g.so", "h.sqlite",
+        ];
+        for name in &exts {
+            std::fs::write(dir.path().join(name), b"dummy").unwrap();
+        }
+        let path_refs: Vec<&str> = exts.iter().map(|s| s.as_ref()).collect();
+        let candidates = check_lfs_candidates(&path_refs, dir.path());
+        assert_eq!(
+            candidates.len(),
+            exts.len(),
+            "すべてのバイナリ拡張子が検出されるはず"
+        );
+    }
+
+    #[test]
+    fn lfs_large_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 5MB + 1 バイトのファイルは大容量として候補になる。
+        let big_path = dir.path().join("data.bin");
+        let content = vec![0u8; 5 * 1024 * 1024 + 1];
+        std::fs::write(&big_path, &content).unwrap();
+        let candidates = check_lfs_candidates(&["data.bin"], dir.path());
+        assert_eq!(candidates.len(), 1, "5MB 超のファイルは検出されるはず");
+        assert_eq!(candidates[0].path, "data.bin");
+        assert!(
+            candidates[0].size_bytes > 5 * 1024 * 1024,
+            "size_bytes が正しく設定されているはず"
+        );
+    }
+
+    #[test]
+    fn lfs_exactly_5mb_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // ちょうど 5MB（= 閾値）も候補になる。
+        let path = dir.path().join("threshold.bin");
+        let content = vec![0u8; 5 * 1024 * 1024];
+        std::fs::write(&path, &content).unwrap();
+        let candidates = check_lfs_candidates(&["threshold.bin"], dir.path());
+        assert_eq!(candidates.len(), 1, "ちょうど 5MB は検出されるはず");
+    }
+
+    #[test]
+    fn lfs_small_text_file_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小さなテキストファイルは検出されない。
+        let txt_path = dir.path().join("main.rs");
+        std::fs::write(&txt_path, "fn main() {}").unwrap();
+        let candidates = check_lfs_candidates(&["main.rs"], dir.path());
+        assert!(
+            candidates.is_empty(),
+            "小さなテキストファイルは検出されないはず"
+        );
+    }
+
+    #[test]
+    fn lfs_normal_files_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 通常の小さなファイルはまとめて検出されない。
+        for name in &["README.md", "package.json", "index.ts", "Cargo.toml"] {
+            std::fs::write(dir.path().join(name), "content").unwrap();
+        }
+        let candidates = check_lfs_candidates(
+            &["README.md", "package.json", "index.ts", "Cargo.toml"],
+            dir.path(),
+        );
+        assert!(
+            candidates.is_empty(),
+            "通常のファイルは検出されないはず: {:?}",
+            candidates
+        );
+    }
+
+    #[test]
+    fn lfs_nonexistent_file_not_detected() {
+        // ファイルが存在しない場合はサイズ 0 とみなし、バイナリ拡張子でもなければ検出しない。
+        let dir = tempfile::TempDir::new().unwrap();
+        let candidates = check_lfs_candidates(&["nonexistent.txt"], dir.path());
+        assert!(
+            candidates.is_empty(),
+            "存在しないテキストファイルは検出されないはず"
         );
     }
 }
