@@ -212,6 +212,13 @@ export interface Identity {
   email: string | null;
 }
 
+// #69 機密ファイル検出: ステージしようとしたファイルが機密性の高いものだった場合の警告1件。
+// path はリポジトリルートからの相対パス、reason はなぜ危険かの日本語説明。
+export interface SensitiveWarning {
+  path: string;
+  reason: string;
+}
+
 // --- ラベル -----------------------------------------------------------------
 
 export const changeKindLabel: Record<ChangeKind, string> = {
@@ -364,4 +371,9 @@ export const api = {
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。
   classifyNetworkError: (message: string) =>
     invoke<NetworkErrorKind>("classify_network_error_cmd", { message }),
+
+  // #69 機密ファイル検出: 指定パスが機密性の高いファイルかどうかを検出する。
+  // 機密ファイルが含まれる場合は SensitiveWarning の配列を返す（空なら問題なし）。
+  checkSensitive: (repoPath: string, paths: string[]) =>
+    invoke<SensitiveWarning[]>("check_sensitive", { repoPath, paths }),
 };

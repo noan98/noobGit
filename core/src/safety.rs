@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+
+use crate::model::SensitiveWarning;
 
 /// noobGit が扱うGit操作の種別。説明・リスク判定の共通キーになる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +374,140 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
     }
 }
 
+/// ステージしようとしているファイルが機密性の高いものかを検出する。
+///
+/// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
+/// `repo_path` はリポジトリルートの絶対パス（`.sql` のサイズ判定に使う）。
+/// 検出したファイルごとに [`SensitiveWarning`] を返す。何も検出されなければ空ベクターを返す。
+///
+/// # 検出パターン
+/// - `.env`、`.env.*`（`.env` で始まる任意のファイル名）
+/// - 拡張子 `.pem`、`.key`、`.p12`、`.pfx`（秘密鍵・証明書）
+/// - ファイル名 `id_rsa`、`id_ed25519`、`id_ecdsa`（SSH 秘密鍵）
+/// - 拡張子 `.db`、`.sqlite`、`.sqlite3`（データベースファイル）
+/// - 拡張子 `.sql` でかつファイルサイズが 500 KB 超（DB ダンプの可能性）
+/// - ファイル名 `credentials.json`、`secrets.json`、`service-account.json`（クラウド認証情報）
+pub fn check_sensitive_files(paths: &[&str], repo_path: &Path) -> Vec<SensitiveWarning> {
+    /// .sql ファイルの閾値（バイト）。これを超えたら DB ダンプとみなして警告する。
+    const SQL_SIZE_THRESHOLD: u64 = 500 * 1024;
+
+    let mut warnings = Vec::new();
+
+    for &path in paths {
+        // パスのファイル名部分（最後のコンポーネント）で判定する。
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let lower = file_name.to_lowercase();
+
+        // ファイル名の拡張子を取り出す（小文字）。
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        // --- 検出ロジック ---
+
+        // .env、.env.* : 環境変数・秘密情報を含むことが多い
+        if lower == ".env" || lower.starts_with(".env.") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は環境変数や API キー・データベースパスワードなどの秘密情報を含むことが多いファイルです。\
+                     Git で管理すると push した瞬間に全員に見えてしまいます。\
+                     .gitignore に追加して管理対象から外すことを強くおすすめします。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+
+        // SSH 秘密鍵ファイル名
+        if lower == "id_rsa" || lower == "id_ed25519" || lower == "id_ecdsa" {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は SSH の秘密鍵ファイルです。\
+                     このファイルが漏洩すると、対になる公開鍵が設定されているサーバーへ不正アクセスされる恐れがあります。\
+                     秘密鍵は絶対に Git で管理してはいけません。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+
+        // 秘密鍵・証明書の拡張子
+        if matches!(ext.as_str(), "pem" | "key" | "p12" | "pfx") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」は秘密鍵または証明書ファイルです（拡張子 .{} ）。\
+                     このファイルが漏洩すると、通信の暗号化が破られたりサーバーへ不正アクセスされたりする恐れがあります。\
+                     秘密鍵・証明書は Git で管理せず、安全な鍵管理の仕組みを使ってください。",
+                    file_name, ext
+                ),
+            });
+            continue;
+        }
+
+        // データベースファイル
+        if matches!(ext.as_str(), "db" | "sqlite" | "sqlite3") {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」はデータベースファイルです（拡張子 .{} ）。\
+                     ユーザー情報やパスワードハッシュなどの個人情報が含まれている可能性があります。\
+                     データベースファイルは通常 .gitignore で管理対象外にします。",
+                    file_name, ext
+                ),
+            });
+            continue;
+        }
+
+        // .sql ファイル（サイズが大きい場合のみ DB ダンプとみなす）
+        if ext == "sql" {
+            let full_path = repo_path.join(path);
+            let size = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+            if size > SQL_SIZE_THRESHOLD {
+                warnings.push(SensitiveWarning {
+                    path: path.to_string(),
+                    reason: format!(
+                        "「{}」は大きな SQL ファイルです（{} KB）。\
+                         データベースのダンプファイルには個人情報やパスワードハッシュが含まれることがあり、\
+                         Git で管理すると履歴に残り続けます。\
+                         本当にコミットする必要があるか確認してください。",
+                        file_name,
+                        size / 1024
+                    ),
+                });
+                continue;
+            }
+        }
+
+        // クラウド認証情報ファイル
+        if matches!(
+            lower.as_str(),
+            "credentials.json" | "secrets.json" | "service-account.json"
+        ) {
+            warnings.push(SensitiveWarning {
+                path: path.to_string(),
+                reason: format!(
+                    "「{}」はクラウドサービスの認証情報ファイルです。\
+                     API キーやサービスアカウントの秘密鍵が含まれており、\
+                     漏洩するとクラウドリソースへの不正アクセスや高額請求の原因になります。\
+                     .gitignore に追加して管理対象から外してください。",
+                    file_name
+                ),
+            });
+            continue;
+        }
+    }
+
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,5 +730,114 @@ mod tests {
             assess(OperationKind::DeleteBranch, &ctx).level,
             RiskLevel::Destructive
         );
+    }
+
+    // --- check_sensitive_files のテスト ---
+
+    #[test]
+    fn env_file_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&[".env"], dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].path, ".env");
+    }
+
+    #[test]
+    fn env_variants_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // .env.local / .env.production なども検出する。
+        let warnings = check_sensitive_files(
+            &[".env.local", ".env.production", ".env.staging"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn id_rsa_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["id_rsa"], dir.path());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].path, "id_rsa");
+    }
+
+    #[test]
+    fn ssh_key_variants_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["id_ed25519", "id_ecdsa"], dir.path());
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn pem_key_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["server.pem", "private.key", "cert.p12", "bundle.pfx"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 4);
+    }
+
+    #[test]
+    fn db_files_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings =
+            check_sensitive_files(&["app.db", "local.sqlite", "data.sqlite3"], dir.path());
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn credential_json_files_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["credentials.json", "secrets.json", "service-account.json"],
+            dir.path(),
+        );
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn normal_files_are_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(
+            &["src/main.rs", "README.md", "package.json", "index.ts"],
+            dir.path(),
+        );
+        assert!(
+            warnings.is_empty(),
+            "通常のファイルは検出されないはず: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn sql_small_file_is_not_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 小さい .sql ファイルは警告しない（サイズ閾値以下）。
+        let sql_path = dir.path().join("schema.sql");
+        std::fs::write(&sql_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);").unwrap();
+        let warnings = check_sensitive_files(&["schema.sql"], dir.path());
+        assert!(warnings.is_empty(), "小さい .sql は検出されないはず");
+    }
+
+    #[test]
+    fn sql_large_file_is_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 500 KB を超える .sql ファイルは警告する（DB ダンプの可能性）。
+        let sql_path = dir.path().join("dump.sql");
+        // 501 KB のダミーデータを書く。
+        let big_content = "-- dump\n".repeat(501 * 1024 / 8);
+        std::fs::write(&sql_path, big_content).unwrap();
+        let warnings = check_sensitive_files(&["dump.sql"], dir.path());
+        assert_eq!(warnings.len(), 1, "大きい .sql は検出されるはず");
+        assert_eq!(warnings[0].path, "dump.sql");
+    }
+
+    #[test]
+    fn sql_file_without_size_info_is_not_detected() {
+        // ファイルが存在しない場合はサイズ 0 とみなし、閾値以下なので検出しない。
+        let dir = tempfile::TempDir::new().unwrap();
+        let warnings = check_sensitive_files(&["nonexistent.sql"], dir.path());
+        assert!(warnings.is_empty(), "存在しない .sql は検出されないはず");
     }
 }
