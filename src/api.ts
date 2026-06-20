@@ -134,7 +134,8 @@ export type OperationKind =
   | "delete_tag"
   | "rebase"
   | "merge"
-  | "remove_remote";
+  | "remove_remote"
+  | "restore_file";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -408,4 +409,9 @@ export const api = {
   // 候補ファイルが含まれる場合は LfsCandidate の配列を返す（空なら問題なし）。
   checkLfsCandidates: (repoPath: string, paths: string[]) =>
     invoke<LfsCandidate[]>("check_lfs_candidates", { repoPath, paths }),
+
+  // #130 ファイル復元: 指定コミット時点のファイル内容を作業ツリーに復元し、ステージする。
+  // git restore --source <commitId> -- <filePath> に相当する。
+  restoreFileFromCommit: (repoPath: string, commitId: string, filePath: string) =>
+    invoke<void>("restore_file_from_commit", { repoPath, commitId, filePath }),
 };

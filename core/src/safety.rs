@@ -30,6 +30,7 @@ pub enum OperationKind {
     Rebase,
     Merge,
     RemoveRemote,
+    RestoreFile,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -382,6 +383,19 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reversible: true,
             permanent_data_loss: false,
             recommended_alternative: None,
+        },
+
+        OperationKind::RestoreFile => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "ファイルを過去のコミット時点の内容に上書きします。".to_string(),
+                "いまの変更が上書きされます。心配なら先に stash で退避できます。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "不安なときは先に stash で退避してから実行すると安全です。".to_string(),
+            ),
         },
     }
 }
@@ -791,6 +805,7 @@ mod tests {
             OperationKind::Rebase,
             OperationKind::Merge,
             OperationKind::RemoveRemote,
+            OperationKind::RestoreFile,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }
