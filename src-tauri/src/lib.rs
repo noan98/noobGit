@@ -10,8 +10,8 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, RemoteInfo, RepoStatus, SensitiveWarning,
-    StashInfo, TagInfo,
+    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -438,6 +438,16 @@ fn restore_file_from_commit(
     ops::restore_file_from_commit(&r, &commit_id, &file_path).map_err(|e| e.to_string())
 }
 
+/// HEAD の reflog（移動履歴）を新しい順に最大 `max` 件返す。
+///
+/// 各エントリには移動前後の OID・短縮形・生メッセージ・日本語化した操作説明・
+/// タイムスタンプを含む。reflog が存在しないリポジトリでは空の配列を返す。
+#[tauri::command]
+fn get_reflog(repo_path: String, max: usize) -> Result<Vec<ReflogEntry>, String> {
+    let r = open(&repo_path)?;
+    repo::read_reflog(&r, max).map_err(|e| e.to_string())
+}
+
 /// ステージしようとしているファイルが機密性の高いものかを検出する。
 ///
 /// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
@@ -537,6 +547,7 @@ pub fn run() {
             check_sensitive,
             check_lfs_candidates,
             restore_file_from_commit,
+            get_reflog,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");

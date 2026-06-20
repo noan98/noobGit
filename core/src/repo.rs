@@ -3,7 +3,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, RemoteInfo, RepoStatus, TagInfo,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, ReflogEntry, RemoteInfo, RepoStatus,
+    TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -1012,6 +1013,81 @@ pub fn read_gitignore(repo: &Repository) -> Result<Option<String>> {
     }
 }
 
+/// 生の reflog メッセージを日本語の短い説明に変換する。
+///
+/// Git は reflog エントリに `"commit: ..."` や `"reset: ..."` のような
+/// プレフィックスを付けて記録する。初学者向けに平易な日本語に変換する。
+fn reflog_short_message(raw: &str) -> String {
+    // プレフィックス（先頭の単語または "commit (initial):" などの括弧付き形式）で判定する。
+    if raw.starts_with("commit (amend):") {
+        "コミットの修正（amend）".to_string()
+    } else if raw.starts_with("commit (initial):") || raw.starts_with("commit: initial") {
+        "最初のコミット".to_string()
+    } else if raw.starts_with("commit:") {
+        "コミット".to_string()
+    } else if raw.starts_with("reset:") {
+        "リセット".to_string()
+    } else if raw.starts_with("checkout:") {
+        "チェックアウト／切り替え".to_string()
+    } else if raw.starts_with("merge") {
+        "マージ".to_string()
+    } else if raw.starts_with("rebase") {
+        "リベース".to_string()
+    } else if raw.starts_with("cherry-pick") {
+        "チェリーピック".to_string()
+    } else if raw.starts_with("pull") {
+        "プル".to_string()
+    } else if raw.starts_with("clone:") {
+        "クローン".to_string()
+    } else {
+        // 該当しない場合は生メッセージの先頭 40 文字をそのまま使う。
+        raw.chars().take(40).collect()
+    }
+}
+
+/// HEAD の reflog（移動履歴）を新しい順に最大 `max` 件返す。
+///
+/// 各エントリには移動前後の OID・短縮形・生メッセージ・日本語化した操作説明・
+/// タイムスタンプを含む。reflog が存在しない（コミット0件のリポジトリ等）場合は
+/// 空のベクタを返す。
+pub fn read_reflog(repo: &Repository, max: usize) -> Result<Vec<ReflogEntry>> {
+    // HEAD の reflog を取得する。リポジトリが空でまだ reflog が無い場合はエラーになることがある。
+    let reflog = match repo.reflog("HEAD") {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    // reflog は新しい順（インデックス 0 が最新）で格納されている。
+    let count = reflog.len();
+    let take = count.min(max);
+    let mut out = Vec::with_capacity(take);
+
+    for i in 0..take {
+        let entry = match reflog.get(i) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        let new_oid = entry.id_new().to_string();
+        let old_oid = entry.id_old().to_string();
+        let short_id: String = new_oid.chars().take(7).collect();
+        let message = entry.message().unwrap_or("").to_string();
+        let short_message = reflog_short_message(&message);
+        let timestamp = entry.committer().when().seconds();
+
+        out.push(ReflogEntry {
+            old_oid,
+            new_oid,
+            short_id,
+            message,
+            short_message,
+            timestamp,
+        });
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1989,5 +2065,87 @@ mod tests {
             read_gitignore(&repo).unwrap().as_deref(),
             Some("target/\n*.log\n")
         );
+    }
+
+    // --- read_reflog のテスト ---
+
+    #[test]
+    fn reflog_returns_entries_newest_first() {
+        let fx = TestRepo::new();
+        // 3 回コミットして reflog に3件以上残す。
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("c3");
+
+        let repo = fx.open();
+        let entries = read_reflog(&repo, 100).unwrap();
+
+        // reflog には少なくともコミット件数ぶんのエントリが記録される。
+        assert!(
+            entries.len() >= 3,
+            "エントリが3件以上あるはず: {}",
+            entries.len()
+        );
+
+        // 最新のエントリのメッセージが "c3" に関するコミットを示す。
+        let first = &entries[0];
+        assert!(
+            first.message.contains("c3"),
+            "最新エントリが c3 のコミット: {}",
+            first.message
+        );
+
+        // short_id は new_oid の先頭7桁に一致する。
+        assert_eq!(first.short_id, &first.new_oid[..7]);
+
+        // timestamp は 0 より大きい値（合法なエポック秒）。
+        assert!(first.timestamp > 0);
+    }
+
+    #[test]
+    fn reflog_respects_max_limit() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let repo = fx.open();
+        // max=2 で 2 件に制限される。
+        let entries = read_reflog(&repo, 2).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn reflog_short_message_is_japanese() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        let entries = read_reflog(&repo, 10).unwrap();
+
+        // 最初のコミットエントリ（"commit: ..." 系）は日本語に変換されている。
+        let has_japanese = entries
+            .iter()
+            .any(|e| e.short_message == "コミット" || e.short_message == "最初のコミット");
+        assert!(has_japanese, "日本語の short_message が含まれるはず");
+    }
+
+    #[test]
+    fn reflog_empty_repo_returns_empty() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        // コミットが無いリポジトリは reflog も空。
+        let entries = read_reflog(&repo, 10).unwrap();
+        assert!(entries.is_empty());
     }
 }
