@@ -77,6 +77,10 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # Vitest によるユニットテストを実行する（ConfirmDialog / api ラッパーなど）。
+      - name: フロントエンドユニットテスト
+        run: npm run test
+
       # build は `tsc && vite build` なので型チェックを内包する。
       - name: Type-check and build
         run: npm run build
