@@ -38,6 +38,20 @@
         }
       })();
     </script>
+    <!-- 画面表示前に表示言語を確定し、<html lang> を保存値へ合わせる。
+         保存キー（noobgit-lang）は src/i18n のキーと一致させること。 -->
+    <script>
+      (function () {
+        try {
+          var l = localStorage.getItem("noobgit-lang");
+          if (l === "ja" || l === "en") {
+            document.documentElement.setAttribute("lang", l);
+          }
+        } catch (e) {
+          /* localStorage 不可などは既定（ja）のまま */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -52,6 +52,8 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
 import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
 import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 ショートカット
+import { SettingsDialog } from "./components/SettingsDialog"; // 設定（表示言語）
+import { useLanguage } from "./i18n";
 import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 管理
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
@@ -171,6 +173,8 @@ interface Guard {
 }
 
 export default function App() {
+  // 表示言語の翻訳関数。UI 文言は段階的に t(key) 経由へ移行していく。
+  const { t } = useLanguage();
   const [repoPath, setRepoPath] = useState("");
   const [opened, setOpened] = useState(false);
   // リポジトリの初期読み込み中フラグ。true の間は各パネルをスケルトンで表示する。
@@ -285,6 +289,9 @@ export default function App() {
 
   // #63 ショートカット: ヘルプダイアログの表示状態。
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // 設定ダイアログ（表示言語の切り替えなど）の表示状態。
+  const [showSettings, setShowSettings] = useState(false);
 
   // #70 .gitignore 管理: 閲覧モーダルの表示と、その時点の .gitignore 内容（null = 未作成）。
   const [gitignore, setGitignore] = useState<{ content: string | null } | null>(
@@ -1250,6 +1257,15 @@ export default function App() {
             👤 名前/メール
           </button>
           <ThemeToggle />
+          {/* 設定（表示言語など）を開くボタン */}
+          <button
+            className="btn btn-small"
+            onClick={() => setShowSettings(true)}
+            title={t("settings.open")}
+            aria-label={t("settings.open")}
+          >
+            ⚙
+          </button>
           {/* #63 ショートカット: ヘルプを開くボタン */}
           <button
             className="btn btn-small"
@@ -1749,6 +1765,11 @@ export default function App() {
       {/* #63 ショートカット: ヘルプダイアログ */}
       {showShortcuts && (
         <ShortcutHelpDialog onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {/* 設定（表示言語など）ダイアログ */}
+      {showSettings && (
+        <SettingsDialog onClose={() => setShowSettings(false)} />
       )}
 
       {/* #70 .gitignore 管理: 閲覧モーダル */}
