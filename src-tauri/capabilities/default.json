@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "noobGit メインウィンドウの既定権限。独自コマンドはここで明示せずとも呼び出せる。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

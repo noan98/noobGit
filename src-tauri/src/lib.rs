@@ -491,6 +491,8 @@ fn check_lfs_candidates(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // フォルダ選択ダイアログ（参照ボタン）のためにダイアログプラグインを登録する。
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_branches,
