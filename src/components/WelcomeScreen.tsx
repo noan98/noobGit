@@ -11,13 +11,16 @@
  * 履歴は localStorage に保存する。最近開いた順に最大 5 件、各エントリは開いた
  * 時刻（openedAt）を持つ。これによりホーム画面で「○分前」などの相対時刻を出せる。
  *
- * Tauri のネイティブ・フォルダ選択ダイアログは @tauri-apps/plugin-dialog の導入が
- * 必要になるため見送り、パス入力と最近のリポジトリ一覧から開く導線で代替している。
+ * パス入力欄の隣の「参照」ボタンは、Tauri のネイティブ・フォルダ選択ダイアログ
+ * （@tauri-apps/plugin-dialog の open）を開き、選んだフォルダをパス欄へ反映する。
+ * 手入力が苦手なユーザーでも GUI でリポジトリのフォルダを選べるようにするためのもの。
  */
 
 import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { open } from "@tauri-apps/plugin-dialog";
 import { transitions, spring } from "../theme/motion";
+import { showToast } from "./Toaster";
 
 // localStorage のキー。最近使ったリポジトリを新しい順に最大 5 件保存する。
 const STORAGE_KEY = "noobgit_recent_repos";
@@ -177,6 +180,29 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
     setRecentRepos(forgetRepo(path));
   }
 
+  // 「参照」ボタン: ネイティブのフォルダ選択ダイアログを開き、選んだフォルダを
+  // パス入力欄へ反映する。キャンセル時（null）は何もしない。ダイアログ自体が
+  // 開けない場合（プラグイン未登録など）は手入力で続けられるよう、案内だけ出す。
+  async function browseForFolder() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Gitリポジトリのフォルダを選択",
+      });
+      // multiple: false なので戻り値は string | null（配列にはならない）。
+      if (typeof selected === "string") {
+        setRepoPath(selected);
+        inputRef.current?.focus();
+      }
+    } catch {
+      showToast(
+        "フォルダ選択ダイアログを開けませんでした。パスを直接入力してください。",
+        "error",
+      );
+    }
+  }
+
   // ホーム画面では前回のリポジトリを大きく出し、残りを通常カードで並べる。
   const [primary, ...rest] = recentRepos;
 
@@ -195,6 +221,13 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
             e.key === "Enter" && onOpen()
           }
         />
+        <button
+          className="btn"
+          onClick={() => void browseForFolder()}
+          title="フォルダ選択ダイアログでリポジトリを参照します"
+        >
+          参照…
+        </button>
         <button className="btn btn-primary-accent" onClick={onOpen}>
           開く
         </button>
