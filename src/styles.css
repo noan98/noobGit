@@ -1430,6 +1430,32 @@ textarea {
   gap: 10px;
   margin-top: 16px;
 }
+
+/* 設定ダイアログ: 各設定項目のレイアウト。 */
+.settings-field {
+  margin: 8px 0 4px;
+}
+.settings-field-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.settings-field-help {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* 言語セレクタ（セグメンテッドコントロール）。選択中のボタンを強調する。 */
+.settings-segmented {
+  display: inline-flex;
+  gap: 8px;
+}
+.settings-segment.is-selected {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
 .btn-confirm {
   color: var(--on-emphasis);
   border: none;

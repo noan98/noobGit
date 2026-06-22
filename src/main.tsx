@@ -5,6 +5,7 @@ import { MotionConfig } from "framer-motion";
 import App from "./App";
 import { system } from "./theme";
 import { AppToaster } from "./components/Toaster";
+import { LanguageProvider } from "./i18n";
 import "./styles.css";
 
 // ChakraProvider で全体を包み、デザイントークン（src/theme.ts）を供給する。
@@ -15,10 +16,12 @@ import "./styles.css";
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ChakraProvider value={system}>
-      <MotionConfig reducedMotion="user">
-        <App />
-        <AppToaster />
-      </MotionConfig>
+      <LanguageProvider>
+        <MotionConfig reducedMotion="user">
+          <App />
+          <AppToaster />
+        </MotionConfig>
+      </LanguageProvider>
     </ChakraProvider>
   </React.StrictMode>,
 );
