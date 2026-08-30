@@ -104,6 +104,46 @@ impl TestRepo {
             .unwrap()
     }
 
+    /// 非 UTF-8 のコミットメッセージを持つコミットを作る。
+    ///
+    /// `git2` の高レベル API はメッセージに `&str` しか受け取らないため、
+    /// コミットオブジェクトを生バイト列で組み立てて ODB に直接書き込む。
+    /// git2 0.21 で `summary()` / `message()` が `Result` を返すようになり、
+    /// デコードできないメッセージがエラーとして表に出るようになったので、
+    /// そうしたコミットがあっても log / blame が落ちないことの検証に使う。
+    pub fn commit_with_raw_message(&self, raw_message: &[u8]) -> git2::Oid {
+        let repo = self.open();
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let parent = repo.head().ok().and_then(|h| h.target());
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(format!("tree {tree_id}\n").as_bytes());
+        if let Some(p) = parent {
+            buf.extend_from_slice(format!("parent {p}\n").as_bytes());
+        }
+        // 現在時刻を使う。固定の過去日時にすると Revwalk の時刻ソートで
+        // 既存コミットより古い扱いになり、並び順が直感と食い違うため。
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        buf.extend_from_slice(
+            format!("author Test User <test@example.com> {now} +0000\n").as_bytes(),
+        );
+        buf.extend_from_slice(
+            format!("committer Test User <test@example.com> {now} +0000\n").as_bytes(),
+        );
+        buf.extend_from_slice(b"\n");
+        buf.extend_from_slice(raw_message);
+
+        let odb = repo.odb().unwrap();
+        let oid = odb.write(git2::ObjectType::Commit, &buf).unwrap();
+        repo.reference("refs/heads/main", oid, true, "test: raw message commit")
+            .unwrap();
+        oid
+    }
+
     /// HEAD が指すコミットの Oid。
     pub fn head_oid(&self) -> git2::Oid {
         self.open().head().unwrap().target().unwrap()

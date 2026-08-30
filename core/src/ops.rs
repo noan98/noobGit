@@ -244,7 +244,7 @@ fn commit_info(commit: &Commit) -> CommitInfo {
     CommitInfo {
         id: id.to_string(),
         short_id: id.to_string().chars().take(7).collect(),
-        summary: commit.summary().unwrap_or("").to_string(),
+        summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
         author_name: author.name().unwrap_or("").to_string(),
         author_email: author.email().unwrap_or("").to_string(),
         time: commit.time().seconds(),
@@ -408,7 +408,7 @@ pub fn squash_commits(repo: &Repository, commit_oids: &[&str], message: &str) ->
     // detached HEAD（ブランチを指していない）の場合は HEAD 自体を直接向ける。
     match repo.head().ok().and_then(|h| {
         if h.is_branch() {
-            h.name().map(|s| s.to_string())
+            h.name().ok().map(|s| s.to_string())
         } else {
             None
         }
@@ -942,7 +942,10 @@ pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     let (target_oid, message) = match repo.find_tag(ref_oid) {
         Ok(tag) => (
             tag.target_id(),
-            tag.message().map(|m| m.trim_end().to_string()),
+            tag.message()
+                .ok()
+                .flatten()
+                .map(|m| m.trim_end().to_string()),
         ),
         Err(_) => (ref_oid, None),
     };
@@ -1073,7 +1076,7 @@ pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
         let refspecs: Vec<String> = remote
             .fetch_refspecs()?
             .iter()
-            .flatten()
+            .filter_map(|r| r.ok().flatten())
             .map(|s| s.to_string())
             .collect();
         // refspec が空のリモートでは libgit2 が既定の refspec を補う。
@@ -1171,7 +1174,7 @@ fn fast_forward_unborn(repo: &Repository, target: &Commit) -> Result<PullOutcome
     // HEAD が指しているブランチ名（例: refs/heads/main）を取り出す。
     let head_ref_name = repo
         .find_reference("HEAD")?
-        .symbolic_target()
+        .symbolic_target()?
         .ok_or_else(|| CoreError::Git("現在のブランチを特定できませんでした。".to_string()))?
         .to_string();
 
