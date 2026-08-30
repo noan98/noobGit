@@ -36,7 +36,10 @@ import {
   StatusPanelSkeleton,
   HistoryPanelSkeleton,
   BranchPanelSkeleton,
+  StashPanelSkeleton,
+  TagPanelSkeleton,
 } from "./components/SkeletonPanels";
+import { useDelayedFlag } from "./hooks/useDelayedFlag"; // #171 スケルトンのちらつき防止
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConflictWizard } from "./components/ConflictWizard";
 import { RebaseWizard } from "./components/RebaseWizard";
@@ -55,7 +58,7 @@ import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 シ
 import { SettingsDialog } from "./components/SettingsDialog"; // 設定（表示言語）
 import { useLanguage } from "./i18n";
 import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 管理
-import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
+import { useGlobalShortcuts, isPaletteShortcut } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { Sidebar, type MainView } from "./components/Sidebar"; // SourceTree 風レイアウトのサイドバー
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
@@ -63,6 +66,12 @@ import { CommandPalette, type PaletteCommand } from "./components/CommandPalette
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
 import { SensitiveWarningDialog } from "./components/SensitiveWarningDialog"; // #69 機密ファイル検出
 import { LfsGuideDialog } from "./components/LfsGuideDialog"; // #81 LFS ガイド
+import { transitions } from "./theme/motion";
+import {
+  BODY_WRAP_LIMIT,
+  getSubjectLength,
+  SUBJECT_LIMIT,
+} from "./lib/commitMessage"; // #172 50/72 文字ガイドライン
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -83,6 +92,27 @@ function insertCommitPrefix(current: string, prefix: string): string {
   const cleaned = lines[0].replace(/^[a-z]+(!)?:\s*/, "");
   lines[0] = `${prefix} ${cleaned}`;
   return lines.join("\n");
+}
+
+// #172 件名の 50 文字ガイドラインを説明するツールチップを「初回のみ」表示するための
+// localStorage キー。読み書きとも失敗しても致命的ではないので try/catch で保護する。
+const SUBJECT_HINT_SEEN_KEY = "noobgit_commit_subject_hint_seen";
+
+function hasSeenSubjectHint(): boolean {
+  try {
+    return localStorage.getItem(SUBJECT_HINT_SEEN_KEY) === "1";
+  } catch {
+    // 読み取れない場合はヒントを表示する側に倒す（実害はない）。
+    return false;
+  }
+}
+
+function markSubjectHintSeen(): void {
+  try {
+    localStorage.setItem(SUBJECT_HINT_SEEN_KEY, "1");
+  } catch {
+    // 保存できなくても表示は続行する（次回また出るだけ）。
+  }
 }
 
 // 取得・取り込みの既定リモート名。多くのリポジトリはクローン元を origin と呼ぶ。
@@ -179,6 +209,9 @@ export default function App() {
   const [opened, setOpened] = useState(false);
   // リポジトリの初期読み込み中フラグ。true の間は各パネルをスケルトンで表示する。
   const [repoLoading, setRepoLoading] = useState(false);
+  // #171 delayed start: ロードが 100ms を超えて続くときだけスケルトンを表示し、
+  // 高速なロードではちらつかせない。
+  const showSkeleton = useDelayedFlag(repoLoading, 100);
 
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -223,6 +256,48 @@ export default function App() {
   const [commitMsg, setCommitMsg] = useState("");
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
   const commitInput = useRef<HTMLTextAreaElement>(null);
+  // #172 件名 50 文字ガイドラインの「初回のみ」ツールチップの表示状態とタイマー。
+  const [showSubjectHint, setShowSubjectHint] = useState(false);
+  const subjectHintTimer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (subjectHintTimer.current != null) {
+        window.clearTimeout(subjectHintTimer.current);
+      }
+    };
+  }, []);
+  // コミット入力欄に初めてフォーカスしたときだけ、50 文字ガイドラインの
+  // ツールチップを 3 秒間表示する。
+  function handleCommitFocus() {
+    if (hasSeenSubjectHint()) return;
+    markSubjectHintSeen();
+    setShowSubjectHint(true);
+    if (subjectHintTimer.current != null) {
+      window.clearTimeout(subjectHintTimer.current);
+    }
+    subjectHintTimer.current = window.setTimeout(() => {
+      setShowSubjectHint(false);
+    }, 3000);
+  }
+  // 件名行（1行目）で Enter を押したとき、Git の慣習（件名 → 空行 → 本文）に
+  // 沿って空行を自動挿入し、本文エリアへ自然に移行できるようにする。
+  // 既に空行がある場合や本文入力中はブラウザ標準の Enter 動作に任せる。
+  function handleCommitKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter") return;
+    const el = e.currentTarget;
+    const cursor = el.selectionStart ?? el.value.length;
+    const firstNewline = el.value.indexOf("\n");
+    const onSubjectLine = firstNewline === -1 || cursor <= firstNewline;
+    if (!onSubjectLine) return;
+    if (firstNewline !== -1 && el.value[firstNewline + 1] === "\n") return;
+    e.preventDefault();
+    const nextValue = `${el.value.slice(0, cursor)}\n\n${el.value.slice(cursor)}`;
+    setCommitMsg(nextValue);
+    const nextCursor = cursor + 2;
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = nextCursor;
+    });
+  }
   const [error, setError] = useState<string | null>(null);
   // ネットワーク操作（fetch / pull / push）の実行中フラグ。
   // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
@@ -809,8 +884,7 @@ export default function App() {
   // テキスト入力中でも開いてよい（issue 要件）ため、inText チェックは行わない。
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && e.key === "k") {
+      if (isPaletteShortcut(e)) {
         e.preventDefault();
         setPaletteOpen(true);
       }
@@ -1473,7 +1547,7 @@ export default function App() {
           <div className="view-status">
           <div className="view-scroll">
           <AnimatePresence mode="wait">
-            {repoLoading ? (
+            {showSkeleton ? (
               <motion.div
                 key="status-skeleton"
                 initial={{ opacity: 0 }}
@@ -1613,26 +1687,60 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <textarea
-              ref={commitInput}
-              value={commitMsg}
-              placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
-              onChange={(e) => setCommitMsg(e.target.value)}
-            />
-            {/* 文字数カウンター (#77) */}
+            <div className="commit-body-wrap">
+              {/* #172 初回フォーカス時のみ表示する 50 文字ガイドラインの案内 */}
+              <AnimatePresence>
+                {showSubjectHint && (
+                  <motion.div
+                    className="commit-subject-hint"
+                    role="tooltip"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    transition={transitions.fast}
+                  >
+                    💡 件名は 50 文字以内が推奨です
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <textarea
+                ref={commitInput}
+                value={commitMsg}
+                placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
+                onChange={(e) => setCommitMsg(e.target.value)}
+                onFocus={handleCommitFocus}
+                onKeyDown={handleCommitKeyDown}
+              />
+              {/* #172 本文の 72 文字折り返し目安（薄い縦線）。可変幅フォントのため
+                  厳密な位置ではなくあくまで目安。 */}
+              <div className="commit-col-guide" aria-hidden="true" />
+            </div>
+            {/* 文字数カウンター (#77, #172: コードポイント単位で数え 50/72 の目安を表示) */}
             {commitMsg.length > 0 && (() => {
-              const subject = commitMsg.split("\n")[0];
-              const len = subject.length;
-              const color = len <= 50 ? "var(--safe)" : len <= 72 ? "var(--caution)" : "var(--destructive)";
-              const hint = len > 72
-                ? "短くまとめると見やすくなります"
-                : len > 50
-                  ? "本文への移動を検討してください"
-                  : null;
+              const len = getSubjectLength(commitMsg);
+              const color =
+                len <= SUBJECT_LIMIT
+                  ? "var(--safe)"
+                  : len <= BODY_WRAP_LIMIT
+                    ? "var(--caution)"
+                    : "var(--destructive)";
+              const hint =
+                len > BODY_WRAP_LIMIT
+                  ? "短くまとめると見やすくなります"
+                  : len > SUBJECT_LIMIT
+                    ? "本文への移動を検討してください"
+                    : null;
               return (
                 <div className="char-count">
-                  <span style={{ color, fontWeight: 600 }}>{len}</span>
-                  <span className="char-limit">/ 50 字推奨</span>
+                  {/* 50 文字超過で警告色へなめらかに変化する (framer motion) */}
+                  <motion.span
+                    animate={{ color }}
+                    transition={transitions.normal}
+                    style={{ fontWeight: 600 }}
+                  >
+                    {len}
+                  </motion.span>
+                  <span className="char-limit">/ {SUBJECT_LIMIT} 字推奨</span>
                   {hint && <span className="char-hint">{hint}</span>}
                 </div>
               );
@@ -1670,7 +1778,7 @@ export default function App() {
           {view === "history" && (
           <div className="view-scroll">
           <AnimatePresence mode="wait">
-            {repoLoading ? (
+            {showSkeleton ? (
               <motion.div
                 key="history-skeleton"
                 initial={{ opacity: 0 }}
@@ -1737,9 +1845,24 @@ export default function App() {
           {/* ブランチ: 作成・切り替え・マージ・送信 */}
           {view === "branches" && (
           <div className="view-scroll">
-            {repoLoading ? (
-              <BranchPanelSkeleton />
+          <AnimatePresence mode="wait">
+            {showSkeleton ? (
+              <motion.div
+                key="branches-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <BranchPanelSkeleton />
+              </motion.div>
             ) : (
+              <motion.div
+                key="branches-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
               <BranchPanel
                 branches={branches}
                 graph={branchGraph}
@@ -1797,19 +1920,42 @@ export default function App() {
                   )
                 }
               />
+              </motion.div>
             )}
+          </AnimatePresence>
           </div>
           )}
 
           {/* タグ: 作成・削除 */}
           {view === "tags" && (
           <div className="view-scroll">
-            <TagPanel
-              tags={tags}
-              canTag={commits.length > 0}
-              onCreate={doCreateTag}
-              onDelete={doDeleteTag}
-            />
+          <AnimatePresence mode="wait">
+            {showSkeleton ? (
+              <motion.div
+                key="tags-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <TagPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="tags-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <TagPanel
+                  tags={tags}
+                  canTag={commits.length > 0}
+                  onCreate={doCreateTag}
+                  onDelete={doDeleteTag}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
           </div>
           )}
 
@@ -1828,14 +1974,35 @@ export default function App() {
           {/* スタッシュ（退避）: 保存・適用・取り出し */}
           {view === "stashes" && (
           <div className="view-scroll">
-            <StashPanel
-              stashes={stashes}
-              canStash={!!status && !status.is_clean}
-              onSave={doStashSave}
-              onApply={doStashApply}
-              onPop={doStashPop}
-              onLoadDiff={loadStashDiff}
-            />
+          <AnimatePresence mode="wait">
+            {showSkeleton ? (
+              <motion.div
+                key="stashes-skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <StashPanelSkeleton />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="stashes-content"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.2 }}
+              >
+                <StashPanel
+                  stashes={stashes}
+                  canStash={!!status && !status.is_clean}
+                  onSave={doStashSave}
+                  onApply={doStashApply}
+                  onPop={doStashPop}
+                  onLoadDiff={loadStashDiff}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
           </div>
           )}
 
