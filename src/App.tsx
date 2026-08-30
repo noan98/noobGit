@@ -63,6 +63,12 @@ import { CommandPalette, type PaletteCommand } from "./components/CommandPalette
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
 import { SensitiveWarningDialog } from "./components/SensitiveWarningDialog"; // #69 機密ファイル検出
 import { LfsGuideDialog } from "./components/LfsGuideDialog"; // #81 LFS ガイド
+import { transitions } from "./theme/motion";
+import {
+  BODY_WRAP_LIMIT,
+  getSubjectLength,
+  SUBJECT_LIMIT,
+} from "./lib/commitMessage"; // #172 50/72 文字ガイドライン
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
@@ -83,6 +89,27 @@ function insertCommitPrefix(current: string, prefix: string): string {
   const cleaned = lines[0].replace(/^[a-z]+(!)?:\s*/, "");
   lines[0] = `${prefix} ${cleaned}`;
   return lines.join("\n");
+}
+
+// #172 件名の 50 文字ガイドラインを説明するツールチップを「初回のみ」表示するための
+// localStorage キー。読み書きとも失敗しても致命的ではないので try/catch で保護する。
+const SUBJECT_HINT_SEEN_KEY = "noobgit_commit_subject_hint_seen";
+
+function hasSeenSubjectHint(): boolean {
+  try {
+    return localStorage.getItem(SUBJECT_HINT_SEEN_KEY) === "1";
+  } catch {
+    // 読み取れない場合はヒントを表示する側に倒す（実害はない）。
+    return false;
+  }
+}
+
+function markSubjectHintSeen(): void {
+  try {
+    localStorage.setItem(SUBJECT_HINT_SEEN_KEY, "1");
+  } catch {
+    // 保存できなくても表示は続行する（次回また出るだけ）。
+  }
 }
 
 // 取得・取り込みの既定リモート名。多くのリポジトリはクローン元を origin と呼ぶ。
@@ -223,6 +250,48 @@ export default function App() {
   const [commitMsg, setCommitMsg] = useState("");
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
   const commitInput = useRef<HTMLTextAreaElement>(null);
+  // #172 件名 50 文字ガイドラインの「初回のみ」ツールチップの表示状態とタイマー。
+  const [showSubjectHint, setShowSubjectHint] = useState(false);
+  const subjectHintTimer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (subjectHintTimer.current != null) {
+        window.clearTimeout(subjectHintTimer.current);
+      }
+    };
+  }, []);
+  // コミット入力欄に初めてフォーカスしたときだけ、50 文字ガイドラインの
+  // ツールチップを 3 秒間表示する。
+  function handleCommitFocus() {
+    if (hasSeenSubjectHint()) return;
+    markSubjectHintSeen();
+    setShowSubjectHint(true);
+    if (subjectHintTimer.current != null) {
+      window.clearTimeout(subjectHintTimer.current);
+    }
+    subjectHintTimer.current = window.setTimeout(() => {
+      setShowSubjectHint(false);
+    }, 3000);
+  }
+  // 件名行（1行目）で Enter を押したとき、Git の慣習（件名 → 空行 → 本文）に
+  // 沿って空行を自動挿入し、本文エリアへ自然に移行できるようにする。
+  // 既に空行がある場合や本文入力中はブラウザ標準の Enter 動作に任せる。
+  function handleCommitKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter") return;
+    const el = e.currentTarget;
+    const cursor = el.selectionStart ?? el.value.length;
+    const firstNewline = el.value.indexOf("\n");
+    const onSubjectLine = firstNewline === -1 || cursor <= firstNewline;
+    if (!onSubjectLine) return;
+    if (firstNewline !== -1 && el.value[firstNewline + 1] === "\n") return;
+    e.preventDefault();
+    const nextValue = `${el.value.slice(0, cursor)}\n\n${el.value.slice(cursor)}`;
+    setCommitMsg(nextValue);
+    const nextCursor = cursor + 2;
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = nextCursor;
+    });
+  }
   const [error, setError] = useState<string | null>(null);
   // ネットワーク操作（fetch / pull / push）の実行中フラグ。
   // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
@@ -1587,26 +1656,60 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <textarea
-              ref={commitInput}
-              value={commitMsg}
-              placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
-              onChange={(e) => setCommitMsg(e.target.value)}
-            />
-            {/* 文字数カウンター (#77) */}
+            <div className="commit-body-wrap">
+              {/* #172 初回フォーカス時のみ表示する 50 文字ガイドラインの案内 */}
+              <AnimatePresence>
+                {showSubjectHint && (
+                  <motion.div
+                    className="commit-subject-hint"
+                    role="tooltip"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    transition={transitions.fast}
+                  >
+                    💡 件名は 50 文字以内が推奨です
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <textarea
+                ref={commitInput}
+                value={commitMsg}
+                placeholder="このコミットで何をしたか書きましょう（例: ログイン画面を追加）"
+                onChange={(e) => setCommitMsg(e.target.value)}
+                onFocus={handleCommitFocus}
+                onKeyDown={handleCommitKeyDown}
+              />
+              {/* #172 本文の 72 文字折り返し目安（薄い縦線）。可変幅フォントのため
+                  厳密な位置ではなくあくまで目安。 */}
+              <div className="commit-col-guide" aria-hidden="true" />
+            </div>
+            {/* 文字数カウンター (#77, #172: コードポイント単位で数え 50/72 の目安を表示) */}
             {commitMsg.length > 0 && (() => {
-              const subject = commitMsg.split("\n")[0];
-              const len = subject.length;
-              const color = len <= 50 ? "var(--safe)" : len <= 72 ? "var(--caution)" : "var(--destructive)";
-              const hint = len > 72
-                ? "短くまとめると見やすくなります"
-                : len > 50
-                  ? "本文への移動を検討してください"
-                  : null;
+              const len = getSubjectLength(commitMsg);
+              const color =
+                len <= SUBJECT_LIMIT
+                  ? "var(--safe)"
+                  : len <= BODY_WRAP_LIMIT
+                    ? "var(--caution)"
+                    : "var(--destructive)";
+              const hint =
+                len > BODY_WRAP_LIMIT
+                  ? "短くまとめると見やすくなります"
+                  : len > SUBJECT_LIMIT
+                    ? "本文への移動を検討してください"
+                    : null;
               return (
                 <div className="char-count">
-                  <span style={{ color, fontWeight: 600 }}>{len}</span>
-                  <span className="char-limit">/ 50 字推奨</span>
+                  {/* 50 文字超過で警告色へなめらかに変化する (framer motion) */}
+                  <motion.span
+                    animate={{ color }}
+                    transition={transitions.normal}
+                    style={{ fontWeight: 600 }}
+                  >
+                    {len}
+                  </motion.span>
+                  <span className="char-limit">/ {SUBJECT_LIMIT} 字推奨</span>
                   {hint && <span className="char-hint">{hint}</span>}
                 </div>
               );

@@ -1227,6 +1227,41 @@ textarea {
   font-style: italic;
 }
 
+/* ---- コミットメッセージ 50/72 文字ガイドライン (#172) ---- */
+.commit-body-wrap {
+  position: relative;
+}
+.commit-col-guide {
+  /* 本文の折り返し目安（72 文字目）を示す薄い縦線。textarea は可変幅フォント
+     なので厳密な位置ではなく目安。textarea の左パディング(10px)を起点に、
+     textarea と同じ font-size で ch 単位のズレを抑える。 */
+  position: absolute;
+  top: 0;
+  bottom: 4px;
+  left: calc(10px + 72ch);
+  width: 1px;
+  font-size: 14px;
+  background: var(--border);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.commit-subject-hint {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  max-width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+
 /* ---- HistoryPanel コミット行リデザイン (#109) ---- */
 .commit-row {
   display: flex;
