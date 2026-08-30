@@ -598,9 +598,110 @@ textarea {
   cursor: not-allowed;
 }
 
-/* ---- layout ---- */
-.app {
+/* ---- リポジトリタブ (#263) ---- */
+/* ウィンドウ全体: 上部にタブバー、残りをタブの中身が占める。 */
+.tabs-root {
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.tabbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  /* タブが増えたら横スクロール（バー全体の折り返しはしない）。 */
+  overflow-x: auto;
+}
+.tabbar-tab {
+  display: flex;
+  align-items: center;
+  max-width: 220px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.tabbar-tab:hover {
+  background: var(--border-muted);
+}
+.tabbar-tab-active,
+.tabbar-tab-active:hover {
+  background: var(--panel);
+  border-color: var(--border);
+  color: inherit;
+}
+.tabbar-tab-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 2px 5px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tabbar-tab-icon {
+  display: inline-flex;
+  flex: none;
+}
+.tabbar-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tabbar-tab-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  margin: 0 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tabbar-tab-close:hover {
+  color: var(--destructive);
+  background: var(--border-muted);
+}
+.tabbar-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tabbar-add:hover {
+  background: var(--border-muted);
+  color: inherit;
+}
+.tabs-content {
+  flex: 1;
+  min-height: 0;
+}
+/* 非アクティブなタブは hidden 属性で隠す（アンマウントはしない）。 */
+.tab-pane {
+  height: 100%;
+  overflow: auto;
+}
+.tab-pane[hidden] {
+  display: none;
+}
+
+/* ---- layout ---- */
+/* タブの中身いっぱいに広がる（タブバーの分は .tabs-root 側が引き受ける）。 */
+.app {
+  height: 100%;
   display: flex;
   flex-direction: column;
 }

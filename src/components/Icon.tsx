@@ -73,6 +73,7 @@ import {
   IconPencil,
   IconPhoto,
   IconPlayerTrackPrev,
+  IconPlus,
   IconPlugOff,
   IconPointFilled,
   IconRefresh,
@@ -109,6 +110,8 @@ const ICONS = {
   check: IconCheck,
   /** 閉じる・クリア（従来の ✕）。 */
   close: IconX,
+  /** 新しいタブを追加する (#263)。 */
+  tabNew: IconPlus,
   /** コピー（従来の ⎘）。 */
   copy: IconCopy,
   /** 検索（従来の 🔍）。 */
