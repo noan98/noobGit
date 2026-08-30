@@ -672,7 +672,9 @@ textarea {
   min-height: 0;
 }
 
-/* 左サイドバー: ナビゲーションツリー。 */
+/* 左サイドバー: ナビゲーションツリー。幅は Sidebar.tsx がインラインの flex-basis
+   で制御し（ドラッグ/矢印キーで変更、localStorage に永続化）、ここでの
+   240px は JS 実行前の初期描画やスタイル未適用時のフォールバックに過ぎない。 */
 .sidebar {
   flex: 0 0 240px;
   min-width: 0;
@@ -680,6 +682,35 @@ textarea {
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 8px 0 16px;
+}
+/* サイドバー右端のドラッグハンドル。細い当たり判定に見た目より広い操作域を
+   持たせるため、実際の描画は擬似要素の縦線のみで表現する。 */
+.sidebar-resize-handle {
+  flex: 0 0 6px;
+  width: 6px;
+  margin-left: -3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  touch-action: none;
+}
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+}
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+.sidebar-resize-handle:focus-visible {
+  outline: none;
 }
 .sidebar-section {
   margin-bottom: 6px;
