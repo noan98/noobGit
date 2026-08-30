@@ -24,6 +24,7 @@ import {
   type RemoteInfo,
   type UndoEntry,
 } from "./api";
+import { Icon } from "./components/Icon";
 import { showToast } from "./components/Toaster";
 import { StatusPanel } from "./components/StatusPanel";
 import { FileHistoryView } from "./components/FileHistoryView";
@@ -1319,10 +1320,16 @@ export default function App() {
         <div className="repo-info">
           <strong>noobGit</strong>
           <span className="repo-name" title={repoPath}>
-            📁 {repoName}
+            <Icon name="repo" /> {repoName}
           </span>
           <span className="current-branch">
-            {status?.branch ? `🌿 ${status.branch}` : "(ブランチ不明)"}
+            {status?.branch ? (
+              <>
+                <Icon name="branch" /> {status.branch}
+              </>
+            ) : (
+              "(ブランチ不明)"
+            )}
           </span>
         </div>
         <div className="topbar-actions">
@@ -1331,7 +1338,7 @@ export default function App() {
             onClick={() => setShowIdentity(true)}
             title="コミット作者の名前とメールアドレスを設定します"
           >
-            👤 名前/メール
+            <Icon name="identity" /> 名前/メール
           </button>
           <ThemeToggle />
           {/* 設定（表示言語など）を開くボタン */}
@@ -1341,15 +1348,16 @@ export default function App() {
             title={t("settings.open")}
             aria-label={t("settings.open")}
           >
-            ⚙
+            <Icon name="settings" />
           </button>
           {/* #63 ショートカット: ヘルプを開くボタン */}
           <button
             className="btn btn-small"
             onClick={() => setShowShortcuts(true)}
             title="キーボードショートカット一覧 [? / F1]"
+            aria-label="キーボードショートカット一覧"
           >
-            ?
+            <Icon name="help" />
           </button>
           <button
             className="btn btn-small"
@@ -1390,7 +1398,9 @@ export default function App() {
             onClick={goToCommitBox}
             title="コミット入力欄へ移動します [Ctrl+Enter でコミット]"
           >
-            <span className="toolbar-btn-icon">✅</span>
+            <span className="toolbar-btn-icon">
+              <Icon name="commit" />
+            </span>
             <span className="toolbar-btn-label">コミット</span>
           </button>
         </ExplainTooltip>
@@ -1404,7 +1414,13 @@ export default function App() {
             title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
           >
             <span className="toolbar-btn-icon">
-              {isNetworkBusy ? <span className="network-spinner">⬇</span> : "⬇"}
+              {isNetworkBusy ? (
+                <span className="network-spinner">
+                  <Icon name="pull" />
+                </span>
+              ) : (
+                <Icon name="pull" />
+              )}
             </span>
             <span className="toolbar-btn-label">プル</span>
           </button>
@@ -1418,7 +1434,13 @@ export default function App() {
             title="現在のブランチをリモートへ送信します [Ctrl+P]"
           >
             <span className="toolbar-btn-icon">
-              {isNetworkBusy ? <span className="network-spinner">⬆</span> : "⬆"}
+              {isNetworkBusy ? (
+                <span className="network-spinner">
+                  <Icon name="push" />
+                </span>
+              ) : (
+                <Icon name="push" />
+              )}
             </span>
             <span className="toolbar-btn-label">プッシュ</span>
           </button>
@@ -1432,7 +1454,13 @@ export default function App() {
             title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
           >
             <span className="toolbar-btn-icon">
-              {isNetworkBusy ? <span className="network-spinner">🔄</span> : "🔄"}
+              {isNetworkBusy ? (
+                <span className="network-spinner">
+                  <Icon name="fetch" />
+                </span>
+              ) : (
+                <Icon name="fetch" />
+              )}
             </span>
             <span className="toolbar-btn-label">フェッチ</span>
           </button>
@@ -1443,7 +1471,9 @@ export default function App() {
           onClick={() => setView("branches")}
           title="ブランチの作成・切り替え・マージを行います"
         >
-          <span className="toolbar-btn-icon">🌿</span>
+          <span className="toolbar-btn-icon">
+            <Icon name="branch" />
+          </span>
           <span className="toolbar-btn-label">ブランチ</span>
         </button>
         <button
@@ -1451,7 +1481,9 @@ export default function App() {
           onClick={() => setView("stashes")}
           title="作業中の変更を一時退避（スタッシュ）します"
         >
-          <span className="toolbar-btn-icon">📦</span>
+          <span className="toolbar-btn-icon">
+            <Icon name="stash" />
+          </span>
           <span className="toolbar-btn-label">スタッシュ</span>
         </button>
         <button
@@ -1459,7 +1491,9 @@ export default function App() {
           onClick={() => setView("tags")}
           title="タグの作成・削除を行います"
         >
-          <span className="toolbar-btn-icon">🏷</span>
+          <span className="toolbar-btn-icon">
+            <Icon name="tag" />
+          </span>
           <span className="toolbar-btn-label">タグ</span>
         </button>
         <span className="toolbar-spacer" />
@@ -1471,7 +1505,9 @@ export default function App() {
               onClick={doUndo}
               title={`直前の操作を取り消します: ${undoInfo.description} [Ctrl+Z]`}
             >
-              <span className="toolbar-btn-icon">↩</span>
+              <span className="toolbar-btn-icon">
+                <Icon name="undo" />
+              </span>
               <span className="toolbar-btn-label">取り消す</span>
             </button>
           </ExplainTooltip>
@@ -1481,7 +1517,9 @@ export default function App() {
           onClick={() => void refresh()}
           title="ステータスを再取得します [Ctrl+R]"
         >
-          <span className="toolbar-btn-icon">↻</span>
+          <span className="toolbar-btn-icon">
+            <Icon name="refresh" />
+          </span>
           <span className="toolbar-btn-label">更新</span>
         </button>
       </div>
@@ -1502,7 +1540,7 @@ export default function App() {
       {!identityComplete && (
         <div className="banner setup">
           <span>
-            👋 コミットには「名前」と「メールアドレス」の設定が必要です。
+            <Icon name="greeting" /> コミットには「名前」と「メールアドレス」の設定が必要です。
           </span>
           <button
             className="btn btn-small"
@@ -1517,7 +1555,7 @@ export default function App() {
       {status?.has_submodules && !submoduleBannerDismissed && (
         <div className="banner setup">
           <span>
-            📦 このリポジトリは「リポジトリの中に別のリポジトリ」（サブモジュール）を含んでいます。
+            <Icon name="submodule" /> このリポジトリは「リポジトリの中に別のリポジトリ」（サブモジュール）を含んでいます。
             noobGit では中身の操作（クローン・更新・コミットなど）はできません。
             サブモジュールの変更は、ターミナルや他の Git ツールで扱ってください。
           </span>
@@ -1716,7 +1754,7 @@ export default function App() {
                     exit={{ opacity: 0, y: 4 }}
                     transition={transitions.fast}
                   >
-                    💡 件名は 50 文字以内が推奨です
+                    <Icon name="hint" /> 件名は 50 文字以内が推奨です
                   </motion.div>
                 )}
               </AnimatePresence>

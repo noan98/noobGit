@@ -10,6 +10,7 @@ import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { api, type Explanation, type OperationKind } from "../api";
 import { transitions } from "../theme/motion";
+import { Icon } from "./Icon";
 
 // ---------- キャッシュ -------------------------------------------------------
 // モジュール生存期間中、一度取得した説明はここに保持して再フェッチしない。
@@ -142,7 +143,7 @@ export function ExplainTooltip({ op, children }: Props) {
             <div style={{ marginBottom: 6 }}>{explanation.what}</div>
             {/* トラブル時のヒント（小さめ・補足） */}
             <div style={{ fontSize: 11, color: "var(--muted)" }}>
-              💡 {explanation.on_trouble}
+              <Icon name="hint" /> {explanation.on_trouble}
             </div>
           </motion.div>
         )}

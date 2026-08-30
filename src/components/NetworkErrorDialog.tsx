@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import type { NetworkErrorKind } from "../api";
 import { SshSetupGuide } from "./SshSetupGuide";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { Icon, type IconName } from "./Icon";
 
 interface Props {
   kind: NetworkErrorKind;
@@ -14,7 +15,7 @@ interface Props {
 }
 
 interface DiagInfo {
-  icon: string;
+  icon: IconName;
   title: string;
   what: string;
   steps: string[];
@@ -24,7 +25,7 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
   switch (kind) {
     case "auth_failed":
       return {
-        icon: "🔐",
+        icon: "authFailed",
         title: "認証に失敗しました",
         what:
           "リモートサーバーへの接続に使うパスワードやトークンが正しくありませんでした。",
@@ -37,7 +38,7 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
       };
     case "ssh_key_not_found":
       return {
-        icon: "🗝️",
+        icon: "sshKey",
         title: "SSH鍵が見つかりませんでした",
         what:
           "SSH接続に必要な鍵ファイルが見つからないか、SSHエージェントに鍵が読み込まれていません。下のセットアップ手順に沿って、SSH鍵の作成から登録まで進めてください。",
@@ -47,7 +48,7 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
       };
     case "remote_not_found":
       return {
-        icon: "🔍",
+        icon: "remoteNotFound",
         title: "リモートリポジトリが見つかりませんでした",
         what:
           "接続先のURLが間違っているか、リポジトリが削除・移動されている可能性があります。",
@@ -60,12 +61,12 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
       };
     case "non_fast_forward":
       return {
-        icon: "🔀",
+        icon: "diverged",
         title: "リモートに自分のコミットと異なる変更があります",
         what:
           "リモートに自分が持っていないコミットがあるため、そのままでは送信できません（non-fast-forward）。",
         steps: [
-          "まず「⬇ 取り込む」（pull）を実行して、リモートの変更を自分のブランチに取り込みましょう。",
+          "まず「取り込む」（pull）を実行して、リモートの変更を自分のブランチに取り込みましょう。",
           "コンフリクト（競合）が発生した場合は、コンフリクト解消ウィザードの案内に従って解決してください。",
           "取り込みとコンフリクト解消が終わったら、もう一度「送信」を試してください。",
           "【注意】強制送信（force push）はリモートの変更を上書きするため、チーム作業では他の人の変更が消える可能性があります。チームの合意なしに使わないでください。",
@@ -73,7 +74,7 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
       };
     case "timeout":
       return {
-        icon: "⏱️",
+        icon: "timeout",
         title: "通信がタイムアウトしました",
         what:
           "サーバーからの応答に時間がかかりすぎて、処理を完了できませんでした。",
@@ -87,7 +88,7 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
     case "other":
     default:
       return {
-        icon: "⚠️",
+        icon: "warning",
         title: "ネットワーク操作でエラーが発生しました",
         what: "予期しないエラーが発生しました。詳細は下の「エラー詳細」を参照してください。",
         steps: [
@@ -128,8 +129,8 @@ export function NetworkErrorDialog({ kind, raw, onClose }: Props) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="network-error-header">
-            <span className="network-error-icon" aria-hidden="true">
-              {info.icon}
+            <span className="network-error-icon">
+              <Icon name={info.icon} />
             </span>
             <h2 className="network-error-title" id={titleId}>
               {info.title}

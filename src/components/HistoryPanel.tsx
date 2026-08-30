@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
 import { CommitGraph } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
+import { Icon } from "./Icon";
 
 interface Props {
   commits: CommitInfo[];
@@ -101,7 +102,9 @@ function CopyHashButton({ shortId }: { shortId: string }) {
       aria-label={`ハッシュ ${shortId} をコピー`}
     >
       <code className="sha">{shortId}</code>
-      <span className="copy-icon">{copied ? "✓" : "⎘"}</span>
+      <span className="copy-icon">
+        <Icon name={copied ? "check" : "copy"} />
+      </span>
     </button>
   );
 }
@@ -231,7 +234,10 @@ export function HistoryPanel({
             )}
             {searching && (
               <span className="history-searching" role="status">
-                <span className="network-spinner">🔄</span>検索中…
+                <span className="network-spinner">
+                  <Icon name="fetch" />
+                </span>
+                検索中…
               </span>
             )}
             {selectedCount > 0 && (
@@ -240,7 +246,7 @@ export function HistoryPanel({
                 onClick={onStartRebase}
                 title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
               >
-                🧹 整理する… ({selectedCount})
+                <Icon name="squash" /> 整理する… ({selectedCount})
               </button>
             )}
           </>
@@ -278,13 +284,13 @@ export function HistoryPanel({
           {commits.length === 0 ? (
             isSearching ? (
               <EmptyState
-                icon="🔍"
+                icon={<Icon name="search" />}
                 title="一致するコミットがありません"
                 description="検索条件を変えるか、入力を消すとすべての履歴に戻ります。"
               />
             ) : (
               <EmptyState
-                icon="📝"
+                icon={<Icon name="amend" />}
                 title="まだコミットがありません"
                 description="最初のコミットを作って、変更の記録を始めましょう。"
                 action={{ label: "コミットへ", onClick: onGoToCommit }}
@@ -404,7 +410,10 @@ export function HistoryPanel({
           </p>
           {reflogLoading && (
             <div className="reflog-loading" role="status">
-              <span className="network-spinner">🔄</span>読み込み中…
+              <span className="network-spinner">
+                <Icon name="fetch" />
+              </span>
+              読み込み中…
             </div>
           )}
           {reflogError && (
@@ -414,7 +423,7 @@ export function HistoryPanel({
           )}
           {!reflogLoading && !reflogError && reflogEntries.length === 0 && (
             <EmptyState
-              icon="📋"
+              icon={<Icon name="reflog" />}
               title="reflog がありません"
               description="まだ操作履歴がありません。コミットや操作を行うと記録されます。"
             />

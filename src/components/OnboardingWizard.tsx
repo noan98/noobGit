@@ -10,11 +10,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Box } from "@chakra-ui/react";
 import { transitions, spring } from "../theme/motion";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { Icon, type IconName } from "./Icon";
 
 // ウィザードの各ステップデータ。
 interface Step {
-  /** 絵文字アイコン */
-  icon: string;
+  /** ステップを表すアイコン（Icon.tsx の名前） */
+  icon: IconName;
   /** ステップのタイトル */
   title: string;
   /** 平易な日本語の説明 */
@@ -23,31 +24,31 @@ interface Step {
 
 const STEPS: Step[] = [
   {
-    icon: "🎉",
+    icon: "celebrate",
     title: "ようこそ、noobGit へ！",
     description:
       "noobGit は、Git の「うっかり事故」を防ぎながら、各操作が何をするのかを平易な言葉で教えてくれるツールです。初心者でも安心して Git を学び、使い続けることができます。",
   },
   {
-    icon: "📂",
+    icon: "repoOpen",
     title: "リポジトリを開く",
     description:
       "画面中央の入力欄に Git リポジトリのフォルダパスを入力し、「開く」ボタンを押します（例: C:\\Users\\you\\project）。フォルダを開くと、ファイルの状態や履歴が表示されます。",
   },
   {
-    icon: "📋",
+    icon: "checklist",
     title: "ファイルをステージする",
     description:
       "左の「ステータス」パネルには、変更されたファイルが一覧表示されます。コミットしたいファイルにチェックを入れてステージし、まとめて次のコミットの準備をしましょう。",
   },
   {
-    icon: "✅",
+    icon: "commitDone",
     title: "コミットする",
     description:
       "ステージしたファイルをコミットするには、変更内容を一言で表すメッセージを入力します。「何を・なぜ変えたか」が伝わる短い説明文が理想的です（例: 「ログイン画面のバグを修正」）。",
   },
   {
-    icon: "↩️",
+    icon: "undo",
     title: "安心の Undo",
     description:
       "操作を間違えても大丈夫です！ヘッダーの「Undo」ボタンを押せば、直前の操作をワンクリックで取り消せます。noobGit があなたの Git ライフを安全に守ります。",
@@ -166,9 +167,16 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
             exit="exit"
             style={{ textAlign: "center", minHeight: "180px" }}
           >
-            {/* 絵文字アイコン */}
-            <div style={{ fontSize: "3.5rem", marginBottom: "0.75rem" }}>
-              {current.icon}
+            {/* ステップのアイコン。アクセント色で大きく見せる。 */}
+            <div
+              style={{
+                fontSize: "3.5rem",
+                marginBottom: "0.75rem",
+                color: "var(--accent)",
+                lineHeight: 1,
+              }}
+            >
+              <Icon name={current.icon} stroke={1.4} />
             </div>
 
             {/* タイトル */}
@@ -256,7 +264,13 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
               onClick={goNext}
               style={{ minWidth: "96px" }}
             >
-              {isLast ? "はじめる" : "次へ →"}
+              {isLast ? (
+                "はじめる"
+              ) : (
+                <>
+                  次へ <Icon name="chevronRight" />
+                </>
+              )}
             </button>
           </div>
         </div>

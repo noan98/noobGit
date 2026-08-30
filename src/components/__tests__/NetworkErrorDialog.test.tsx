@@ -57,7 +57,7 @@ describe("NetworkErrorDialog", () => {
     await user.click(button);
 
     // クリップボードへの書き込み結果として、ボタンが「コピー済み」表示に変わる。
-    expect(await screen.findByText("✓ コピー済み")).toBeInTheDocument();
+    expect(await screen.findByText("コピー済み")).toBeInTheDocument();
     await expect(navigator.clipboard.readText()).resolves.toBe(
       'ssh-keygen -t ed25519 -C "your_email@example.com"',
     );

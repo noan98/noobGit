@@ -10,6 +10,7 @@ import { motion } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
 import { LANGUAGES, useLanguage } from "../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { Icon } from "./Icon";
 
 interface Props {
   onClose: () => void;
@@ -43,7 +44,9 @@ export function SettingsDialog({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2 id={titleId}>⚙ {t("settings.title")}</h2>
+          <h2 id={titleId}>
+            <Icon name="settings" /> {t("settings.title")}
+          </h2>
         </div>
 
         <div className="settings-field">

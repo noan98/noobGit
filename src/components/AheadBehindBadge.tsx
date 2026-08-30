@@ -1,15 +1,17 @@
+import type { ReactNode } from "react";
 import { Badge } from "@chakra-ui/react";
 import { motion, AnimatePresence } from "framer-motion";
 import { spring } from "../theme/motion";
+import { Icon } from "./Icon";
 
 /*
  * ブランチの ahead / behind 状態をカラーバッジで表現するコンポーネント（#79）。
  *
  * 状態に応じてバッジの色・ラベル・title（ネイティブツールチップ）を出し分ける：
  *   完全同期   : 緑（success）— 最新
- *   push 待ち  : 青（accent） — ↑N 送信待ち
- *   pull 待ち  : 黄（warning）— ↓N 取り込み待ち
- *   分岐あり   : オレンジ（diverged）— ↑N ↓M 分岐
+ *   push 待ち  : 青（accent） — 上向き矢印 + N 送信待ち
+ *   pull 待ち  : 黄（warning）— 下向き矢印 + N 取り込み待ち
+ *   分岐あり   : オレンジ（diverged）— 上下の矢印 + 件数で分岐
  *   upstream なし: グレー（neutral）— リモートなし
  *
  * upstream が null の場合は「リモートなし」を表示する。
@@ -28,9 +30,10 @@ interface Props {
 }
 
 // バッジの表示定義。tone は theme.ts のセマンティックトークン名。
+// label は矢印アイコンを含むため文字列ではなく ReactNode。
 type BadgeDef = {
   tone: string;
-  label: string;
+  label: ReactNode;
   tooltip: string;
 };
 
@@ -52,21 +55,37 @@ function resolveBadge(ahead: number, behind: number, upstream: string | null): B
   if (ahead > 0 && behind === 0) {
     return {
       tone: "accent",
-      label: `↑${ahead} 送信待ち`,
+      label: (
+        <>
+          <Icon name="push" />
+          {ahead} 送信待ち
+        </>
+      ),
       tooltip: `まだリモートに送っていないコミットが ${ahead} 件あります。「送信」でリモートに反映できます。`,
     };
   }
   if (ahead === 0 && behind > 0) {
     return {
       tone: "warning",
-      label: `↓${behind} 取り込み待ち`,
+      label: (
+        <>
+          <Icon name="pull" />
+          {behind} 取り込み待ち
+        </>
+      ),
       tooltip: `リモートに ${behind} 件の新しいコミットがあります。「取得」でローカルに取り込めます。`,
     };
   }
   // ahead > 0 && behind > 0
   return {
     tone: "diverged",
-    label: `↑${ahead} ↓${behind} 分岐`,
+    label: (
+      <>
+        <Icon name="push" />
+        {ahead} <Icon name="pull" />
+        {behind} 分岐
+      </>
+    ),
     tooltip: `ローカルに ${ahead} 件、リモートに ${behind} 件の独自コミットがあります。履歴が分岐しています。`,
   };
 }

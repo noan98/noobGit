@@ -2,6 +2,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import type { UndoEntry, OperationKind } from "../api";
 import { slideInFromBottom } from "../theme/motion";
+import { Icon, type IconName } from "./Icon";
 
 interface Props {
   // 新しい順（先頭が最新の操作）で渡す。
@@ -35,30 +36,31 @@ const OP_LABEL: Record<OperationKind, string> = {
   restore_file: "ファイルを復元",
 };
 
-const OP_ICON: Record<OperationKind, string> = {
-  stage: "📥",
-  unstage: "📤",
-  commit: "💾",
-  amend_commit: "✏️",
-  discard: "🗑️",
-  stash_save: "📦",
-  stash_apply: "📬",
-  stash_pop: "📭",
-  create_branch: "🌿",
-  switch_branch: "🔀",
-  delete_branch: "✂️",
-  reset_hard: "⏪",
-  fetch: "🔄",
-  pull: "⬇️",
-  push: "⬆️",
-  force_push: "⚡",
-  cherry_pick: "🍒",
-  create_tag: "🏷️",
-  delete_tag: "🚫",
-  rebase: "🔧",
-  merge: "🔗",
-  remove_remote: "🔌",
-  restore_file: "⏮️",
+// 操作ごとのアイコン。見た目の定義は Icon.tsx に集約している（絵文字は使わない）。
+const OP_ICON: Record<OperationKind, IconName> = {
+  stage: "stage",
+  unstage: "unstage",
+  commit: "commit",
+  amend_commit: "amend",
+  discard: "discard",
+  stash_save: "stash",
+  stash_apply: "stashApply",
+  stash_pop: "stashPop",
+  create_branch: "branch",
+  switch_branch: "branchSwitch",
+  delete_branch: "branchDelete",
+  reset_hard: "reset",
+  fetch: "fetch",
+  pull: "pull",
+  push: "push",
+  force_push: "forcePush",
+  cherry_pick: "cherryPick",
+  create_tag: "tag",
+  delete_tag: "tagDelete",
+  rebase: "rebase",
+  merge: "merge",
+  remove_remote: "remoteRemove",
+  restore_file: "restore",
 };
 
 // #48 Undo タイムライン: 取り消し履歴をタイムライン形式で表示するパネル。
@@ -81,11 +83,8 @@ export function UndoTimeline({ entries }: Props) {
                 exit="exit"
                 layout
               >
-                <span
-                  className="undo-timeline-icon"
-                  aria-hidden="true"
-                >
-                  {OP_ICON[entry.op]}
+                <span className="undo-timeline-icon">
+                  <Icon name={OP_ICON[entry.op]} />
                 </span>
                 <div className="undo-timeline-body">
                   <span className="undo-timeline-op">

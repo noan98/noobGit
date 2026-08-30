@@ -316,9 +316,12 @@ textarea:focus-visible {
 }
 /* フォルダアイコン（縮小しない）。 */
 .recent-repo-icon {
-  font-size: 15px;
+  font-size: 18px;
   flex-shrink: 0;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
 }
 /* リポジトリ名 + パスの縦並び。 */
 .recent-repo-main {
@@ -482,7 +485,8 @@ textarea {
 /* ネットワーク操作中のスピナー: ボタン内に表示し、360度連続回転させる。
    display:inline-block がないと transform が効かないため必須。 */
 .network-spinner {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   animation: spin 0.9s linear infinite;
   margin-right: 4px;
 }
@@ -698,8 +702,11 @@ textarea {
   cursor: not-allowed;
 }
 .toolbar-btn-icon {
-  font-size: 17px;
-  line-height: 1.2;
+  font-size: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .toolbar-btn-label {
   line-height: 1.2;
@@ -815,8 +822,11 @@ textarea {
 }
 .sidebar-section-icon {
   flex-shrink: 0;
-  font-size: 12px;
+  /* アイコンは font-size を基準（1em）に描かれる（Icon.tsx 参照）。 */
+  font-size: 14px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
 }
 .sidebar-item {
   display: flex;
@@ -843,9 +853,12 @@ textarea {
 .sidebar-item-icon {
   flex-shrink: 0;
   width: 16px;
-  font-size: 12px;
-  line-height: 1.4;
-  text-align: center;
+  font-size: 14px;
+  line-height: 1;
+  /* 空（現在ブランチ以外の葉ノード）でも幅を保ち、ラベルの開始位置を揃える。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .sidebar-item-label {
   flex: 1;
@@ -882,6 +895,10 @@ textarea {
   padding: 0 6px;
 }
 .sidebar-count.attention {
+  /* 警告アイコン + 件数を横並びにする。 */
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   background: var(--caution-bg);
   border-color: var(--caution-border);
   color: var(--caution);
@@ -1263,6 +1280,10 @@ textarea {
 .head-mark {
   color: var(--safe);
   margin-right: 4px;
+  /* 現在ブランチを示す点アイコン。文字と同じ高さに収める。 */
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
 }
 .protected {
   font-size: 10px;
@@ -1453,7 +1474,9 @@ textarea {
   background: var(--accent-bg);
 }
 .copy-icon {
-  font-size: 10px;
+  /* アイコンは font-size を基準（1em）に描かれる（Icon.tsx 参照）。 */
+  font-size: 12px;
+  display: inline-flex;
   color: var(--muted);
   opacity: 0.7;
 }
@@ -1729,12 +1752,12 @@ textarea {
   align-items: center;
   gap: 4px;
 }
-.trouble-summary::before {
-  content: "▶";
-  font-size: 10px;
+/* 開閉マーカー（Icon.tsx の chevronRight）。開いている間は 90 度回して下向きにする。 */
+.trouble-summary-chevron {
+  font-size: 12px;
   transition: transform 0.15s;
 }
-.trouble-details[open] .trouble-summary::before {
+.trouble-details[open] .trouble-summary-chevron {
   transform: rotate(90deg);
 }
 /* reset_hard 確認ダイアログの失われる変更ファイル一覧 */
@@ -2015,7 +2038,12 @@ textarea {
 .undo-timeline-icon {
   font-size: 16px;
   flex-shrink: 0;
-  line-height: 1.4;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  /* 本文より一段落ち着いた色にして、操作名の可読性を優先する。 */
+  color: var(--muted);
+  margin-top: 1px;
 }
 .undo-timeline-body {
   display: flex;
@@ -2224,8 +2252,12 @@ textarea {
   margin-bottom: 8px;
 }
 .network-error-icon {
-  font-size: 22px;
+  font-size: 26px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--destructive);
 }
 .network-error-title {
   font-size: 17px;
@@ -2343,4 +2375,35 @@ textarea {
 }
 .ssh-guide-copy-btn:hover {
   background: var(--accent-bg);
+}
+
+/* ---- アイコン（Tabler Icons）の共通調整 --------------------------------
+   アイコンは `currentColor` + `1em` で描かれる（src/components/Icon.tsx）。
+   ここでは「アイコン + テキスト」を横並びにする箇所だけ、隙間と縦位置を整える。 */
+.repo-name,
+.current-branch,
+.commit-subject-hint,
+.conflict-wizard .panel-head h2,
+.dialog-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* おかえりなさいの見出しは中央寄せを保ったままアイコンを並べる。 */
+.home-greeting h1 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+/* 折り返しのある本文（バナー・代替案）は、アイコンを 1 行目の高さに合わせる。 */
+.banner.setup > span,
+.alt {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.banner.setup > span > svg,
+.alt > svg {
+  margin-top: 3px;
 }

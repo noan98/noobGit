@@ -6,6 +6,7 @@ import type { RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
+import { Icon, type IconName } from "./Icon";
 import { slideInFromBottom, transitions } from "../theme/motion";
 // #88 右クリックメニュー
 import { FileContextMenu } from "./FileContextMenu";
@@ -47,7 +48,7 @@ import { filterByQuery, highlightSegments } from "../lib/fileSearch";
  *     スライドダウン展開する。
  *
  * #166 検索・絞り込み:
- *   - パネル上部の検索インプット（Chakra `Input` + 🔍）でファイルパスを
+ *   - パネル上部の検索インプット（Chakra `Input` + 検索アイコン）でファイルパスを
  *     ファジーマッチ絞り込み（`lib/fileSearch.ts`）。入力は 150ms デバウンス。
  *   - 絞り込みはステージ済み・未ステージ・未追跡・コンフリクトの全セクションを
  *     横断して効く。マッチ部分は `<mark>` でハイライトする。
@@ -99,33 +100,33 @@ function splitPath(filePath: string): { dir: string; name: string } {
   return { dir: filePath.slice(0, idx + 1), name: filePath.slice(idx + 1) };
 }
 
-// 拡張子からファイルアイコン（絵文字）を返す。
+// 拡張子からファイルアイコン（Icon.tsx の名前）を返す。
 // 未知の拡張子・引数なしはニュートラルなアイコンにフォールバックする。
-function fileIcon(name: string): string {
+function fileIcon(name: string): IconName {
   const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
-  const map: Record<string, string> = {
-    ts: "📄",
-    tsx: "⚛️",
-    js: "📄",
-    jsx: "⚛️",
-    json: "📋",
-    toml: "📋",
-    yaml: "📋",
-    yml: "📋",
-    md: "📝",
-    txt: "📝",
-    rs: "🦀",
-    css: "🎨",
-    html: "🌐",
-    svg: "🖼️",
-    png: "🖼️",
-    jpg: "🖼️",
-    jpeg: "🖼️",
-    gif: "🖼️",
-    sh: "🔧",
-    lock: "🔒",
+  const map: Record<string, IconName> = {
+    ts: "fileTs",
+    tsx: "fileTsx",
+    js: "fileJs",
+    jsx: "fileJsx",
+    json: "fileJson",
+    toml: "fileConfig",
+    yaml: "fileConfig",
+    yml: "fileConfig",
+    md: "fileMarkdown",
+    txt: "fileText",
+    rs: "fileRust",
+    css: "fileCss",
+    html: "fileHtml",
+    svg: "fileSvg",
+    png: "fileImage",
+    jpg: "fileImage",
+    jpeg: "fileImage",
+    gif: "fileImage",
+    sh: "fileShell",
+    lock: "fileLock",
   };
-  return map[ext] ?? "📄";
+  return map[ext] ?? "file";
 }
 
 // #166 検索・絞り込み: 検索デバウンス（ミリ秒）。#174 の CommitDiffViewer と揃える。
@@ -250,7 +251,7 @@ function FileCard({
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
   const dragging = useRef(false);
   const { dir, name } = splitPath(path);
-  const icon = isSubmodule ? "📦" : fileIcon(name);
+  const icon: IconName = isSubmodule ? "submodule" : fileIcon(name);
   const iconTitle = isSubmodule
     ? "サブモジュール（このフォルダの中は別の Git リポジトリです）。noobGit では中身を操作できません。ターミナルや他の Git ツールで操作してください。"
     : undefined;
@@ -326,16 +327,13 @@ function FileCard({
             />
           )}
 
-          {/* ファイルアイコン（拡張子絵文字）。#203: サブモジュールは 📦 + ツールチップ */}
-          <Text
-            as="span"
-            fontSize="14px"
-            lineHeight="1"
-            aria-hidden={isSubmodule ? undefined : "true"}
-            title={iconTitle}
-            flexShrink={0}
-          >
-            {icon}
+          {/* ファイルアイコン（拡張子ごと）。#203: サブモジュールは専用アイコン + ツールチップ */}
+          <Text as="span" fontSize="14px" lineHeight="1" flexShrink={0}>
+            <Icon
+              name={icon}
+              title={iconTitle}
+              label={isSubmodule ? "サブモジュール" : undefined}
+            />
           </Text>
 
           {/* ファイルパス（親ディレクトリ＋ファイル名）*/}
@@ -441,17 +439,17 @@ function FileCard({
       {draggable && (
         <Text
           as="span"
-          fontSize="10px"
+          fontSize="12px"
           color="neutral.muted"
           position="absolute"
           top="50%"
           right="-2px"
           transform="translateY(-50%)"
           pointerEvents="none"
-          aria-hidden="true"
           userSelect="none"
+          lineHeight="1"
         >
-          ⠿
+          <Icon name="grip" />
         </Text>
       )}
     </motion.div>
@@ -787,8 +785,8 @@ export function StatusPanel({
             <InputGroup
               flex="1"
               startElement={
-                <Text as="span" fontSize="13px" aria-hidden="true">
-                  🔍
+                <Text as="span" fontSize="13px" lineHeight="1">
+                  <Icon name="search" />
                 </Text>
               }
               endElement={
@@ -804,7 +802,7 @@ export function StatusPanel({
                     aria-label="検索条件をクリア"
                     title="検索条件をクリアして全件表示に戻します"
                   >
-                    ✕
+                    <Icon name="close" />
                   </button>
                 )
               }
@@ -856,7 +854,7 @@ export function StatusPanel({
 
       {status.is_clean && (
         <EmptyState
-          icon="✨"
+          icon={<Icon name="sparkle" />}
           title="変更はありません"
           description="ファイルを編集すると、その変更がここに表示されます。きれいな状態です。"
         />
@@ -865,7 +863,7 @@ export function StatusPanel({
       {/* #166 検索・絞り込み: 全セクションを横断して 1 件もヒットしないとき */}
       {isFiltering && totalFileCount > 0 && visibleFileCount === 0 && (
         <EmptyState
-          icon="🔍"
+          icon={<Icon name="search" />}
           title="一致するファイルがありません"
           description="検索条件を変えるか、クリアボタンで全件表示に戻してください。"
         />

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
 import { EmptyState } from "./EmptyState";
 import { AheadBehindBadge } from "./AheadBehindBadge";
+import { Icon } from "./Icon";
 
 interface Props {
   branches: BranchInfo[];
@@ -72,7 +73,11 @@ export function BranchPanel({
             <li key={b.name} className={b.is_head ? "current" : ""}>
               <div className="branch-row">
                 <span className="branch-name">
-                  {b.is_head && <span className="head-mark">●</span>}
+                  {b.is_head && (
+                    <span className="head-mark">
+                      <Icon name="current" label="現在のブランチ" />
+                    </span>
+                  )}
                   {b.name}
                   {b.is_protected && (
                     <span className="protected" title="保護ブランチ">
@@ -179,7 +184,7 @@ export function BranchPanel({
 
       {local.length <= 1 && (
         <EmptyState
-          icon="🌿"
+          icon={<Icon name="branch" />}
           title="ブランチはまだ 1 つだけです"
           description="ブランチを作ると、いまの状態を壊さずに安全に新機能を試せます。"
           action={{
