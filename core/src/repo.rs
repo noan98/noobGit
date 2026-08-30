@@ -12,6 +12,27 @@ use crate::safety::is_protected;
 /// 巨大な差分で UI と通信が重くなるのを防ぐための保護。
 const MAX_DIFF_LINES: usize = 2000;
 
+/// libgit2 のデルタ種別を [`ChangeKind`] に変換する。
+///
+/// `Copied` はコピー検出を有効にしていないため実際には出現しない想定、
+/// `Ignored` / `Unreadable` / `Unmodified` は本アプリの差分では出現しない想定で、
+/// いずれも表示上無難な `Modified` に丸める。
+fn delta_status_to_kind(status: git2::Delta) -> ChangeKind {
+    match status {
+        git2::Delta::Added => ChangeKind::Added,
+        git2::Delta::Deleted => ChangeKind::Deleted,
+        git2::Delta::Renamed => ChangeKind::Renamed,
+        git2::Delta::Typechange => ChangeKind::TypeChange,
+        git2::Delta::Untracked => ChangeKind::Untracked,
+        git2::Delta::Conflicted => ChangeKind::Conflicted,
+        git2::Delta::Modified
+        | git2::Delta::Copied
+        | git2::Delta::Ignored
+        | git2::Delta::Unreadable
+        | git2::Delta::Unmodified => ChangeKind::Modified,
+    }
+}
+
 /// 指定パス（またはその親）からGitリポジトリを開く。
 ///
 /// `.git` を上位ディレクトリへ辿って探すため、リポジトリ内のどのフォルダを
@@ -689,12 +710,20 @@ fn build_file_diff(path: &str, diff: &git2::Diff) -> Result<FileDiff> {
     {
         build.is_binary = true;
     }
+    // pathspec で1ファイルに絞っているため、通常は先頭のデルタが対象。無ければ
+    // （変更が無い等）表示上無難な Modified に丸める。
+    let kind = diff
+        .deltas()
+        .next()
+        .map(|d| delta_status_to_kind(d.status()))
+        .unwrap_or(ChangeKind::Modified);
 
     Ok(FileDiff {
         path: path.to_string(),
         is_binary: build.is_binary,
         truncated: build.truncated,
         is_conflicted: false,
+        kind,
         lines: if build.is_binary {
             Vec::new()
         } else {
@@ -732,7 +761,10 @@ pub fn diff_commits(
 
     let mut opts = DiffOptions::new();
     opts.context_lines(3);
-    let diff = repo.diff_tree_to_tree(from_tree.as_ref(), Some(&to_tree), Some(&mut opts))?;
+    let mut diff = repo.diff_tree_to_tree(from_tree.as_ref(), Some(&to_tree), Some(&mut opts))?;
+    // リネームを検出し、削除+追加のペアではなく1件の Renamed として表示できるようにする。
+    // 失敗しても致命的ではない（未検出のまま削除/追加として表示されるだけ）ので無視する。
+    let _ = diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)));
 
     build_file_diffs(&diff)
 }
@@ -857,7 +889,10 @@ fn build_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>> {
         Some(&mut line_cb),
     )?;
 
-    // バイナリ判定の取りこぼし対策: 走査後にデルタのフラグでも確認する。
+    // バイナリ判定の取りこぼし対策と、パスごとの変更種別の収集を走査後にまとめて行う
+    // （デルタは `diff.foreach` のコールバック引数でも取れるが、パスごとに1回で
+    // 済ませたほうが単純なため、ここでまとめて `diff.deltas()` を見る）。
+    let mut kinds: HashMap<String, ChangeKind> = HashMap::new();
     {
         let mut s = state.borrow_mut();
         for delta in diff.deltas() {
@@ -865,6 +900,7 @@ fn build_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>> {
                 let path = delta_path(&delta);
                 s.entry(path).is_binary = true;
             }
+            kinds.insert(delta_path(&delta), delta_status_to_kind(delta.status()));
         }
     }
 
@@ -873,11 +909,13 @@ fn build_file_diffs(diff: &git2::Diff) -> Result<Vec<FileDiff>> {
     let mut out = Vec::with_capacity(state.order.len());
     for path in state.order {
         let build = builds.remove(&path).unwrap_or_default();
+        let kind = kinds.get(&path).copied().unwrap_or(ChangeKind::Modified);
         out.push(FileDiff {
             path,
             is_binary: build.is_binary,
             truncated: build.truncated,
             is_conflicted: false,
+            kind,
             lines: if build.is_binary {
                 Vec::new()
             } else {
@@ -917,6 +955,7 @@ pub fn diff_conflict(repo: &Repository, path: &str) -> Result<FileDiff> {
             is_binary: true,
             truncated: false,
             is_conflicted: true,
+            kind: ChangeKind::Conflicted,
             lines: Vec::new(),
         });
     }
@@ -942,6 +981,7 @@ pub fn diff_conflict(repo: &Repository, path: &str) -> Result<FileDiff> {
         is_binary: false,
         truncated,
         is_conflicted: true,
+        kind: ChangeKind::Conflicted,
         lines,
     })
 }
@@ -1936,6 +1976,59 @@ mod tests {
             .filter(|l| l.kind == DiffLineKind::Addition)
             .collect();
         assert_eq!(adds.len(), 2);
+        assert_eq!(diffs[0].kind, ChangeKind::Added);
+    }
+
+    #[test]
+    fn diff_commits_kind_added_modified_and_deleted() {
+        let fx = TestRepo::new();
+        fx.write_file("keep.txt", "line1\nline2\n");
+        fx.write_file("gone.txt", "bye\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let from = fx.head_oid().to_string();
+
+        fx.write_file("keep.txt", "line1\nCHANGED\n");
+        fx.write_file("brand_new.txt", "new\n");
+        std::fs::remove_file(fx.path().join("gone.txt")).unwrap();
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let diffs = diff_commits(&repo, Some(&from), &to).unwrap();
+
+        assert_eq!(diffs.len(), 3);
+        let modified = diffs.iter().find(|d| d.path == "keep.txt").unwrap();
+        assert_eq!(modified.kind, ChangeKind::Modified);
+        let added = diffs.iter().find(|d| d.path == "brand_new.txt").unwrap();
+        assert_eq!(added.kind, ChangeKind::Added);
+        let deleted = diffs.iter().find(|d| d.path == "gone.txt").unwrap();
+        assert_eq!(deleted.kind, ChangeKind::Deleted);
+    }
+
+    #[test]
+    fn diff_commits_kind_detects_rename() {
+        let fx = TestRepo::new();
+        // リネーム検出（類似度判定）が働くよう、ある程度の行数を持つ内容にする。
+        let content: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        fx.write_file("old_name.txt", &content);
+        fx.stage_all();
+        fx.commit("c1");
+        let from = fx.head_oid().to_string();
+
+        std::fs::remove_file(fx.path().join("old_name.txt")).unwrap();
+        fx.write_file("new_name.txt", &content);
+        fx.stage_all();
+        fx.commit("c2");
+        let to = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let diffs = diff_commits(&repo, Some(&from), &to).unwrap();
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "new_name.txt");
+        assert_eq!(diffs[0].kind, ChangeKind::Renamed);
     }
 
     #[test]

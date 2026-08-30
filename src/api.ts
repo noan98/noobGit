@@ -75,6 +75,9 @@ export interface FileDiff {
   is_binary: boolean;
   truncated: boolean;
   is_conflicted: boolean;
+  // このファイルの変更種別。コンフリクト中は常に "conflicted"。リネーム検出は
+  // コミット間の差分（get_diff_between）でのみ有効。
+  kind: ChangeKind;
   lines: DiffLine[];
 }
 

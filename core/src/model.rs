@@ -127,6 +127,10 @@ pub struct FileDiff {
     pub truncated: bool,
     /// コンフリクト中のファイルの内容（競合の目印を含む）を表示している場合は true。
     pub is_conflicted: bool,
+    /// このファイルの変更種別（追加・変更・削除など）。コンフリクト中の表示は常に
+    /// `Conflicted`。libgit2 のデルタ種別からの変換で、リネーム検出は行っていない
+    /// ため実質的に `Renamed` にはならない。
+    pub kind: ChangeKind,
     /// 表示する差分行（`is_binary` のときは空）。
     pub lines: Vec<DiffLine>,
 }

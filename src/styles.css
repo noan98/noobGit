@@ -1371,6 +1371,72 @@ textarea {
   word-break: break-all;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+/* #174: 変更種別ラベルをファイル名の横に添える（monospace ではない通常書体）。 */
+.diff-filter-kind-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--muted);
+}
+
+/* #174: 変更種別・ファイル名検索・並び替えをまとめたフィルターバー。 */
+.diff-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.diff-filter-kinds,
+.diff-filter-sort {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.diff-filter-kind,
+.diff-filter-sort-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--btn-bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+.diff-filter-kind:hover,
+.diff-filter-sort-btn:hover {
+  background: var(--btn-hover);
+}
+.diff-filter-kind.active,
+.diff-filter-sort-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-emphasis);
+}
+.diff-filter-search {
+  flex: 1 1 160px;
+  min-width: 120px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+}
+.diff-filter-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
 
 /* 履歴コミット行の操作ボタン（コピー・戻す）を縦並びにまとめる。 */
 .commit-actions-inline {
