@@ -20,6 +20,8 @@ pub mod safety;
 pub mod undo;
 
 #[cfg(test)]
+mod adversarial_tests;
+#[cfg(test)]
 mod test_support;
 
 pub use error::{classify_network_error, CoreError, ErrorKind, NetworkErrorKind, Result};
