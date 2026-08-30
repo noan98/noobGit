@@ -884,6 +884,30 @@ textarea {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* #166: StatusPanel の変更ファイル検索・絞り込み。 */
+/* マッチ部分のハイライト（ファイルパス内の一致文字）。 */
+.file-search-mark {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+/* 検索インプットのクリア（×）ボタン。InputGroup の endElement に差し込む。 */
+.file-search-clear {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.file-search-clear:hover {
+  color: var(--text);
+}
 .empty {
   color: var(--muted);
   font-size: 13px;
