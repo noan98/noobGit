@@ -18,6 +18,7 @@ import type {
   StashInfo,
   TagInfo,
 } from "../api";
+import { Icon, type IconName } from "./Icon";
 
 // サイドバー幅の localStorage キー。
 const WIDTH_STORAGE_KEY = "noobgit_sidebar_width";
@@ -92,7 +93,7 @@ function Section({
   onOpenView,
   children,
 }: {
-  icon: string;
+  icon: IconName;
   title: string;
   count?: number;
   defaultOpen?: boolean;
@@ -109,7 +110,7 @@ function Section({
           aria-expanded={open}
           title={open ? "折りたたむ" : "展開する"}
         >
-          {open ? "▾" : "▸"}
+          <Icon name={open ? "chevronDown" : "chevronRight"} />
         </button>
         <button
           className="sidebar-section-title"
@@ -119,7 +120,9 @@ function Section({
           }}
           title={onOpenView ? `${title}の管理画面を開く` : undefined}
         >
-          <span className="sidebar-section-icon">{icon}</span>
+          <span className="sidebar-section-icon">
+            <Icon name={icon} />
+          </span>
           <span className="sidebar-item-label">{title}</span>
           {count !== undefined && count > 0 && (
             <span className="sidebar-count">{count}</span>
@@ -206,7 +209,7 @@ export function Sidebar({
 
   const navItem = (
     target: MainView,
-    icon: string,
+    icon: IconName,
     label: string,
     badge?: React.ReactNode,
   ) => (
@@ -214,7 +217,9 @@ export function Sidebar({
       className={`sidebar-item${view === target ? " active" : ""}`}
       onClick={() => onSelectView(target)}
     >
-      <span className="sidebar-item-icon">{icon}</span>
+      <span className="sidebar-item-icon">
+        <Icon name={icon} />
+      </span>
       <span className="sidebar-item-label">{label}</span>
       {badge}
     </button>
@@ -227,26 +232,26 @@ export function Sidebar({
         aria-label="リポジトリナビゲーション"
         style={{ flex: `0 0 ${width}px` }}
       >
-      <Section icon="🗂" title="ワークスペース">
+      <Section icon="workspace" title="ワークスペース">
         {navItem(
           "status",
-          "📄",
+          "file",
           "ファイルステータス",
           conflictCount > 0 ? (
             <span
               className="sidebar-count attention"
               title={`コンフリクト ${conflictCount} 件`}
             >
-              ⚠ {conflictCount}
+              <Icon name="warning" /> {conflictCount}
             </span>
           ) : changeCount > 0 ? (
             <span className="sidebar-count">{changeCount}</span>
           ) : undefined,
         )}
-        {navItem("history", "🕘", "履歴")}
+        {navItem("history", "history", "履歴")}
         {navItem(
           "undo",
-          "↩",
+          "undo",
           "取り消し履歴",
           undoCount > 0 ? (
             <span className="sidebar-count">{undoCount}</span>
@@ -255,7 +260,7 @@ export function Sidebar({
       </Section>
 
       <Section
-        icon="🌿"
+        icon="branch"
         title="ブランチ"
         count={localBranches.length}
         onOpenView={() => onSelectView("branches")}
@@ -274,7 +279,9 @@ export function Sidebar({
                 : `ダブルクリックで「${b.name}」へ切り替え`
             }
           >
-            <span className="sidebar-item-icon">{b.is_head ? "●" : " "}</span>
+            <span className="sidebar-item-icon">
+              {b.is_head ? <Icon name="current" label="現在のブランチ" /> : null}
+            </span>
             <span className="sidebar-item-label">{b.name}</span>
             {b.is_protected && <span className="protected">保護</span>}
           </button>
@@ -285,7 +292,7 @@ export function Sidebar({
       </Section>
 
       <Section
-        icon="🏷"
+        icon="tag"
         title="タグ"
         count={tags.length}
         defaultOpen={false}
@@ -308,7 +315,7 @@ export function Sidebar({
       </Section>
 
       <Section
-        icon="☁"
+        icon="remote"
         title="リモート"
         count={remotes.length}
         defaultOpen={false}
@@ -331,7 +338,7 @@ export function Sidebar({
       </Section>
 
       <Section
-        icon="📦"
+        icon="stash"
         title="スタッシュ（退避）"
         count={stashes.length}
         defaultOpen={false}

@@ -1,4 +1,5 @@
 import type { ConflictFile } from "../api";
+import { Icon } from "./Icon";
 
 interface Props {
   // コンフリクト中のファイル一覧（status.conflicted から組み立てる）。
@@ -30,7 +31,9 @@ export function ConflictWizard({
   return (
     <div className="panel conflict-wizard">
       <div className="panel-head">
-        <h2>⚠️ コンフリクトの解消</h2>
+        <h2>
+          <Icon name="warning" /> コンフリクトの解消
+        </h2>
         <span className="conflict-count">{conflicts.length} 件</span>
       </div>
 

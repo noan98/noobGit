@@ -21,6 +21,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { open } from "@tauri-apps/plugin-dialog";
 import { transitions, spring } from "../theme/motion";
 import { showToast } from "./Toaster";
+import { Icon } from "./Icon";
 
 // localStorage のキー。最近使ったリポジトリを新しい順に最大 5 件保存する。
 const STORAGE_KEY = "noobgit_recent_repos";
@@ -270,8 +271,8 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
           onClick={() => openRecent(repo.path)}
           title={`「${repo.path}」を開く`}
         >
-          <span className="recent-repo-icon" aria-hidden="true">
-            {isPrimary ? "📂" : "📁"}
+          <span className="recent-repo-icon">
+            <Icon name={isPrimary ? "repoOpen" : "repo"} />
           </span>
           <span className="recent-repo-main">
             <span className="recent-repo-name">{repoName(repo.path)}</span>
@@ -285,7 +286,7 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
           title="この履歴を一覧から削除します（フォルダは消えません）"
           aria-label="履歴から削除"
         >
-          ✕
+          <Icon name="close" />
         </button>
       </div>
     );
@@ -330,7 +331,9 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
         className="home-greeting"
       >
         <span className="home-brand">noobGit</span>
-        <h1>おかえりなさい 👋</h1>
+        <h1>
+          おかえりなさい <Icon name="greeting" />
+        </h1>
         <p className="tagline welcome-catch">前回の続きから始めましょう</p>
       </motion.div>
 

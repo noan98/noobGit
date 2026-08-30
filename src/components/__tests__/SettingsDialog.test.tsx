@@ -36,7 +36,7 @@ describe("SettingsDialog", () => {
 
   it("既定（日本語）で設定画面が日本語表示されること", () => {
     renderDialog();
-    expect(screen.getByText("⚙ 設定")).toBeInTheDocument();
+    expect(screen.getByText("設定")).toBeInTheDocument();
     expect(screen.getByText("表示言語")).toBeInTheDocument();
     // 言語の選択肢は自言語表記で出る。
     expect(screen.getByRole("radio", { name: "日本語" })).toBeInTheDocument();
@@ -62,7 +62,7 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("radio", { name: "English" }));
 
     // 設定画面自身の文言が英語へ追従する（i18n 基盤が双方向に効く確認）。
-    expect(screen.getByText("⚙ Settings")).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
     expect(screen.getByText("Display language")).toBeInTheDocument();
     expect(screen.getByText("Close")).toBeInTheDocument();
     // 選択が localStorage と <html lang> に反映される。
@@ -73,7 +73,7 @@ describe("SettingsDialog", () => {
   it("保存済みの言語（en）が初期表示に反映されること", () => {
     localStorage.setItem("noobgit-lang", "en");
     renderDialog();
-    expect(screen.getByText("⚙ Settings")).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "English" })).toHaveAttribute(
       "aria-checked",
       "true",

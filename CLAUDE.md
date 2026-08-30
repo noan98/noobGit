@@ -70,6 +70,9 @@ noobGit/
   `explain` を呼び、レベルが `safe` でないときに `ConfirmDialog` を表示する。
 - `components/` — `StatusPanel`, `HistoryPanel`, `BranchPanel`,
   `ConfirmDialog`。表示専用で、`App.tsx` から渡されたコールバックを呼ぶ。
+- `components/Icon.tsx` — アイコンの唯一の出典。[Tabler Icons](https://tabler.io/icons)
+  （`@tabler/icons-react`）を用途ベースの名前（`IconName`）で包み、`<Icon
+  name="commit" />` のように使う。**絵文字は使わない** — 下記「規約」を参照。
 
 ## 境界をまたぐ型契約
 
@@ -160,6 +163,13 @@ UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘ
   コメントはすべて**日本語**。編集時もこれに合わせること — 新しいエラー
   メッセージや説明は、初心者が理解できる平易な日本語にする。識別子・シンボルは
   英語のまま。
+- **アイコンは Tabler Icons のみ。** UI のアイコンは必ず
+  `src/components/Icon.tsx` の `<Icon name="..." />` を通す。絵文字（📁 ✅ ⚠️
+  など）は OS・フォントによって形も色も変わり、ライト/ダークテーマに追従しない
+  ので使わない。新しいアイコンが要るときは、Tabler から選んで `Icon.tsx` の
+  `ICONS` に**用途を表す名前**（`push` であって `arrow-up` ではない）で追加し、
+  各コンポーネントはその名前だけを渡す。アイコンは `currentColor` と `1em`
+  （周囲の `font-size` に追従）で描かれるので、色と大きさは CSS 側で決める。
 - **安全性こそが製品。** ガードフローを弱めたり迂回したりしないこと。新しい破壊的
   操作には必ず次が必要: `safety.rs` の評価、`explain.rs` のエントリ、そして
   （取り消し可能なら）`undo.rs` のアクション。

@@ -10,9 +10,10 @@
  * 初回描画前のちらつき防止（FOUC）は index.html のインラインスクリプトが
  * 担当する。ここで使う保存キー（noobgit-theme）はそのスクリプトと一致させること。
  */
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { transitions } from "../theme/motion";
+import { Icon, type IconName } from "./Icon";
 
 // 表示テーマ。"system" は OS の設定（prefers-color-scheme）に追従する。
 type ThemeChoice = "light" | "dark" | "system";
@@ -45,50 +46,12 @@ function resolveTheme(choice: ThemeChoice): "light" | "dark" {
   return choice;
 }
 
-// アイコンは currentColor で描くので、ボタンの文字色（--text）に追従して
-// ライト/ダークどちらでも自然になじむ。16x16 のラインアイコン。
-const ICON_PROPS = {
-  width: 16,
-  height: 16,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-
-function SunIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
-  );
-}
-
-function MonitorIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <rect x="2" y="3" width="20" height="14" rx="2" />
-      <path d="M8 21h8M12 17v4" />
-    </svg>
-  );
-}
-
-const ICONS: Record<ThemeChoice, () => ReactElement> = {
-  light: SunIcon,
-  dark: MoonIcon,
-  system: MonitorIcon,
+// アイコンは Tabler Icons（Icon.tsx）に集約している。currentColor で描かれる
+// ので、ボタンの文字色（--text）に追従してライト/ダークどちらでもなじむ。
+const ICONS: Record<ThemeChoice, IconName> = {
+  light: "themeLight",
+  dark: "themeDark",
+  system: "themeSystem",
 };
 
 export function ThemeToggle() {
@@ -117,7 +80,7 @@ export function ThemeToggle() {
     );
   }, []);
 
-  const Icon = ICONS[theme];
+  const iconName = ICONS[theme];
 
   return (
     <button
@@ -138,7 +101,7 @@ export function ThemeToggle() {
             exit={{ opacity: 0, rotate: 90, scale: 0.6 }}
             transition={transitions.fast}
           >
-            <Icon />
+            <Icon name={iconName} size={16} />
           </motion.span>
         </AnimatePresence>
       </span>

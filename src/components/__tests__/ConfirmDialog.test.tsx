@@ -213,7 +213,7 @@ describe("ConfirmDialog", () => {
     );
 
     expect(
-      screen.getByText("💡 より安全な代替操作があります。"),
+      screen.getByText("より安全な代替操作があります。"),
     ).toBeInTheDocument();
   });
 
@@ -228,7 +228,9 @@ describe("ConfirmDialog", () => {
       />,
     );
 
-    expect(screen.queryByText(/💡/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("より安全な代替操作があります。"),
+    ).not.toBeInTheDocument();
   });
 
   // --- reasons の表示 ---

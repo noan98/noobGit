@@ -2,6 +2,7 @@
 // NetworkErrorDialog から kind === "ssh_key_not_found" のときに表示される。
 
 import { useState } from "react";
+import { Icon } from "./Icon";
 
 interface Step {
   text: string;
@@ -92,7 +93,15 @@ function CopyableCommand({ label, value }: { label: string; value: string }) {
           title={copied ? "コピーしました" : "コマンドをコピー"}
           aria-label={`「${value}」をコピー`}
         >
-          {copied ? "✓ コピー済み" : "⎘ コピー"}
+          {copied ? (
+            <>
+              <Icon name="check" /> コピー済み
+            </>
+          ) : (
+            <>
+              <Icon name="copy" /> コピー
+            </>
+          )}
         </button>
       </div>
     </div>

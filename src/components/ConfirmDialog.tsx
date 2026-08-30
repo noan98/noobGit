@@ -10,6 +10,7 @@ import type {
 import { fadeIn, shakeXKeyframes, spring, transitions } from "../theme/motion";
 import { StatusBadge } from "./StatusBadge";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { Icon } from "./Icon";
 
 const levelLabel: Record<RiskLevel, string> = {
   safe: "安全な操作",
@@ -174,12 +175,17 @@ export function ConfirmDialog({
         </div>
 
         {assessment.recommended_alternative && (
-          <p className="alt">💡 {assessment.recommended_alternative}</p>
+          <p className="alt">
+            <Icon name="hint" /> {assessment.recommended_alternative}
+          </p>
         )}
 
         {/* on_trouble は折りたたみ表示。ダイアログが長くなりすぎず、必要な人だけ開ける。 */}
         <details className="trouble-details">
-          <summary className="trouble-summary">困ったときは</summary>
+          <summary className="trouble-summary">
+            <Icon name="chevronRight" className="trouble-summary-chevron" />
+            困ったときは
+          </summary>
           <p className="trouble">{explanation.on_trouble}</p>
         </details>
 
@@ -187,7 +193,7 @@ export function ConfirmDialog({
             キーボード操作をブロックするだけでなく、その旨を必ず視覚的に示す。 */}
         {isDestructive && (
           <p className="esc-disabled-note" role="note">
-            ⚠ Esc キーでは閉じられません。下のボタンで選んでください。
+            <Icon name="warning" /> Esc キーでは閉じられません。下のボタンで選んでください。
           </p>
         )}
 
