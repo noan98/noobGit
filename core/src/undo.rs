@@ -52,15 +52,80 @@ fn journal_path(repo: &Repository) -> PathBuf {
     repo.path().join("noobgit_undo.json")
 }
 
+/// 書き込み時に使うジャーナルのスキーマバージョン。
+///
+/// v0: バージョンフィールドの無い裸の配列（旧形式。読み込みのみ対応）。
+/// v1: `{ "version": 1, "entries": [...] }`。現行の書き込み形式。
+const CURRENT_VERSION: u64 = 1;
+
+/// 書き込み用のジャーナル全体表現。
+#[derive(Serialize)]
+struct JournalFile<'a> {
+    version: u64,
+    entries: &'a [UndoEntry],
+}
+
+/// ジャーナル本体のバイト列を**寛容に**パースし、[`UndoEntry`] の一覧を返す。
+///
+/// undo はベストエフォートという方針に沿い、次のいずれの場合もパニックや
+/// 全体エラーにはせず、可能な限り多くの正常なエントリを生かす:
+///
+/// - 旧形式（バージョンフィールドの無い裸の配列。v0）はそのまま読める。
+/// - 新形式（`{ "version": N, "entries": [...] }`）は、`N` が現在の
+///   バージョンより大きい（将来のバージョンで書かれた）場合でも同じ形で読む。
+/// - 個々のエントリが未知の `UndoAction` バリアントや型不一致で
+///   デコードできない場合、そのエントリだけをスキップし、他は生かす
+///   （未知フィールドは serde が元々無視するため、そのまま読める）。
+/// - JSON 全体が構文的に壊れている（途中切断など）場合は、ファイル全体を
+///   「履歴なし」として扱う（Undo が使えなくなるだけで、他の機能は壊さない）。
+fn parse_journal(bytes: &[u8]) -> Vec<UndoEntry> {
+    let value: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            // JSON として構文的に壊れている（途中切断等）。読める部分もないため、
+            // 履歴なしとして扱う。パニックはしない。
+            eprintln!("noobgit: 取り消し履歴のファイルが壊れているため、履歴なしとして扱います");
+            return Vec::new();
+        }
+    };
+
+    let raw_entries: Vec<serde_json::Value> = match value {
+        // v0: バージョンフィールドの無い裸の配列。
+        serde_json::Value::Array(arr) => arr,
+        // v1 以降: { "version": N, "entries": [...] }。
+        // N が現在のバージョンより大きくても（将来のバージョン）同じ形で読む。
+        serde_json::Value::Object(mut map) => match map.remove("entries") {
+            Some(serde_json::Value::Array(arr)) => arr,
+            _ => Vec::new(),
+        },
+        // 想定外の形（数値・文字列など）は履歴なしとして扱う。
+        _ => Vec::new(),
+    };
+
+    let mut entries = Vec::with_capacity(raw_entries.len());
+    let mut skipped = 0usize;
+    for raw in raw_entries {
+        match serde_json::from_value::<UndoEntry>(raw) {
+            Ok(entry) => entries.push(entry),
+            // 未知の UndoAction バリアントや型不一致など、個々のデコード失敗は
+            // そのエントリだけスキップし、他の正常なエントリは生かす。
+            Err(_) => skipped += 1,
+        }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "noobgit: 取り消し履歴のうち{skipped}件のエントリを読み込めなかったためスキップしました"
+        );
+    }
+    entries
+}
+
 fn load(repo: &Repository) -> Result<Vec<UndoEntry>> {
     let path = journal_path(repo);
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-            CoreError::Git(format!(
-                "取り消し履歴を読み取れませんでした（ファイルが壊れている可能性があります）: {e}"
-            ))
-        }),
-        // ファイルが無いのは「履歴なし」。それ以外の読み取りエラーは握りつぶさず返す。
+        Ok(bytes) => Ok(parse_journal(&bytes)),
+        // ファイルが無いのは「履歴なし」。それ以外の読み取りエラー（権限不足等）は
+        // 握りつぶさず返す — こちらはファイル内容ではなく I/O の失敗のため。
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(CoreError::Git(format!(
             "取り消し履歴の読み取りに失敗しました: {e}"
@@ -70,7 +135,11 @@ fn load(repo: &Repository) -> Result<Vec<UndoEntry>> {
 
 fn save(repo: &Repository, entries: &[UndoEntry]) -> Result<()> {
     let path = journal_path(repo);
-    let bytes = serde_json::to_vec_pretty(entries)
+    let file = JournalFile {
+        version: CURRENT_VERSION,
+        entries,
+    };
+    let bytes = serde_json::to_vec_pretty(&file)
         .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
     // 一時ファイルへ書いてから rename することで、書き込み途中の中断で
     // ジャーナルが壊れる（＝Undoが消える）のを防ぐ。
@@ -235,15 +304,184 @@ mod tests {
         assert!(undo_last(&repo).is_err());
     }
 
+    // JSON として構文的に壊れている（＝途中で切断された等）ジャーナルは、
+    // パニックもエラーも起こさず「履歴なし」として扱う（undo はベストエフォート）。
+    // 中身は読めなくても、他の noobGit の機能は壊さないという明文化テスト。
     #[test]
-    fn corrupt_journal_is_surfaced_not_swallowed() {
+    fn corrupt_truncated_journal_is_treated_as_empty_not_panicking() {
         let fx = TestRepo::new();
         let repo = fx.open();
         std::fs::write(repo.path().join("noobgit_undo.json"), b"{ broken json").unwrap();
-        // 壊れた履歴を「履歴なし」と誤認せず、エラーとして返す。
-        assert!(can_undo(&repo).is_err());
-        assert!(peek(&repo).is_err());
-        assert!(undo_last(&repo).is_err());
+
+        assert!(!can_undo(&repo).unwrap());
+        assert_eq!(peek(&repo).unwrap(), None);
+        assert!(list(&repo).unwrap().is_empty());
+        // undo_last は「取り消せる操作がありません」であって、パース失敗のエラーではない。
+        assert!(matches!(
+            undo_last(&repo).unwrap_err(),
+            CoreError::NothingToUndo(_)
+        ));
+    }
+
+    // バージョンフィールドの無い旧形式（v0: 裸の配列）を透過的に読み込めること。
+    #[test]
+    fn legacy_bare_array_journal_v0_is_read_transparently() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        // v0 形式（バージョンフィールド無しの裸の配列）を手で書く。
+        let legacy = serde_json::json!([
+            {
+                "op": "delete_branch",
+                "description": "旧形式のエントリ",
+                "action": {
+                    "action": "recreate_branch",
+                    "name": "legacy-branch",
+                    "target": target,
+                }
+            }
+        ]);
+        std::fs::write(
+            repo.path().join("noobgit_undo.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let entries = list(&repo).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "旧形式のエントリ");
+
+        // 取り消しも実際に動く。
+        let desc = undo_last(&repo).unwrap();
+        assert!(desc.contains("旧形式"));
+        assert!(repo
+            .find_branch("legacy-branch", git2::BranchType::Local)
+            .is_ok());
+    }
+
+    // 未知の UndoAction バリアントや未知フィールドが混ざっていても、
+    // デコードできる正常なエントリだけが生き残り、全体が失敗しないこと。
+    #[test]
+    fn unknown_variant_and_unknown_field_entries_are_skipped_not_fatal() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let journal = serde_json::json!({
+            "version": 1,
+            "entries": [
+                {
+                    "op": "delete_branch",
+                    "description": "正常なエントリ1",
+                    "action": {
+                        "action": "recreate_branch",
+                        "name": "keep-me",
+                        "target": target,
+                    }
+                },
+                {
+                    "op": "delete_branch",
+                    "description": "未知バリアントのエントリ",
+                    "action": {
+                        "action": "future_unknown_action",
+                        "some_field": "some_value",
+                    }
+                },
+                {
+                    "op": "delete_branch",
+                    "description": "未知フィールド付きの正常なエントリ",
+                    "action": {
+                        "action": "delete_branch",
+                        "name": "some-branch",
+                        "future_field": "無視されるはず",
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            repo.path().join("noobgit_undo.json"),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+
+        let entries = list(&repo).unwrap();
+        // 未知バリアントの1件だけがスキップされ、残り2件は生きている。
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].description, "正常なエントリ1");
+        assert_eq!(entries[1].description, "未知フィールド付きの正常なエントリ");
+    }
+
+    // 現在よりバージョン番号が大きい（将来のバージョンで書かれた）ジャーナルも、
+    // 同じ形で寛容に読み込めること（正常なエントリは生きる）。
+    #[test]
+    fn future_version_journal_is_still_readable() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        let journal = serde_json::json!({
+            "version": 999,
+            "entries": [
+                {
+                    "op": "delete_branch",
+                    "description": "未来バージョンのエントリ",
+                    "action": {
+                        "action": "recreate_branch",
+                        "name": "future-branch",
+                        "target": target,
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            repo.path().join("noobgit_undo.json"),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+
+        let entries = list(&repo).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "未来バージョンのエントリ");
+    }
+
+    // 書き込みは新形式（v1: { "version": 1, "entries": [...] }）で行われること。
+    #[test]
+    fn save_writes_versioned_journal_format() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+        push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::DeleteBranch,
+                description: "test".into(),
+                action: UndoAction::RecreateBranch {
+                    name: "tmp-branch".into(),
+                    target,
+                },
+            },
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(repo.path().join("noobgit_undo.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["version"], serde_json::json!(1));
+        assert!(value["entries"].is_array());
+        assert_eq!(value["entries"].as_array().unwrap().len(), 1);
     }
 
     #[test]
