@@ -288,6 +288,49 @@ pub enum PullOutcome {
     },
 }
 
+/// fetch / pull / push の通信がいまどの段階にいるかを表す。
+///
+/// オブジェクト数を取得できない「接続待ち」の間もユーザーに状況を伝えられるよう、
+/// オブジェクト数の増減だけでなく段階そのものを明示する。
+///
+/// 注意: この enum は `scripts/check_type_contract.py` の自動検証対象（`OperationKind` /
+/// `RiskLevel` / `ChangeKind` / `DiffLineKind` / `NetworkErrorKind` のみ）に**含まれない**。
+/// バリアントを追加・変更したときは `src/api.ts` の `NetworkProgressStage` を必ず手動で
+/// 同期すること。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkProgressStage {
+    /// リモートへ接続している段階。オブジェクト数はまだ分からない。
+    Connecting,
+    /// オブジェクトを受信している段階（fetch / pull）。
+    ReceivingObjects,
+    /// 受信済みオブジェクトのデルタ（差分）を展開している段階（fetch / pull）。
+    ResolvingDeltas,
+    /// オブジェクトを送信している段階（push）。
+    SendingObjects,
+}
+
+/// fetch / pull / push の途中経過を表す1件のスナップショット。
+///
+/// Tauri の Channel でフロントエンドへストリーミング送信し、進捗バー表示に使う。
+/// `total_objects` が 0 の間はまだ総数が分かっていない（`stage` が `Connecting` の
+/// 間など）ことを示すので、UI 側は 0 除算を避け、パーセント表示は `total_objects > 0`
+/// のときだけ行うこと。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkProgress {
+    pub stage: NetworkProgressStage,
+    /// 転送済みオブジェクト数。fetch / pull では受信済み数、push では送信済み数。
+    pub received_objects: usize,
+    /// 送信/受信すべきオブジェクトの総数。分かるまでは 0。
+    pub total_objects: usize,
+    /// これまでに転送したバイト数。
+    pub received_bytes: usize,
+    /// 展開済みデルタ数（fetch / pull のみ。push では常に 0）。
+    pub indexed_deltas: usize,
+    /// デルタの総数（fetch / pull のみ。push では常に 0）。分かるまでは 0。
+    pub total_deltas: usize,
+}
+
 /// ステージしようとしたファイルが機密性の高いものだった場合の警告1件。
 ///
 /// `path` はリポジトリルートからの相対パス、`reason` はなぜ危険かの

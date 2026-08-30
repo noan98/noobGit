@@ -66,6 +66,8 @@ import { CommandPalette, type PaletteCommand } from "./components/CommandPalette
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
 import { SensitiveWarningDialog } from "./components/SensitiveWarningDialog"; // #69 機密ファイル検出
 import { LfsGuideDialog } from "./components/LfsGuideDialog"; // #81 LFS ガイド
+import { NetworkProgressBar } from "./components/NetworkProgressBar"; // #167 進捗フィードバック
+import { useNetworkProgress } from "./hooks/useNetworkProgress"; // #167 進捗フィードバック
 import { transitions } from "./theme/motion";
 import {
   BODY_WRAP_LIMIT,
@@ -302,6 +304,8 @@ export default function App() {
   // ネットワーク操作（fetch / pull / push）の実行中フラグ。
   // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
   const [isNetworkBusy, setIsNetworkBusy] = useState(false);
+  // #167 進捗フィードバック: fetch / pull / push 実行中の進捗バー状態。
+  const networkProgress = useNetworkProgress();
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
@@ -845,11 +849,15 @@ export default function App() {
       `ブランチ「${name}」を送信`,
       "push",
       () =>
-        api.push(
-          repoPath,
-          "origin",
-          `refs/heads/${name}:refs/heads/${name}`,
-          false,
+        // #167 進捗フィードバック: 送信オブジェクト数などを流す。
+        networkProgress.run("プッシュ", (onProgress) =>
+          api.push(
+            repoPath,
+            "origin",
+            `refs/heads/${name}:refs/heads/${name}`,
+            false,
+            onProgress,
+          ),
         ),
       name,
       true, // networkOp
@@ -899,7 +907,10 @@ export default function App() {
   function doFetch() {
     void exec(
       async () => {
-        const outcome = await api.fetch(repoPath, DEFAULT_REMOTE);
+        // #167 進捗フィードバック: 受信オブジェクト数などをプログレスバーへ流す。
+        const outcome = await networkProgress.run("フェッチ", (onProgress) =>
+          api.fetch(repoPath, DEFAULT_REMOTE, onProgress),
+        );
         const msg =
           outcome.updated_refs > 0
             ? `リモート「${outcome.remote}」から最新情報を取得しました（追跡ブランチ ${outcome.updated_refs} 件を更新）。`
@@ -924,7 +935,10 @@ export default function App() {
       "リモートから取り込む",
       "pull",
       async () => {
-        const outcome = await api.pull(repoPath, DEFAULT_REMOTE, branch);
+        // #167 進捗フィードバック: fetch 部分の受信オブジェクト数などを流す。
+        const outcome = await networkProgress.run("プル", (onProgress) =>
+          api.pull(repoPath, DEFAULT_REMOTE, branch, onProgress),
+        );
         const msg =
           outcome.kind === "up_to_date"
             ? "すでに最新の状態でした。取り込むものはありません。"
@@ -1471,6 +1485,9 @@ export default function App() {
           <span className="toolbar-btn-label">更新</span>
         </button>
       </div>
+
+      {/* #167 進捗フィードバック: fetch / pull / push 実行中の進捗バー。 */}
+      <NetworkProgressBar state={networkProgress.state} />
 
       {error && (
         <div className="banner error" onClick={() => setError(null)}>
