@@ -40,10 +40,26 @@ fn submodule_blocked_message(path: &str) -> String {
     )
 }
 
+/// リポジトリ内を指す相対パスであることを検証する。
+///
+/// 絶対パスや `..` を含むパスは作業ツリーの外に出られてしまうため、パスを受け取る
+/// 書き込み系の操作では一律拒否する（libgit2 の生エラーに任せず、先に平易に断る）。
+fn ensure_repo_relative_path(path: &str) -> Result<()> {
+    let rel = Path::new(path);
+    if rel.as_os_str().is_empty()
+        || rel.is_absolute()
+        || rel.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
+    }
+    Ok(())
+}
+
 /// 指定パスをステージする。ファイルが消えていれば削除としてステージする。
 ///
 /// サブモジュールのパスが指定された場合は、意図しない挙動を避けるため安全に拒否する。
 pub fn stage_path(repo: &Repository, path: &str) -> Result<()> {
+    ensure_repo_relative_path(path)?;
     if is_submodule_path(repo, path) {
         return Err(CoreError::Blocked(submodule_blocked_message(path)));
     }
@@ -69,6 +85,7 @@ pub fn stage_path(repo: &Repository, path: &str) -> Result<()> {
 /// いる（削除で解消した）場合はインデックスから取り除く。マーク後はそのまま
 /// コミットへ進める。undo は通常のステージと同じ扱いなので記録しない。
 pub fn mark_resolved(repo: &Repository, path: &str) -> Result<()> {
+    ensure_repo_relative_path(path)?;
     let mut index = repo.index()?;
     let exists = repo
         .workdir()
@@ -85,6 +102,7 @@ pub fn mark_resolved(repo: &Repository, path: &str) -> Result<()> {
 
 /// 指定パスのステージを解除する（変更内容は保持）。
 pub fn unstage(repo: &Repository, path: &str) -> Result<()> {
+    ensure_repo_relative_path(path)?;
     match repo.head() {
         Ok(head) => {
             let commit = head.peel_to_commit()?;
@@ -120,6 +138,7 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
             "ステージする変更の塊（hunk）を指定してください。".to_string(),
         ));
     }
+    ensure_repo_relative_path(file_path)?;
     if is_submodule_path(repo, file_path) {
         return Err(CoreError::Blocked(submodule_blocked_message(file_path)));
     }
@@ -193,6 +212,10 @@ fn normalize_hunk_header(header: &[u8]) -> String {
 }
 
 /// ステージされた変更をコミットする。直後に Undo で取り消せる。
+///
+/// マージ中（コンフリクト解消後）にコミットすると、取り込み元（MERGE_HEAD）を第2親に
+/// 加えたマージコミットを作り、マージ中の状態を片付けてマージを完了させる。
+/// コンフリクトが未解消のファイルが残っている間は [`CoreError::Blocked`] で中断する。
 pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     if message.trim().is_empty() {
         return Err(CoreError::InvalidInput(
@@ -208,38 +231,74 @@ pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     })?;
 
     let mut index = repo.index()?;
+    // コンフリクトが未解消のまま進むと libgit2 の生エラーになるため、先に平易な日本語で案内する。
+    if index.has_conflicts() {
+        return Err(CoreError::Blocked(
+            "コンフリクト（競合）が解消されていないファイルがあります。すべてのファイルを直して「解消済みとしてマーク」してから、もう一度コミットしてください。"
+                .to_string(),
+        ));
+    }
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
 
     let prev = repo.head().ok().and_then(|h| h.target());
     let branch = current_branch(repo).unwrap_or_else(|| "main".to_string());
 
-    // コミットする変更があるか確認する。
-    match prev {
-        Some(p) => {
-            let parent_tree = repo.find_commit(p)?.tree()?.id();
-            if parent_tree == tree_id {
-                return Err(CoreError::InvalidInput(
-                    "コミットする変更がありません。先に変更をステージしてください。".to_string(),
-                ));
+    // マージ中（コンフリクト解消後）のコミットなら、取り込み元（MERGE_HEAD）を第2親に
+    // 加えて正しいマージコミットを作る。これが無いと、コンフリクト解消後のコミットが
+    // 取り込み元との親子関係を持たない普通のコミットになり、マージが履歴に残らないうえ
+    // MERGE_HEAD が残ってリポジトリが「マージ中」のまま取り残される。
+    // mergehead_foreach は &mut Repository を要するため、同じパスで開き直す。
+    let mut merge_parents: Vec<git2::Oid> = Vec::new();
+    if repo.state() == git2::RepositoryState::Merge {
+        let mut r = Repository::open(repo.path())?;
+        r.mergehead_foreach(|oid| {
+            merge_parents.push(*oid);
+            true
+        })?;
+    }
+
+    // コミットする変更があるか確認する。マージの締めくくりのコミットは、片方の内容を
+    // 全面採用してツリーが変わらなくても意味がある（親子関係を記録する）ので確認しない。
+    if merge_parents.is_empty() {
+        match prev {
+            Some(p) => {
+                let parent_tree = repo.find_commit(p)?.tree()?.id();
+                if parent_tree == tree_id {
+                    return Err(CoreError::InvalidInput(
+                        "コミットする変更がありません。先に変更をステージしてください。"
+                            .to_string(),
+                    ));
+                }
             }
-        }
-        None => {
-            if index.is_empty() {
-                return Err(CoreError::InvalidInput(
-                    "コミットする変更がありません。先に変更をステージしてください。".to_string(),
-                ));
+            None => {
+                if index.is_empty() {
+                    return Err(CoreError::InvalidInput(
+                        "コミットする変更がありません。先に変更をステージしてください。"
+                            .to_string(),
+                    ));
+                }
             }
         }
     }
 
-    let parents: Vec<Commit> = match prev {
+    let mut parents: Vec<Commit> = match prev {
         Some(p) => vec![repo.find_commit(p)?],
         None => vec![],
     };
+    for oid in &merge_parents {
+        if Some(*oid) != prev {
+            parents.push(repo.find_commit(*oid)?);
+        }
+    }
     let parent_refs: Vec<&Commit> = parents.iter().collect();
 
     let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)?;
+
+    // マージ中の状態（MERGE_HEAD 等）を片付けて、マージを完了させる。
+    if !merge_parents.is_empty() {
+        let _ = repo.cleanup_state();
+    }
 
     let action = match prev {
         Some(p) => UndoAction::SoftResetTo {
@@ -526,6 +585,8 @@ pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
 /// サブモジュールのパスが指定された場合は、中の別リポジトリを壊しかねないため
 /// 実行せず安全に拒否する。
 pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
+    // 作業ツリー外を指すパスは扱わない（安全のため）。
+    ensure_repo_relative_path(path)?;
     if is_submodule_path(repo, path) {
         return Err(CoreError::Blocked(submodule_blocked_message(path)));
     }
@@ -534,11 +595,7 @@ pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
         .workdir()
         .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
 
-    // 作業ツリー外を指す相対パスは扱わない（安全のため）。
     let rel = Path::new(path);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(CoreError::InvalidInput(format!("不正なパスです: {path}")));
-    }
 
     // HEAD のツリーに当該パスがあるか（＝コミット済みのファイルか）。
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
@@ -1349,8 +1406,10 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
 /// 同じ変更を持つ新しいコミットを 1 つ積む。author は元コミットを引き継ぎ、committer は
 /// 現在の identity に更新する（git の cherry-pick と同じ）。メッセージも元コミットを引き継ぐ。
 ///
-/// コンフリクト（競合）が起きた場合は、作業ツリー・インデックスを元の HEAD 状態へ
-/// 強制的に戻してから [`CoreError::Blocked`] を返す。状態は必ず保全する。
+/// 未コミットの変更を黙って消さないため、次の場合は**何も変えずに** [`CoreError::Blocked`]
+/// で中断する: ステージ済みの変更があるとき（git と同じ）、コンフリクト（競合）が起きた
+/// とき、コピー内容が未ステージの変更と同じファイルに触れているとき。作業ツリーへの反映は
+/// 安全（safe）チェックアウトで行い、無関係なファイルのローカル変更は保たれる。
 /// 成功時は、コピー直前の HEAD への soft reset を undo に記録する。
 pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
     let target = git2::Oid::from_str(oid.trim())
@@ -1375,6 +1434,17 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
         )
     })?;
 
+    // git と同様、ステージ済みの変更があるときは実行しない。コピーの結果と混ざって
+    // 後から区別できなくなるため、何も変えずに中断して先に整理してもらう。
+    let head_tree = head_commit.tree()?;
+    let staged = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+    if staged.deltas().len() > 0 {
+        return Err(CoreError::Blocked(
+            "ステージ済みの変更があるため、コピー（cherry-pick）できません。先にコミットするか退避(stash)してください。"
+                .to_string(),
+        ));
+    }
+
     // HEAD を土台に、コピー元コミットの変更を当てたインデックスをメモリ上に作る
     // （作業ツリー・実インデックスにはまだ触れない）。
     let mut merged = repo
@@ -1394,10 +1464,22 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
         ));
     }
 
-    // コンフリクトなし: 合成したインデックスからツリーを作り、新しいコミットを積む。
+    // コンフリクトなし: 合成したインデックスからツリーを作る。
     let tree_id = merged.write_tree_to(repo)?;
     let tree = repo.find_tree(tree_id)?;
     let message = commit.message().unwrap_or("");
+
+    // コミットの前に、作業ツリー・インデックスを安全（safe）チェックアウトで新しい内容へ
+    // 合わせる。コピー内容が未コミットの変更と同じファイルに触れている場合はここで失敗し、
+    // 何も変えずに中断する。force だと、無関係なファイルの未コミット変更まで黙って
+    // 消えてしまう（データ消失）ため使わない。
+    let mut co = CheckoutBuilder::new();
+    repo.checkout_tree(tree.as_object(), Some(&mut co)).map_err(|_| {
+        CoreError::Blocked(
+            "未コミットの変更とコピー内容が同じファイルに触れているため、コピー（cherry-pick）を中断しました。先にコミットか退避(stash)をしてください。"
+                .to_string(),
+        )
+    })?;
 
     // author は元コミットのまま、committer を現在の identity にして新コミットを作る。
     let new_oid = repo.commit(
@@ -1408,11 +1490,6 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
         &tree,
         &[&head_commit],
     )?;
-
-    // commit は HEAD を進めるだけなので、作業ツリーとインデックスを新コミットの内容へ合わせる。
-    let mut co = CheckoutBuilder::new();
-    co.force();
-    repo.checkout_tree(tree.as_object(), Some(&mut co))?;
 
     // 念のため CHERRY_PICK_HEAD 等の途中状態を片付ける（メモリ index 方式では通常付かない）。
     let _ = repo.cleanup_state();
@@ -1719,13 +1796,9 @@ pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &
         ));
     }
 
-    // 作業ツリー外を指す相対パスは拒否する（安全のため）。
+    // 作業ツリー外を指すパスは拒否する（安全のため）。
+    ensure_repo_relative_path(file_path)?;
     let rel = Path::new(file_path);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(CoreError::InvalidInput(format!(
-            "不正なパスです: {file_path}"
-        )));
-    }
 
     // コミット ID を解決してコミットオブジェクトを得る。
     let obj = repo.revparse_single(commit_id).map_err(|_| {
