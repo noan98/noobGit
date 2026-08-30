@@ -3,6 +3,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import type { NetworkErrorKind } from "../api";
+import { SshSetupGuide } from "./SshSetupGuide";
 
 interface Props {
   kind: NetworkErrorKind;
@@ -37,13 +38,10 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
         icon: "🗝️",
         title: "SSH鍵が見つかりませんでした",
         what:
-          "SSH接続に必要な鍵ファイルが見つからないか、SSHエージェントに鍵が読み込まれていません。",
-        steps: [
-          "SSH鍵を生成する: コマンドプロンプト（またはターミナル）で「ssh-keygen -t ed25519 -C あなたのメールアドレス」を実行してください。",
-          "生成した公開鍵（~/.ssh/id_ed25519.pub の内容）をGitHubなどのサービスの「SSH keys」設定に登録してください。",
-          "SSHエージェントに鍵を読み込む: 「ssh-add ~/.ssh/id_ed25519」を実行してください（Windowsではssh-agentサービスが起動している必要があります）。",
-          "接続を確認する: 「ssh -T git@github.com」を実行して「Hi username!」と表示されれば成功です。",
-        ],
+          "SSH接続に必要な鍵ファイルが見つからないか、SSHエージェントに鍵が読み込まれていません。下のセットアップ手順に沿って、SSH鍵の作成から登録まで進めてください。",
+        // 詳しい手順とコピー可能なコマンドは専用の SshSetupGuide コンポーネントで表示するため、
+        // ここでは汎用の <ol> 用ステップは使わない。
+        steps: [],
       };
     case "remote_not_found":
       return {
@@ -128,12 +126,21 @@ export function NetworkErrorDialog({ kind, raw, onClose }: Props) {
 
           <p className="network-error-what">{info.what}</p>
 
-          <h3 className="network-error-steps-heading">解決手順</h3>
-          <ol className="network-error-steps">
-            {info.steps.map((step, i) => (
-              <li key={i}>{step}</li>
-            ))}
-          </ol>
+          {kind === "ssh_key_not_found" ? (
+            <>
+              <h3 className="network-error-steps-heading">セットアップ手順</h3>
+              <SshSetupGuide />
+            </>
+          ) : (
+            <>
+              <h3 className="network-error-steps-heading">解決手順</h3>
+              <ol className="network-error-steps">
+                {info.steps.map((step, i) => (
+                  <li key={i}>{step}</li>
+                ))}
+              </ol>
+            </>
+          )}
 
           <details className="network-error-details">
             <summary>エラー詳細（詳しい人向け）</summary>

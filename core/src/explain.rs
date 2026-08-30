@@ -103,7 +103,7 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "作業ツリーを変えない安全な操作です。取り込む前に「何が来ているか」を確認できます。"
                 .into(),
             on_trouble:
-                "ネットワークや認証で失敗することがあります。接続状況やアクセス権を確認してください。"
+                "ネットワークや認証で失敗することがあります。接続状況やアクセス権を確認してください。SSH鍵が見つからない場合は、エラーダイアログに表示される専用のセットアップ手順に沿って鍵を作成・登録してください。"
                     .into(),
         },
         OperationKind::Pull => Explanation {
@@ -113,7 +113,7 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "分岐していて一直線に取り込めないときは、事故を避けるため何も変えずに中断します。"
                 .into(),
             on_trouble:
-                "「取り込めません」と出たら、分岐しているサインです。慌てず、まず「取得」で差分を確認しましょう。"
+                "「取り込めません」と出たら、分岐しているサインです。慌てず、まず「取得」で差分を確認しましょう。SSH鍵が見つからないエラーの場合は、エラーダイアログのセットアップ手順に従ってください。"
                     .into(),
         },
         OperationKind::Push => Explanation {
@@ -121,7 +121,7 @@ pub fn explain(op: OperationKind) -> Explanation {
             what: "自分のコミットをリモート（共有の場所）へ送ります。".into(),
             why: "通常は安全です。ただし共有ブランチへ直接送る前にチームの運用を確認しましょう。"
                 .into(),
-            on_trouble: "拒否された場合は、先にpullして取り込んでから再度pushします。".into(),
+            on_trouble: "拒否された場合は、先にpullして取り込んでから再度pushします。SSH鍵が見つからないエラーが出た場合は、エラーダイアログに表示されるセットアップ手順（SSH鍵の生成・GitHubへの登録・SSHエージェントの起動）に沿って解決してください。".into(),
         },
         OperationKind::ForcePush => Explanation {
             title: "強制プッシュ（force push）".into(),
@@ -220,6 +220,25 @@ mod tests {
             assert!(!e.what.is_empty(), "{:?}: what が空", op);
             assert!(!e.why.is_empty(), "{:?}: why が空", op);
             assert!(!e.on_trouble.is_empty(), "{:?}: on_trouble が空", op);
+        }
+    }
+
+    // #157: fetch/pull/push の on_trouble は、SSH鍵未設定エラー時に
+    // NetworkErrorDialog 側の専用セットアップ手順へ案内する文言を含む。
+    #[test]
+    fn network_ops_on_trouble_mentions_ssh_guidance() {
+        for op in [
+            OperationKind::Fetch,
+            OperationKind::Pull,
+            OperationKind::Push,
+        ] {
+            let e = explain(op);
+            assert!(
+                e.on_trouble.contains("SSH鍵"),
+                "{:?}: on_trouble に SSH鍵の案内が含まれていません: {}",
+                op,
+                e.on_trouble
+            );
         }
     }
 }

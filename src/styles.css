@@ -1965,3 +1965,148 @@ textarea {
   color: var(--muted);
   line-height: 1.7;
 }
+
+/* ---- #126 ネットワーク診断ダイアログ ---- */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.network-error-dialog {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+.network-error-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.network-error-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.network-error-title {
+  font-size: 17px;
+  margin: 0;
+}
+.network-error-what {
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+.network-error-steps-heading {
+  font-size: 13px;
+  font-weight: var(--font-weight-strong);
+  margin: 0 0 6px;
+}
+.network-error-steps {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+.network-error-steps li {
+  margin-bottom: 8px;
+  line-height: 1.7;
+}
+.network-error-details {
+  margin: 4px 0 12px;
+}
+.network-error-details summary {
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.network-error-raw {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* ---- #157 SSH鍵セットアップガイド（SshSetupGuide） ---- */
+.ssh-guide-steps {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  counter-reset: ssh-step;
+}
+.ssh-guide-step {
+  counter-increment: ssh-step;
+  position: relative;
+  padding: 0 0 14px 30px;
+}
+.ssh-guide-step::before {
+  content: counter(ssh-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: var(--font-weight-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ssh-guide-step-text {
+  margin: 0 0 6px;
+  line-height: 1.7;
+}
+.ssh-guide-command {
+  margin: 0 0 6px;
+}
+.ssh-guide-command-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.ssh-guide-command-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-muted);
+}
+.ssh-guide-code {
+  flex: 1;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+}
+.ssh-guide-copy-btn {
+  flex-shrink: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ssh-guide-copy-btn:hover {
+  background: var(--accent-bg);
+}
