@@ -20,7 +20,10 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).parent.parent
+# 通常の CI 実行では引数なしでリポジトリルートを自動検出する。
+# テスト（test_check_type_contract.py）からは、擬似的な core/ と src/api.ts を
+# 用意した一時ディレクトリを第一引数で渡してサンドボックス実行できるようにする。
+ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent.parent
 
 RUST_FILES = {
     "OperationKind":    ROOT / "core" / "src" / "safety.rs",
