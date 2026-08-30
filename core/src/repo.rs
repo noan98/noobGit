@@ -71,6 +71,29 @@ pub fn head_is_published(repo: &Repository) -> Result<bool> {
     Ok(ahead == 0)
 }
 
+/// リポジトリ直下のサブモジュールのパス一覧を返す。
+///
+/// パスは `.gitmodules` に登録された相対パス（スラッシュ区切り）。取得に失敗した
+/// 場合（`.gitmodules` の構文エラー等）は「サブモジュールなし」として空を返す —
+/// これは検出用の補助情報であり、status 全体を失敗させたくないため。
+fn submodule_paths(repo: &Repository) -> Vec<String> {
+    repo.submodules()
+        .map(|subs| {
+            subs.iter()
+                .map(|s| s.path().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 指定パスがサブモジュール（`.gitmodules` に登録されたパス）と完全一致するか。
+///
+/// `ops.rs` の書き込み操作（stage / discard 等）が、サブモジュールへ誤って
+/// 適用されるのを防ぐガードに使う。
+pub fn is_submodule_path(repo: &Repository, path: &str) -> bool {
+    submodule_paths(repo).iter().any(|s| s == path)
+}
+
 /// リポジトリの現在状態（git status 相当）を返す。
 pub fn status(repo: &Repository) -> Result<RepoStatus> {
     let mut opts = StatusOptions::new();
@@ -79,6 +102,11 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
         .include_ignored(false);
 
     let statuses = repo.statuses(Some(&mut opts))?;
+
+    // サブモジュールのパス一覧を先に取得し、各エントリに印を付けられるようにする。
+    let submodules = submodule_paths(repo);
+    let has_submodules = !submodules.is_empty();
+    let is_submodule_path = |path: &str| submodules.iter().any(|s| s == path);
 
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -91,6 +119,7 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
         if path.is_empty() {
             continue;
         }
+        let is_submodule = is_submodule_path(&path);
 
         if s.contains(Status::CONFLICTED) {
             conflicted.push(path.clone());
@@ -103,12 +132,14 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
             staged.push(FileChange {
                 path: path.clone(),
                 kind,
+                is_submodule,
             });
         }
         if let Some(kind) = unstaged_kind(s) {
             unstaged.push(FileChange {
                 path: path.clone(),
                 kind,
+                is_submodule,
             });
         }
     }
@@ -123,6 +154,7 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
         untracked,
         conflicted,
         is_clean,
+        has_submodules,
     })
 }
 
@@ -2194,5 +2226,96 @@ mod tests {
         // コミットが無いリポジトリは reflog も空。
         let entries = read_reflog(&repo, 10).unwrap();
         assert!(entries.is_empty());
+    }
+
+    // --- サブモジュール検出（#203） ---
+
+    #[test]
+    fn status_has_no_submodules_by_default() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(!st.has_submodules);
+        assert!(st.staged.iter().all(|f| !f.is_submodule));
+        assert!(st.unstaged.iter().all(|f| !f.is_submodule));
+    }
+
+    #[test]
+    fn status_detects_submodule_and_flags_pointer_change() {
+        // upstream: サブモジュールとして埋め込む先のリポジトリ（コミット2つ）。
+        let upstream = TestRepo::new();
+        upstream.write_file("readme.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("upstream c1");
+        upstream.write_file("readme.txt", "hello world");
+        upstream.stage_all();
+        let upstream_c2 = upstream.commit("upstream c2");
+
+        // 親リポジトリに upstream を「libs/foo」としてサブモジュール追加し、コミットする。
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.add_submodule("libs/foo", &upstream);
+        fx.commit("サブモジュールを追加");
+
+        // 追加直後（サブモジュールの中身は upstream c2 のまま）は has_submodules だけ立ち、
+        // ポインタの変更（unstaged）はまだ無い。
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(st.has_submodules);
+        assert!(st.is_clean, "追加直後は作業ツリーがきれいなはず: {st:?}");
+
+        // サブモジュールの中で新しいコミットを作り、親リポジトリの記録（gitlink）と
+        // 食い違わせる。「別のリポジトリの中身が進んだ」ことによるポインタ変更。
+        let sub_repo = git2::Repository::open(fx.path().join("libs/foo")).unwrap();
+        sub_repo
+            .reset(
+                &sub_repo.find_commit(upstream_c2).unwrap().into_object(),
+                git2::ResetType::Hard,
+                None,
+            )
+            .unwrap();
+        std::fs::write(
+            fx.path().join("libs/foo/readme.txt"),
+            "changed inside submodule",
+        )
+        .unwrap();
+        {
+            let mut idx = sub_repo.index().unwrap();
+            idx.add_path(std::path::Path::new("readme.txt")).unwrap();
+            idx.write().unwrap();
+        }
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        {
+            let tree_id = sub_repo.index().unwrap().write_tree().unwrap();
+            let tree = sub_repo.find_tree(tree_id).unwrap();
+            let parent = sub_repo.head().unwrap().peel_to_commit().unwrap();
+            sub_repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    "inside submodule",
+                    &tree,
+                    &[&parent],
+                )
+                .unwrap();
+        }
+
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(st.has_submodules);
+        // 親リポジトリ視点では「libs/foo」の参照先コミットが変わった＝未ステージの変更。
+        let entry = st
+            .unstaged
+            .iter()
+            .find(|f| f.path == "libs/foo")
+            .expect("サブモジュールのポインタ変更が unstaged に現れるはず");
+        assert!(entry.is_submodule, "is_submodule フラグが立っているはず");
     }
 }

@@ -148,4 +148,18 @@ impl TestRepo {
     pub fn head_oid(&self) -> git2::Oid {
         self.open().head().unwrap().target().unwrap()
     }
+
+    /// `upstream`（コミットを1つ以上持つ別リポジトリ）をサブモジュールとして
+    /// `path` に追加する。ネットワークアクセスは使えないため、`upstream` の
+    /// ローカルパスをそのままサブモジュール URL として使う。
+    ///
+    /// `.gitmodules` とサブモジュール（gitlink）がインデックスに追加された
+    /// 状態で戻るので、呼び出し側で `commit()` すれば履歴に記録される。
+    pub fn add_submodule(&self, path: &str, upstream: &TestRepo) {
+        let repo = self.open();
+        let url = upstream.path().to_str().unwrap();
+        let mut sm = repo.submodule(url, Path::new(path), true).unwrap();
+        sm.clone(None).unwrap();
+        sm.add_finalize().unwrap();
+    }
 }
