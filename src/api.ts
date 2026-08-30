@@ -14,6 +14,9 @@ export type ChangeKind =
 export interface FileChange {
   path: string;
   kind: ChangeKind;
+  // #203 サブモジュール検出: このパスがサブモジュール（リポジトリの中の別リポジトリ）か。
+  // true のとき、差分は「中身の変更」ではなく「参照先コミットの変更」を意味する。
+  is_submodule: boolean;
 }
 
 export interface RepoStatus {
@@ -23,6 +26,9 @@ export interface RepoStatus {
   untracked: string[];
   conflicted: string[];
   is_clean: boolean;
+  // #203 サブモジュール検出: リポジトリが .gitmodules を含むか。
+  // true のとき noobGit は中身を操作できないことを説明するバナーを表示する。
+  has_submodules: boolean;
 }
 
 export interface BranchInfo {

@@ -15,6 +15,10 @@
   "dependencies": {
     "@chakra-ui/react": "^3.36.1",
     "@emotion/react": "^11.14.0",
+    "@shikijs/core": "^4.4.3",
+    "@shikijs/engine-oniguruma": "^4.4.3",
+    "@shikijs/langs": "^4.4.3",
+    "@shikijs/themes": "^4.4.3",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "framer-motion": "^12.43.0",

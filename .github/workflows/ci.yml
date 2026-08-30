@@ -160,10 +160,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      # llvm-tools-preview は cargo-llvm-cov（カバレッジ計測）が必要とする。
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          components: clippy
+          components: clippy, llvm-tools-preview
 
       # sccache 本体をインストールしサーバを起動する。env の RUSTC_WRAPPER=sccache と
       # SCCACHE_GHA_ENABLED=true により、コンパイラ出力レベルのキャッシュが効く。
@@ -179,10 +180,10 @@ jobs:
           # ビルド失敗時もキャッシュを保存し、次回の再コンパイルを減らす。
           cache-on-failure: true
 
-      - name: Install cargo-nextest
+      - name: Install cargo-nextest / cargo-llvm-cov
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest,cargo-llvm-cov
 
       - name: Install frontend deps
         run: npm ci
@@ -213,14 +214,34 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: cargo nextest run
-        run: cargo nextest run --workspace --locked --all-targets --profile ci
+      # cargo-llvm-cov 経由でテストを実行し、コードカバレッジを計測する
+      # （`cargo llvm-cov nextest` が nextest run 自体を兼ねるため、素の
+      # `cargo nextest run` は置き換える形にして二重実行を避ける）。
+      # llvm-cov はコード計装のため独自の RUSTFLAGS を注入し、ジョブ全体の
+      # RUSTC_WRAPPER=sccache と組み合わせると計装結果が壊れうるため、
+      # このステップに限り RUSTC_WRAPPER を空にして sccache を無効化する。
+      # テスト自体の成否はこのステップの終了コードでこれまで通り判定される
+      # （continue-on-error は付けない）。
+      - name: cargo llvm-cov nextest（テスト実行 + カバレッジ計測）
+        env:
+          RUSTC_WRAPPER: ""
+        run: cargo llvm-cov nextest --workspace --locked --all-targets --profile ci --lcov --output-path lcov.info
 
       # sccache のキャッシュヒット率などの統計をジョブログに出力してモニタリングする。
       # ビルド失敗時も統計を確認できるよう always() で必ず実行する。
       - name: sccache 統計（キャッシュヒット率）
         if: always()
         run: sccache --show-stats
+
+      # cargo llvm-cov report は上のステップで収集済みのカバレッジデータを
+      # 整形するだけでテストを再実行しない（二重実行にはならない）。
+      # モジュール別のカバレッジ率をジョブサマリーに表示する。テストの成否は
+      # 既に上のステップで判定済みなので、サマリー出力自体が失敗しても
+      # ジョブ全体は落とさずワーニングに留める（continue-on-error）。
+      - name: カバレッジサマリーをジョブサマリーに出力
+        if: always()
+        continue-on-error: true
+        run: cargo llvm-cov report --summary-only >> "$GITHUB_STEP_SUMMARY"
 
       - name: テスト結果をジョブサマリーに出力
         if: always()

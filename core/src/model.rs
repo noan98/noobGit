@@ -33,6 +33,13 @@ impl ChangeKind {
 pub struct FileChange {
     pub path: String,
     pub kind: ChangeKind,
+    /// このパスがサブモジュール（リポジトリの中に別のリポジトリを埋め込んだもの）か。
+    ///
+    /// サブモジュールのポインタ変更は通常のファイル変更とは意味が全く異なる
+    /// （中身の差分ではなく「参照先コミットが変わった」ことを示す）ため、
+    /// UI 側で見分けられるようにする。noobGit はサブモジュールの中身を操作しない。
+    #[serde(default)]
+    pub is_submodule: bool,
 }
 
 /// コンフリクト中のファイル1件。
@@ -62,6 +69,12 @@ pub struct RepoStatus {
     pub conflicted: Vec<String>,
     /// 変更が何も無いか。
     pub is_clean: bool,
+    /// このリポジトリがサブモジュール（`.gitmodules`）を含むか。
+    ///
+    /// noobGit はサブモジュールの中身（クローン・更新・コミット等）を一切操作しない。
+    /// true のときフロントエンドは「未対応」であることを説明するバナーを表示する。
+    #[serde(default)]
+    pub has_submodules: bool,
 }
 
 /// ブランチ1件の情報。
