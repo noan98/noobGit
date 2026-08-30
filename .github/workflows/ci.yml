@@ -203,6 +203,11 @@ jobs:
       - name: Rust-TypeScript 型契約チェック
         run: python3 scripts/check_type_contract.py
 
+      # check_type_contract.py 自体の検証精度を保証するユニットテスト。
+      # 意図的な不一致（片側だけのバリアント・typo）を与えて正しく非ゼロ終了するか検証する。
+      - name: check_type_contract.py のユニットテスト
+        run: python3 scripts/test_check_type_contract.py
+
       # clippy は rustc ドライバなので型チェック (cargo check 相当) を内包する。
       # 別途 cargo check を走らせると二重コンパイルになるため clippy に集約。
       - name: cargo clippy
