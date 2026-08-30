@@ -81,7 +81,7 @@ export function ShortcutHelpDialog({ onClose }: Props) {
         <p className="shortcut-note">
           Mac では Ctrl の代わりに Cmd（⌘）が使えます。
           <br />
-          テキスト入力欄にフォーカスがある場合、Ctrl+Enter 以外のショートカットは無効です。
+          テキスト入力欄にフォーカスがある場合、Ctrl+K と Ctrl+Enter 以外のショートカットは無効です。
         </p>
 
         <div className="dialog-actions">
