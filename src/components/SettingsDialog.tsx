@@ -5,10 +5,11 @@
  * 文言は i18n 基盤（useLanguage().t）経由にしてあるので、言語を切り替えると
  * この画面自身の表示も即座に追従する（基盤が双方向に効くことの確認も兼ねる）。
  */
-import { useEffect } from "react";
+import { useId } from "react";
 import { motion } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
 import { LANGUAGES, useLanguage } from "../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   onClose: () => void;
@@ -16,33 +17,24 @@ interface Props {
 
 export function SettingsDialog({ onClose }: Props) {
   const { lang, setLang, t } = useLanguage();
+  const titleId = useId();
 
-  // Escape キーで閉じる（他のダイアログと同じ挙動）。
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose]);
+  // #151 フォーカストラップ + Esc キーで閉じる（他のダイアログと同じ挙動、共通フック）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onClose });
 
   return (
     <motion.div
       className="overlay"
       role="dialog"
       aria-modal="true"
-      aria-label={t("settings.title")}
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
       onClick={onClose}
     >
       <motion.div
+        ref={dialogRef}
         className="dialog"
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1, transition: spring.snappy }}
@@ -51,7 +43,7 @@ export function SettingsDialog({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2>⚙ {t("settings.title")}</h2>
+          <h2 id={titleId}>⚙ {t("settings.title")}</h2>
         </div>
 
         <div className="settings-field">

@@ -1,9 +1,11 @@
 // #126 ネットワーク診断ダイアログ
 // fetch / pull / push のエラーを種別ごとに初心者向け日本語で案内する。
 
+import { useId } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { NetworkErrorKind } from "../api";
 import { SshSetupGuide } from "./SshSetupGuide";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   kind: NetworkErrorKind;
@@ -99,6 +101,10 @@ function getDiagInfo(kind: NetworkErrorKind): DiagInfo {
 
 export function NetworkErrorDialog({ kind, raw, onClose }: Props) {
   const info = getDiagInfo(kind);
+  const titleId = useId();
+
+  // #151 フォーカストラップ + Esc キーで閉じる（従来 Esc 対応が抜けていた）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onClose });
 
   return (
     <AnimatePresence>
@@ -110,7 +116,11 @@ export function NetworkErrorDialog({ kind, raw, onClose }: Props) {
         onClick={onClose}
       >
         <motion.div
+          ref={dialogRef}
           className="dialog network-error-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
           initial={{ opacity: 0, scale: 0.95, y: 8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 8 }}
@@ -121,7 +131,9 @@ export function NetworkErrorDialog({ kind, raw, onClose }: Props) {
             <span className="network-error-icon" aria-hidden="true">
               {info.icon}
             </span>
-            <h2 className="network-error-title">{info.title}</h2>
+            <h2 className="network-error-title" id={titleId}>
+              {info.title}
+            </h2>
           </div>
 
           <p className="network-error-what">{info.what}</p>

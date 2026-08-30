@@ -5,10 +5,11 @@
  * ユーザーは「キャンセル」「.gitignore に追加」「それでもステージする」の
  * 3 択から選べる。Git LFS を使って大きなファイルを別管理にすることを提案する。
  */
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { motion, useAnimation } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
 import type { LfsCandidate } from "../api";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   /** 検出された LFS 移行候補ファイルの一覧（1件以上）。 */
@@ -49,31 +50,22 @@ export function LfsGuideDialog({
     });
   }, [dialogControls]);
 
-  // Escape キーでキャンセル。
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onCancel();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onCancel]);
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーでキャンセル（caution レベルなので有効）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onCancel });
 
   return (
     <motion.div
       className="overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="大容量・バイナリファイルのガイド"
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
     >
       <motion.div
+        ref={dialogRef}
         className="dialog risk-caution"
         initial={{ opacity: 0, scale: 0.96 }}
         animate={dialogControls}
@@ -93,7 +85,7 @@ export function LfsGuideDialog({
           >
             Git LFS 推奨
           </span>
-          <h2>大容量・バイナリファイルを検出しました</h2>
+          <h2 id={titleId}>大容量・バイナリファイルを検出しました</h2>
         </div>
 
         <section className="explain">

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { SettingsDialog } from "../SettingsDialog";
@@ -86,5 +86,24 @@ describe("SettingsDialog", () => {
     renderDialog(onClose);
     await user.click(screen.getByText("閉じる"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // --- #151 フォーカストラップ / Esc 挙動 ---
+
+  it("Esc キーで onClose が呼ばれること", () => {
+    const onClose = vi.fn();
+    renderDialog(onClose);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("role=dialog に aria-labelledby が設定され、見出しと結び付いていること", () => {
+    renderDialog();
+    const dialog = screen.getByRole("dialog");
+    const labelledbyId = dialog.getAttribute("aria-labelledby");
+    expect(labelledbyId).toBeTruthy();
+    expect(document.getElementById(labelledbyId as string)).toHaveTextContent(
+      "設定",
+    );
   });
 });

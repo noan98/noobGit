@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { Identity, IdentityScope } from "../api";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   current: Identity | null;
@@ -14,6 +15,10 @@ export function IdentityDialog({ current, onSave, onCancel }: Props) {
   const [email, setEmail] = useState(current?.email ?? "");
   const [scope, setScope] = useState<IdentityScope>("local");
 
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーで閉じる（安全な操作なので Esc 有効）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onCancel });
+
   const canSave = name.trim() !== "" && email.trim() !== "";
 
   function submit() {
@@ -21,11 +26,11 @@ export function IdentityDialog({ current, onSave, onCancel }: Props) {
   }
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true">
-      <div className="dialog">
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className="dialog" ref={dialogRef}>
         <div className="dialog-head">
           <span className="risk-badge risk-safe">安全な操作</span>
-          <h2>名前とメールアドレスの設定</h2>
+          <h2 id={titleId}>名前とメールアドレスの設定</h2>
         </div>
 
         <section className="explain">

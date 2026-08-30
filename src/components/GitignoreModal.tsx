@@ -7,9 +7,10 @@
  *
  * 表示専用。パターンの追加は StatusPanel の各ファイル行の「無視」ボタンから行う。
  */
-import { useEffect } from "react";
+import { useId } from "react";
 import { motion } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   // .gitignore の内容。ファイルがまだ無い場合は null。
@@ -18,19 +19,9 @@ interface Props {
 }
 
 export function GitignoreModal({ content, onClose }: Props) {
-  // Escape キーで閉じる。
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose]);
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーで閉じる（共通フック）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onClose });
 
   // null（ファイル無し）と空文字（空ファイル）を区別して案内する。
   const isMissing = content === null;
@@ -41,13 +32,14 @@ export function GitignoreModal({ content, onClose }: Props) {
       className="overlay"
       role="dialog"
       aria-modal="true"
-      aria-label=".gitignore の内容"
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
       onClick={onClose}
     >
       <motion.div
+        ref={dialogRef}
         className="dialog"
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1, transition: spring.snappy }}
@@ -55,7 +47,7 @@ export function GitignoreModal({ content, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2>.gitignore の内容</h2>
+          <h2 id={titleId}>.gitignore の内容</h2>
         </div>
 
         <p style={{ fontSize: "13px", color: "var(--muted)", marginBottom: "8px" }}>
