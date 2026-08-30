@@ -47,7 +47,15 @@ export function isPaletteShortcut(e: KeyboardEvent): boolean {
   return (e.ctrlKey || e.metaKey) && e.key === "k";
 }
 
-export function useGlobalShortcuts(handlers: GlobalShortcutHandlers): void {
+/**
+ * @param enabled false の間はリスナーを登録しない。#263 のタブ化で複数の
+ *   RepoWorkspace がマウントされたままになるため、アクティブなタブだけが
+ *   ショートカットに反応するようにするためのフラグ。
+ */
+export function useGlobalShortcuts(
+  enabled: boolean,
+  handlers: GlobalShortcutHandlers,
+): void {
   // handlers の最新値を ref で保持し、イベントリスナーの再登録を避ける。
   const handlersRef = useRef<GlobalShortcutHandlers>(handlers);
   useEffect(() => {
@@ -55,6 +63,7 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers): void {
   }, [handlers]);
 
   useEffect(() => {
+    if (!enabled) return;
     function onKeyDown(e: KeyboardEvent): void {
       const ctrl = e.ctrlKey || e.metaKey;
       const inText = isTextInput(e.target);
@@ -117,7 +126,8 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers): void {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-    // リスナーは mount 時に一度だけ登録し、handlers の変化は ref 経由で反映する。
+    // リスナーは enabled の切り替わり時のみ登録し直し、handlers の変化は ref 経由で
+    // 反映する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 }

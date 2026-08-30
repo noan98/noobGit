@@ -65,11 +65,19 @@ noobGit/
 - `api.ts` — `core` の serde 型の TypeScript ミラー**と**、型付きの `invoke`
   ラッパー（`api` オブジェクト）。このファイルが契約境界。下記の
   「境界をまたぐ型契約」を参照。
-- `App.tsx` — トップレベルの状態と操作フロー。安全な操作は `exec()` で直接
-  実行し、リスクのある操作は `guarded()` を通す。`guarded()` は `assess` +
-  `explain` を呼び、レベルが `safe` でないときに `ConfirmDialog` を表示する。
+- `App.tsx` — リポジトリタブの管理（SourceTree 風の複数タブ）。タブの追加・
+  切り替え・閉じると、タブセッション（開いているパス一覧とアクティブタブ）の
+  localStorage への保存/復元だけを担う。非アクティブなタブはアンマウントせず
+  hidden で隠す（状態保持のため）。
+- `RepoWorkspace.tsx` — 1 タブ分の状態と操作フロー（旧 App.tsx の本体）。安全な
+  操作は `exec()` で直接実行し、リスクのある操作は `guarded()` を通す。
+  `guarded()` は `assess` + `explain` を呼び、レベルが `safe` でないときに
+  `ConfirmDialog` を表示する。複数インスタンスがマウントされたままになるため、
+  `window` に登録するショートカット類は `active` プロップでアクティブなタブ
+  だけが反応する。
 - `components/` — `StatusPanel`, `HistoryPanel`, `BranchPanel`,
-  `ConfirmDialog`。表示専用で、`App.tsx` から渡されたコールバックを呼ぶ。
+  `ConfirmDialog`, `TabBar`。表示専用で、`RepoWorkspace.tsx`（タブバーは
+  `App.tsx`）から渡されたコールバックを呼ぶ。
 - `components/Icon.tsx` — アイコンの唯一の出典。[Tabler Icons](https://tabler.io/icons)
   （`@tabler/icons-react`）を用途ベースの名前（`IconName`）で包み、`<Icon
   name="commit" />` のように使う。**絵文字は使わない** — 下記「規約」を参照。
@@ -118,7 +126,7 @@ CI は `cargo clippy` と `npm run typecheck` で型の整合性を検証する�
 - `src/api.ts` の対応するインターフェイス・型エイリアスを更新したか
 - 新しいフィールドが `null` になりうる場合、TS 側で `| null` を付けたか
 - `OperationKind` や `ChangeKind` に variant を追加した場合、`api.ts` の型と
-  `App.tsx` の `REFRESH_BY_OP` マップなど switch/条件分岐を更新したか
+  `RepoWorkspace.tsx` の `REFRESH_BY_OP` マップなど switch/条件分岐を更新したか
 
 ## 開発ワークフロー
 
