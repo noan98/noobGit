@@ -55,7 +55,7 @@ import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 シ
 import { SettingsDialog } from "./components/SettingsDialog"; // 設定（表示言語）
 import { useLanguage } from "./i18n";
 import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 管理
-import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
+import { useGlobalShortcuts, isPaletteShortcut } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { Sidebar, type MainView } from "./components/Sidebar"; // SourceTree 風レイアウトのサイドバー
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
@@ -802,8 +802,7 @@ export default function App() {
   // テキスト入力中でも開いてよい（issue 要件）ため、inText チェックは行わない。
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && e.key === "k") {
+      if (isPaletteShortcut(e)) {
         e.preventDefault();
         setPaletteOpen(true);
       }

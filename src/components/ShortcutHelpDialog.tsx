@@ -8,6 +8,7 @@ import { fadeIn, spring, transitions } from "../theme/motion";
 
 // ショートカット一覧の定義。
 const SHORTCUTS: { key: string; desc: string }[] = [
+  { key: "Ctrl + K", desc: "コマンドパレットを開く" },
   { key: "Ctrl + Enter", desc: "コミット（メッセージ入力済みのとき）" },
   { key: "Ctrl + Shift + A", desc: "全ファイルをステージ" },
   { key: "Ctrl + Z", desc: "Undo（取り消し可能なときのみ）" },

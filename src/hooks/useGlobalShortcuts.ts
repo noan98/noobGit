@@ -37,6 +37,16 @@ function isTextInput(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * コマンドパレットを開くショートカット（Ctrl+K / Cmd+K）かどうかを判定する。
+ * #181: VS Code・Slack・GitHub などで定着している Ctrl+K に対応する。
+ * テキスト入力中でも開けるようにする仕様（#105）のため、呼び出し側では
+ * isTextInput によるガードをかけない。
+ */
+export function isPaletteShortcut(e: KeyboardEvent): boolean {
+  return (e.ctrlKey || e.metaKey) && e.key === "k";
+}
+
 export function useGlobalShortcuts(handlers: GlobalShortcutHandlers): void {
   // handlers の最新値を ref で保持し、イベントリスナーの再登録を避ける。
   const handlersRef = useRef<GlobalShortcutHandlers>(handlers);
