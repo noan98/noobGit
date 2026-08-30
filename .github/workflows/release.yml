@@ -7,7 +7,13 @@ on:
   push:
     tags:
       - 'v*'
+  # 成果物の添付だけをやり直したいとき用。対象のタグを明示して実行する。
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '対象のバージョンタグ（例: v0.1.5）'
+        required: true
+        type: string
 
 # tauri-action がReleaseを作成・更新するために書き込み権限が要る。
 permissions:
@@ -17,9 +23,14 @@ jobs:
   release:
     name: Build Windows installers
     runs-on: windows-latest
+    env:
+      # push 時はタグ名、手動実行時は入力されたタグ名を使う。
+      # （workflow_dispatch の github.ref_name はブランチ名なので使えない）
+      TAG_NAME: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
       - name: Setup Node
@@ -37,12 +48,37 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # tauri-action は「同じタグの **ドラフト** Release」しか探さない。
+      # GitHub の UI から先に Release を公開してタグを作った場合、既存の
+      # 公開済み Release を見つけられず、同じタグでもう1つ別のドラフトを
+      # 作ってそちらにインストーラを添付してしまう（公開側は成果物ゼロの
+      # まま＝「ビルドは成功したのに成果物が見当たらない」状態）。
+      # 先に公開済み Release の ID を解決し、見つかれば releaseId で明示的に
+      # 添付先を指定する。見つからなければ空のままにして、これまで通り
+      # tauri-action にドラフトを作らせる。
+      - name: Resolve existing release
+        id: existing_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq '.id'); then
+            echo "公開済みの Release を見つけました (id=${id})。ここに成果物を添付します。"
+          else
+            id=''
+            echo "公開済みの Release はありません。tauri-action にドラフトを作らせます。"
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
+
       - name: Build and release
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'noobGit ${{ github.ref_name }}'
+          # 空文字なら tauri-action 側の tagName ベースの探索にフォールバックする。
+          releaseId: ${{ steps.existing_release.outputs.id }}
+          tagName: ${{ env.TAG_NAME }}
+          releaseName: 'noobGit ${{ env.TAG_NAME }}'
           releaseDraft: true
           prerelease: false
