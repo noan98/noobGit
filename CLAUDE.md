@@ -198,7 +198,14 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
   - **rust (fmt)**（`if rust`）— `cargo fmt --all -- --check`。ビルドしないので
     速く失敗する。
   - **rust (check + clippy + test)**（`if rust`）— Tauri 2 の Linux システム依存を
-    （cached-apt アクションで）インストールし、先にフロントエンドをビルドし
+    （cached-apt アクションで）インストールする。パッケージ一覧はジョブの
+    `env.TAURI_APT_PACKAGES` に一元化し、直後の健全性チェックが `pkg-config` で
+    `glib-2.0` / `gtk+-3.0` / `webkit2gtk-4.1` の有無を検証する。キャッシュの
+    復元が不完全だと `.pc` ファイルが欠けて `glib-sys` のビルドが
+    「Package glib-2.0 was not found」で落ちるため、欠けていれば通常の apt で
+    入れ直して自己修復する（この復元漏れは同じブランチでも再現したりしなかったり
+    する不安定な事象で、Rust ジョブを断続的に赤くしていた）。その後
+    先にフロントエンドをビルドし
     （`src-tauri` の `generate_context!` マクロが `../dist` を必要とする）、その後
     `cargo clippy --workspace --all-targets --locked -- -D warnings` と
     `cargo nextest run --workspace --locked --all-targets` を実行する。Clippy の
