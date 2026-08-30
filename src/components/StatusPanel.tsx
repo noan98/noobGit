@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Box, HStack, Text, VStack } from "@chakra-ui/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Box, HStack, Input, InputGroup, Text, VStack } from "@chakra-ui/react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import type { PanInfo } from "framer-motion";
 import type { RepoStatus } from "../api";
@@ -13,6 +13,8 @@ import type { ContextMenuItem } from "./FileContextMenu";
 // #49 インライン差分プレビュー
 import { InlineDiff } from "./InlineDiff";
 import type { InlineDiffSource } from "./InlineDiff";
+// #166 検索・絞り込み
+import { filterByQuery, highlightSegments } from "../lib/fileSearch";
 
 /*
  * StatusPanel — ファイル変更一覧（#91 カード UI リデザイン）。
@@ -43,6 +45,21 @@ import type { InlineDiffSource } from "./InlineDiff";
  * #49 インライン差分プレビュー:
  *   - カードを選択（クリック）すると、その下に追加(緑)/削除(赤)行付きの差分を
  *     スライドダウン展開する。
+ *
+ * #166 検索・絞り込み:
+ *   - パネル上部の検索インプット（Chakra `Input` + 🔍）でファイルパスを
+ *     ファジーマッチ絞り込み（`lib/fileSearch.ts`）。入力は 150ms デバウンス。
+ *   - 絞り込みはステージ済み・未ステージ・未追跡・コンフリクトの全セクションを
+ *     横断して効く。マッチ部分は `<mark>` でハイライトする。
+ *   - 絞り込みは**表示のみ**に影響させる。「すべてステージ」ボタンや各セクションの
+ *     全選択チェックボックスは、絞り込み中でも常にセクション内の全ファイルを
+ *     対象にする（挙動を変えない）。これはユーザーが「見えているものだけが
+ *     対象」と誤解して一括操作を実行し、隠れているファイルにも影響が及んで
+ *     しまう事故を避けるため。絞り込み中はボタン／チェックボックスの
+ *     title（ツールチップ）と検索バー直下の注記で対象範囲を明示する。
+ *   - チェックボックスによる個別選択（#127）は絞り込みに関係なく保持される
+ *     （絞り込みで一時的に隠れたファイルの選択も外れない。バッチ操作バーの
+ *     件数表示が実際の対象件数を常に正しく示す）。
  */
 
 // #87 ドラッグ&ドロップ: どのゾーンがハイライト中かを表す型。
@@ -109,6 +126,26 @@ function fileIcon(name: string): string {
     lock: "🔒",
   };
   return map[ext] ?? "📄";
+}
+
+// #166 検索・絞り込み: 検索デバウンス（ミリ秒）。#174 の CommitDiffViewer と揃える。
+const SEARCH_DEBOUNCE_MS = 150;
+
+// #166 検索・絞り込み: highlightSegments の結果を <mark> 付き React ノードへ変換する。
+// query が空（絞り込みなし）のときは text をそのまま返す。
+function renderHighlighted(text: string, query: string): React.ReactNode {
+  if (!query.trim()) return text;
+  const segments = highlightSegments(text, query);
+  if (segments.length === 1 && !segments[0].matched) return text;
+  return segments.map((seg, i) =>
+    seg.matched ? (
+      <mark key={i} className="file-search-mark">
+        {seg.text}
+      </mark>
+    ) : (
+      <span key={i}>{seg.text}</span>
+    ),
+  );
 }
 
 // ホバー時フェードイン用 variants（fadeIn トークンより高速にする）。
@@ -182,6 +219,8 @@ function FileCard({
   onStageHunk,
   // #203 サブモジュール検出
   isSubmodule,
+  // #166 検索・絞り込み: 現在の検索語（マッチ部分のハイライトに使う）。
+  searchQuery,
 }: {
   path: string;
   isSelected: boolean;
@@ -204,6 +243,8 @@ function FileCard({
   // #203 サブモジュール検出: このパスがサブモジュール（リポジトリの中の別リポジトリ）か。
   // アイコンとツールチップを差し替え、noobGit では中身を操作できないことを伝える。
   isSubmodule?: boolean;
+  // #166 検索・絞り込み: 空文字列/未指定ならハイライトなし。
+  searchQuery?: string;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
@@ -329,7 +370,7 @@ function FileCard({
                   whiteSpace="nowrap"
                   maxWidth="100%"
                 >
-                  {dir}
+                  {renderHighlighted(dir, searchQuery ?? "")}
                 </Text>
               )}
               <Text
@@ -343,7 +384,7 @@ function FileCard({
                 whiteSpace="nowrap"
                 maxWidth="100%"
               >
-                {name}
+                {renderHighlighted(name, searchQuery ?? "")}
               </Text>
             </VStack>
           </button>
@@ -425,12 +466,15 @@ function SectionHeader({
   checkCount,
   totalCount,
   onToggleAll,
+  // #166 検索・絞り込み: 絞り込み中に対象範囲（全件対象）を明示するツールチップ。
+  toggleAllTitle,
 }: {
   label: string;
   checkboxRef?: React.RefObject<HTMLInputElement | null>;
   checkCount?: number;
   totalCount?: number;
   onToggleAll?: (checked: boolean) => void;
+  toggleAllTitle?: string;
 }) {
   return (
     <HStack gap="6px" align="center" mt="10px" mb="4px" px="2px">
@@ -443,6 +487,7 @@ function SectionHeader({
           onChange={(e) => onToggleAll(e.target.checked)}
           onClick={(e) => e.stopPropagation()}
           aria-label={`${label}のすべてのファイルを選択`}
+          title={toggleAllTitle}
           style={{ cursor: "pointer", flexShrink: 0, accentColor: "var(--accent)" }}
         />
       )}
@@ -492,6 +537,65 @@ export function StatusPanel({
 
   const isSelected = (path: string, source: DiffSource) =>
     !!selected && selected.path === path && selected.source === source;
+
+  // #166 検索・絞り込み: 入力値はそのまま state に反映し、実際の絞り込みへの
+  // 反映はデバウンスする（打鍵のたびに全セクション再フィルタしない）。
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setSearchQuery(searchInput), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
+
+  // 変更ファイルが 1 件もなくなったら（コミット直後など）検索語をリセットする。
+  // 表示するものがないのに検索語だけ残って次の変更発生時に混乱するのを防ぐ。
+  const totalFileCount =
+    status.staged.length +
+    status.unstaged.length +
+    status.untracked.length +
+    status.conflicted.length;
+  useEffect(() => {
+    if (totalFileCount === 0 && (searchInput || searchQuery)) {
+      setSearchInput("");
+      setSearchQuery("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalFileCount]);
+
+  // #166 検索・絞り込み: セクションごとにファジーマッチで絞り込む。
+  // 絞り込みは「表示のみ」に影響させる（一括操作の対象範囲は変えない。上部の
+  // コンポーネント doc コメント参照）ため、ここで作った配列は描画にのみ使う。
+  const filteredStaged = useMemo(
+    () => filterByQuery(status.staged, (f) => f.path, searchQuery),
+    [status.staged, searchQuery],
+  );
+  const filteredUnstaged = useMemo(
+    () => filterByQuery(status.unstaged, (f) => f.path, searchQuery),
+    [status.unstaged, searchQuery],
+  );
+  const filteredUntracked = useMemo(
+    () => filterByQuery(status.untracked, (p) => p, searchQuery),
+    [status.untracked, searchQuery],
+  );
+  const filteredConflicted = useMemo(
+    () => filterByQuery(status.conflicted, (p) => p, searchQuery),
+    [status.conflicted, searchQuery],
+  );
+
+  const isFiltering = searchQuery.trim() !== "";
+  const visibleFileCount =
+    filteredStaged.length +
+    filteredUnstaged.length +
+    filteredUntracked.length +
+    filteredConflicted.length;
+
+  // 絞り込み中に一括操作ボタン／全選択チェックボックスへ付けるツールチップの
+  // 注記。「絞り込みは表示のみに影響し、対象範囲は変えない」ことを明示する。
+  const bulkScopeHint = isFiltering
+    ? "（絞り込み中でも、表示されていないファイルを含む全件が対象です）"
+    : "";
 
   // #88 右クリックメニュー: 表示中のメニュー状態（null = 非表示）。
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -669,18 +773,101 @@ export function StatusPanel({
             className="btn btn-small"
             onClick={onStageAll}
             disabled={!hasUnstaged}
-            title="すべての変更をコミット対象に加えます"
+            title={`すべての変更をコミット対象に加えます${isFiltering ? bulkScopeHint : ""}`}
           >
             すべてステージ
           </button>
         </HStack>
       </div>
 
+      {/* #166 検索・絞り込み: 変更ファイルが 1 件もないときは検索欄自体を出さない */}
+      {totalFileCount > 0 && (
+        <Box mb="8px">
+          <HStack gap="6px" align="center">
+            <InputGroup
+              flex="1"
+              startElement={
+                <Text as="span" fontSize="13px" aria-hidden="true">
+                  🔍
+                </Text>
+              }
+              endElement={
+                searchInput && (
+                  <button
+                    type="button"
+                    className="file-search-clear"
+                    onClick={() => {
+                      setSearchInput("");
+                      setSearchQuery("");
+                      searchInputRef.current?.focus();
+                    }}
+                    aria-label="検索条件をクリア"
+                    title="検索条件をクリアして全件表示に戻します"
+                  >
+                    ✕
+                  </button>
+                )
+              }
+            >
+              <Input
+                ref={searchInputRef}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && searchInput) {
+                    // Esc で即時クリア（デバウンスを待たない）。
+                    e.stopPropagation();
+                    setSearchInput("");
+                    setSearchQuery("");
+                  }
+                }}
+                placeholder="ファイル名で検索"
+                aria-label="変更ファイルをファイル名で検索"
+                size="sm"
+                bg="neutral.surface"
+                borderColor="neutral.border"
+                color="neutral.fg"
+              />
+            </InputGroup>
+
+            {/* #166 検索・絞り込み: マッチ件数バッジ（例: 3 / 12）*/}
+            {isFiltering && (
+              <Text
+                as="span"
+                fontSize="12px"
+                color="neutral.muted"
+                flexShrink={0}
+                aria-live="polite"
+              >
+                {visibleFileCount} / {totalFileCount}
+              </Text>
+            )}
+          </HStack>
+
+          {/* 絞り込み中は「一括操作は全件対象のまま変わらない」ことを明示する。 */}
+          {isFiltering && (
+            <Text fontSize="11px" color="neutral.muted" mt="4px">
+              絞り込みは表示のみに影響します。「すべてステージ」や全選択チェックボックスは、
+              表示されていないファイルを含む全件が対象です。
+            </Text>
+          )}
+        </Box>
+      )}
+
       {status.is_clean && (
         <EmptyState
           icon="✨"
           title="変更はありません"
           description="ファイルを編集すると、その変更がここに表示されます。きれいな状態です。"
+        />
+      )}
+
+      {/* #166 検索・絞り込み: 全セクションを横断して 1 件もヒットしないとき */}
+      {isFiltering && totalFileCount > 0 && visibleFileCount === 0 && (
+        <EmptyState
+          icon="🔍"
+          title="一致するファイルがありません"
+          description="検索条件を変えるか、クリアボタンで全件表示に戻してください。"
         />
       )}
 
@@ -696,6 +883,7 @@ export function StatusPanel({
             onToggleAll={(checked) =>
               toggleSection(status.staged.map((f) => f.path), checked)
             }
+            toggleAllTitle={`このセクションのファイルをすべて選択/解除します${bulkScopeHint}`}
           />
           <div ref={stagedZoneRef} style={dropZoneStyle("staged")}>
             {status.staged.length === 0 ? (
@@ -709,10 +897,21 @@ export function StatusPanel({
               >
                 ここにドラッグしてステージ
               </Text>
+            ) : filteredStaged.length === 0 ? (
+              /* #166 検索・絞り込み: このセクションだけ 1 件もヒットしないとき */
+              <Text
+                fontSize="12px"
+                color="neutral.muted"
+                textAlign="center"
+                py="10px"
+                userSelect="none"
+              >
+                検索条件に一致するファイルはありません
+              </Text>
             ) : (
               <LayoutGroup id="staged">
                 <AnimatePresence initial={false}>
-                  {status.staged.map((f) => (
+                  {filteredStaged.map((f) => (
                     <FileCard
                       key={f.path}
                       path={f.path}
@@ -727,6 +926,7 @@ export function StatusPanel({
                       checked={checkedPaths.has(f.path)}
                       onCheck={(c) => toggleCheck(f.path, c)}
                       isSubmodule={f.is_submodule}
+                      searchQuery={searchQuery}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -788,10 +988,23 @@ export function StatusPanel({
                 onToggleAll={(checked) =>
                   toggleSection(status.unstaged.map((f) => f.path), checked)
                 }
+                toggleAllTitle={`このセクションのファイルをすべて選択/解除します${bulkScopeHint}`}
               />
+              {filteredUnstaged.length === 0 ? (
+                /* #166 検索・絞り込み: このセクションだけ 1 件もヒットしないとき */
+                <Text
+                  fontSize="12px"
+                  color="neutral.muted"
+                  textAlign="center"
+                  py="10px"
+                  userSelect="none"
+                >
+                  検索条件に一致するファイルはありません
+                </Text>
+              ) : (
               <LayoutGroup id="unstaged">
                 <AnimatePresence initial={false}>
-                  {status.unstaged.map((f) => (
+                  {filteredUnstaged.map((f) => (
                     <FileCard
                       key={f.path}
                       path={f.path}
@@ -812,6 +1025,7 @@ export function StatusPanel({
                           : undefined
                       }
                       isSubmodule={f.is_submodule}
+                      searchQuery={searchQuery}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -874,6 +1088,7 @@ export function StatusPanel({
                   ))}
                 </AnimatePresence>
               </LayoutGroup>
+              )}
             </div>
           )}
 
@@ -888,10 +1103,23 @@ export function StatusPanel({
                 onToggleAll={(checked) =>
                   toggleSection(status.untracked, checked)
                 }
+                toggleAllTitle={`このセクションのファイルをすべて選択/解除します${bulkScopeHint}`}
               />
+              {filteredUntracked.length === 0 ? (
+                /* #166 検索・絞り込み: このセクションだけ 1 件もヒットしないとき */
+                <Text
+                  fontSize="12px"
+                  color="neutral.muted"
+                  textAlign="center"
+                  py="10px"
+                  userSelect="none"
+                >
+                  検索条件に一致するファイルはありません
+                </Text>
+              ) : (
               <LayoutGroup id="untracked">
                 <AnimatePresence initial={false}>
-                  {status.untracked.map((p) => (
+                  {filteredUntracked.map((p) => (
                     <FileCard
                       key={p}
                       path={p}
@@ -905,6 +1133,7 @@ export function StatusPanel({
                       inlineDiffSource="unstaged"
                       checked={checkedPaths.has(p)}
                       onCheck={(c) => toggleCheck(p, c)}
+                      searchQuery={searchQuery}
                       actions={
                         <>
                           <StatusBadge kind="untracked" />
@@ -948,6 +1177,7 @@ export function StatusPanel({
                   ))}
                 </AnimatePresence>
               </LayoutGroup>
+              )}
             </div>
           )}
         </div>
@@ -957,20 +1187,34 @@ export function StatusPanel({
       {status.conflicted.length > 0 && (
         <div>
           <SectionHeader label="コンフリクト" />
-          <LayoutGroup id="conflicted">
-            <AnimatePresence initial={false}>
-              {status.conflicted.map((p) => (
-                <FileCard
-                  key={p}
-                  path={p}
-                  isSelected={isSelected(p, "conflicted")}
-                  onSelect={() => onSelect(p, "conflicted")}
-                  onContextMenu={handleContextMenu(p, "conflicted")}
-                  actions={<StatusBadge kind="conflicted" />}
-                />
-              ))}
-            </AnimatePresence>
-          </LayoutGroup>
+          {filteredConflicted.length === 0 ? (
+            /* #166 検索・絞り込み: このセクションだけ 1 件もヒットしないとき */
+            <Text
+              fontSize="12px"
+              color="neutral.muted"
+              textAlign="center"
+              py="10px"
+              userSelect="none"
+            >
+              検索条件に一致するファイルはありません
+            </Text>
+          ) : (
+            <LayoutGroup id="conflicted">
+              <AnimatePresence initial={false}>
+                {filteredConflicted.map((p) => (
+                  <FileCard
+                    key={p}
+                    path={p}
+                    isSelected={isSelected(p, "conflicted")}
+                    onSelect={() => onSelect(p, "conflicted")}
+                    onContextMenu={handleContextMenu(p, "conflicted")}
+                    searchQuery={searchQuery}
+                    actions={<StatusBadge kind="conflicted" />}
+                  />
+                ))}
+              </AnimatePresence>
+            </LayoutGroup>
+          )}
         </div>
       )}
 
