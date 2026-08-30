@@ -253,6 +253,16 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
   `workflow_dispatch` の `github.ref_name` はブランチ名になるため、対象タグを
   明示させて checkout と添付先の両方に使う。成果物の添付だけをやり直したい
   ときは、この手動ディスパッチを使う。
+  **リリースのバージョンはタグが唯一の出典。** `Apply version from tag` ステップ
+  が `vX.Y.Z` から `X.Y.Z` を取り出し、`src-tauri/tauri.conf.json` の version
+  （インストーラ名・インストーラが名乗るバージョンを決めるのはこの値）と
+  `package.json` / `package-lock.json` を書き換えてからビルドする。書き換えは
+  そのチェックアウト内だけで、リポジトリにはコミットしない。**そのため、
+  リリース前に手でバージョンを上げる必要はない**（上げ忘れても成果物がタグと
+  ずれない。v0.1.5 では上げ忘れて `noobGit_0.1.0_x64-setup.exe` が生成された）。
+  タグが `vX.Y.Z` 形式でなければ、このステップがビルド前に失敗する。
+  なお、ワークスペースの `Cargo.toml` の version はクレートのメタデータ用で、
+  成果物のバージョンには影響しない（tauri.conf.json の version が優先される）。
 - **`workflows/automerge.yml`** — CI がグリーンで未解決のレビュースレッドが
   なくなった時点で PR を自動マージし、手動の Merge クリックを不要にする。
   `pull_request_review`（submitted）と `workflow_run`（ci.yml completed）で

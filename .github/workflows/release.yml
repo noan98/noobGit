@@ -39,6 +39,44 @@ jobs:
           node-version: 22
           cache: npm
 
+      # リリースのバージョンはタグから決める。手でマニフェストの version を
+      # 上げ忘れても、インストーラ名（noobGit_X.Y.Z_x64-setup.exe）や
+      # インストーラが名乗るバージョンがタグとずれないようにする。
+      # 書き換えるのはこのチェックアウト内だけで、リポジトリにはコミットしない。
+      - name: Apply version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::タグ '${TAG_NAME}' が vX.Y.Z 形式ではありません。リリースのバージョンを決められないので中断します。"
+            exit 1
+          fi
+          # 成果物のバージョンは tauri.conf.json の version が決める。
+          # 整形が変わらないよう version の行だけを置き換え、書き換え後に
+          # JSON として読み直して値が入ったことを確認する。
+          node -e '
+            const fs = require("fs");
+            const path = "src-tauri/tauri.conf.json";
+            const version = process.argv[1];
+            const before = fs.readFileSync(path, "utf8");
+            let replaced = 0;
+            const after = before.replace(
+              /^(\s*"version":\s*)"[^"]*"/m,
+              (_, head) => { replaced += 1; return head + JSON.stringify(version); },
+            );
+            if (replaced !== 1) {
+              throw new Error(`${path} の version を書き換えられませんでした`);
+            }
+            fs.writeFileSync(path, after);
+            if (JSON.parse(fs.readFileSync(path, "utf8")).version !== version) {
+              throw new Error(`${path} の version が ${version} になっていません`);
+            }
+          ' "$version"
+          # package.json / package-lock.json も揃えておく（npm 側の表示用）。
+          npm version "$version" --no-git-tag-version --allow-same-version > /dev/null
+          echo "バージョンを ${version} に設定しました（タグ ${TAG_NAME} 由来）。"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
