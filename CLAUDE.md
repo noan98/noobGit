@@ -237,10 +237,22 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     トリガー: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`。
     フロントエンドのみの変更では Rust ジョブは**実行されない**（Rust のソース/
     テストは影響を受けず、frontend ジョブがすでにビルドを検証している）。
-- **`workflows/release.yml`** — `v*` タグ（または手動ディスパッチ）で実行。
+- **`workflows/release.yml`** — `v*` タグの push（または手動ディスパッチ）で実行。
   `windows-latest` 上で `tauri-apps/tauri-action` により Windows インストーラを
   ビルドし、**ドラフト**の GitHub Release を公開する。リリースを切る = `vX.Y.Z`
   タグを push する。ドラフトをレビューしてから publish する。
+  ビルドの前に `Resolve existing release` ステップが、そのタグの**公開済み**
+  Release を GitHub API で探し、あればその ID を `releaseId` として
+  tauri-action に渡す。tauri-action は本来「同じタグの**ドラフト**」しか探さない
+  ため、GitHub の UI から先に Release を publish してタグを作った場合、既存の
+  公開済み Release を見つけられず、**同じタグでもう 1 つ別のドラフトを作って
+  そちらに成果物を添付**してしまう（公開側は成果物ゼロのまま = 「ビルドは成功
+  したのに成果物が見当たらない」）。この解決ステップはその取りこぼしを防ぐ。
+  公開済み Release が無ければ ID は空のままで、これまで通り tauri-action が
+  ドラフトを作る。手動ディスパッチには `tag` 入力（例: `v0.1.5`）が必須 —
+  `workflow_dispatch` の `github.ref_name` はブランチ名になるため、対象タグを
+  明示させて checkout と添付先の両方に使う。成果物の添付だけをやり直したい
+  ときは、この手動ディスパッチを使う。
 - **`workflows/automerge.yml`** — CI がグリーンで未解決のレビュースレッドが
   なくなった時点で PR を自動マージし、手動の Merge クリックを不要にする。
   `pull_request_review`（submitted）と `workflow_run`（ci.yml completed）で
