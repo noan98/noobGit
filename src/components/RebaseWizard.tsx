@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { CommitInfo } from "../api";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 // リベースの種類。squash は複数コミットを1つにまとめる、reword は1つのメッセージを書き換える。
 type RebaseMode = "squash" | "reword";
@@ -43,6 +44,12 @@ export function RebaseWizard({ selected, onSquash, onReword, onCancel }: Props) 
     setMessage(next === "squash" ? initialSquashMsg : initialRewordMsg);
   }
 
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーでキャンセル
+  // （このウィザードは選択・下書きの段階で、実際の破壊的操作の確認は
+  // guarded() 経由の ConfirmDialog が別途担うため、ここでは Esc を無効化しない）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onCancel });
+
   const canSquash = selected.length >= 2;
   const canReword = selected.length >= 1;
   const trimmed = message.trim();
@@ -63,10 +70,10 @@ export function RebaseWizard({ selected, onSquash, onReword, onCancel }: Props) 
   }
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true">
-      <div className="dialog">
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className="dialog" ref={dialogRef}>
         <div className="dialog-head">
-          <h2>コミット履歴の整理（リベース）</h2>
+          <h2 id={titleId}>コミット履歴の整理（リベース）</h2>
         </div>
 
         <section className="explain">

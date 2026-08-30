@@ -6,10 +6,11 @@
  * 3 択から選べる。Git に機密情報を載せると push 後は実質回収できない旨を
  * 目立つ赤系の警告色で伝える。
  */
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { motion, useAnimation } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
 import type { SensitiveWarning } from "../api";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface Props {
   /** 検出された機密ファイルの警告一覧（1件以上）。 */
@@ -45,31 +46,24 @@ export function SensitiveWarningDialog({
     })();
   }, [dialogControls]);
 
-  // Escape キーでキャンセル。
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onCancel();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onCancel]);
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーでキャンセル。
+  // このダイアログは Esc = キャンセル（安全な側）なので destructive でも無効化しない
+  // （Esc 無効化は ConfirmDialog の RiskLevel: "destructive" のときだけの措置）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onCancel });
 
   return (
     <motion.div
       className="overlay"
-      role="dialog"
+      role="alertdialog"
       aria-modal="true"
-      aria-label="機密ファイルの警告"
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
     >
       <motion.div
+        ref={dialogRef}
         className="dialog risk-destructive"
         initial={{ opacity: 0, scale: 0.96, x: 0 }}
         animate={dialogControls}
@@ -89,7 +83,7 @@ export function SensitiveWarningDialog({
           >
             機密情報の可能性
           </span>
-          <h2>機密ファイルをステージしようとしています</h2>
+          <h2 id={titleId}>機密ファイルをステージしようとしています</h2>
         </div>
 
         <section className="explain">

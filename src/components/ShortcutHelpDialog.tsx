@@ -2,9 +2,10 @@
  * ショートカット一覧ヘルプダイアログ。
  * ? または F1 キーで開閉する。
  */
-import { useEffect } from "react";
+import { useId } from "react";
 import { motion } from "framer-motion";
 import { fadeIn, spring, transitions } from "../theme/motion";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 // ショートカット一覧の定義。
 const SHORTCUTS: { key: string; desc: string }[] = [
@@ -22,32 +23,23 @@ interface Props {
 }
 
 export function ShortcutHelpDialog({ onClose }: Props) {
-  // Escape キーで閉じる。
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose]);
+  const titleId = useId();
+  // #151 フォーカストラップ + Esc キーで閉じる（共通フック）。
+  const dialogRef = useModalA11y<HTMLDivElement>({ onEscape: onClose });
 
   return (
     <motion.div
       className="overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="キーボードショートカット一覧"
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
       onClick={onClose}
     >
       <motion.div
+        ref={dialogRef}
         className="dialog"
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1, transition: spring.snappy }}
@@ -56,7 +48,7 @@ export function ShortcutHelpDialog({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2>キーボードショートカット</h2>
+          <h2 id={titleId}>キーボードショートカット</h2>
         </div>
 
         <table className="shortcut-table">

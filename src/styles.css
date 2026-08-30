@@ -735,7 +735,9 @@ textarea {
   min-height: 0;
 }
 
-/* 左サイドバー: ナビゲーションツリー。 */
+/* 左サイドバー: ナビゲーションツリー。幅は Sidebar.tsx がインラインの flex-basis
+   で制御し（ドラッグ/矢印キーで変更、localStorage に永続化）、ここでの
+   240px は JS 実行前の初期描画やスタイル未適用時のフォールバックに過ぎない。 */
 .sidebar {
   flex: 0 0 240px;
   min-width: 0;
@@ -743,6 +745,35 @@ textarea {
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 8px 0 16px;
+}
+/* サイドバー右端のドラッグハンドル。細い当たり判定に見た目より広い操作域を
+   持たせるため、実際の描画は擬似要素の縦線のみで表現する。 */
+.sidebar-resize-handle {
+  flex: 0 0 6px;
+  width: 6px;
+  margin-left: -3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  touch-action: none;
+}
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+}
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+.sidebar-resize-handle:focus-visible {
+  outline: none;
 }
 .sidebar-section {
   margin-bottom: 6px;
@@ -946,6 +977,30 @@ textarea {
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* #166: StatusPanel の変更ファイル検索・絞り込み。 */
+/* マッチ部分のハイライト（ファイルパス内の一致文字）。 */
+.file-search-mark {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+/* 検索インプットのクリア（×）ボタン。InputGroup の endElement に差し込む。 */
+.file-search-clear {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.file-search-clear:hover {
+  color: var(--text);
 }
 .empty {
   color: var(--muted);
@@ -1760,6 +1815,21 @@ textarea {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 16px;
+}
+
+/* #151 destructive な確認ダイアログ: Esc 無効化の明示テキスト。
+   誤操作防止のため Esc では閉じられないことを視覚的に伝える。 */
+.esc-disabled-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--destructive-bg);
+  color: var(--destructive);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* 設定ダイアログ: 各設定項目のレイアウト。 */

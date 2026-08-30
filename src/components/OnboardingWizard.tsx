@@ -5,10 +5,11 @@
  * 完了・スキップ・閉じる時に "1" をセットする。App.tsx は常にマウントするだけでよく、
  * 表示ロジックはすべてこのコンポーネント内に閉じている。
  */
-import { useState } from "react";
+import { useId, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Box } from "@chakra-ui/react";
 import { transitions, spring } from "../theme/motion";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 // ウィザードの各ステップデータ。
 interface Step {
@@ -85,6 +86,7 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
   const [step, setStep] = useState(0);
   // 遷移方向: 1=前進（次へ）, -1=後退（戻る）。
   const [direction, setDirection] = useState(1);
+  const titleId = useId();
 
   // ウィザードを閉じる共通ハンドラ。
   function close() {
@@ -92,6 +94,13 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
     setVisible(false);
     onClose();
   }
+
+  // #151 フォーカストラップ + Esc キーでスキップ（既存の「スキップ」ボタンと同じ挙動）。
+  // 表示していないときはトラップを止める（active: visible）。
+  const dialogRef = useModalA11y<HTMLDivElement>({
+    active: visible,
+    onEscape: close,
+  });
 
   function goNext() {
     if (step < STEPS.length - 1) {
@@ -130,6 +139,10 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
     >
       {/* 中央カード */}
       <Box
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         style={{
           background: "var(--panel)",
           border: "1px solid var(--border)",
@@ -160,6 +173,7 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
 
             {/* タイトル */}
             <div
+              id={titleId}
               style={{
                 fontSize: "1.25rem",
                 fontWeight: 700,
