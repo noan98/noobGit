@@ -198,6 +198,12 @@ jobs:
       - name: Tauriコマンド登録漏れチェック
         run: python3 scripts/check_handlers.py
 
+      # check_handlers.py 自体のユニットテスト。検証スクリプトにバグがあると
+      # 「未登録コマンドを見逃す」まま CI がグリーンになりかねないため、
+      # 疑似リポジトリ上で検出漏れ・誤検出がないことを別途確認する。
+      - name: Tauriコマンド登録漏れチェックのユニットテスト
+        run: python3 scripts/test_check_handlers.py
+
       # Rust enum バリアントと TypeScript 型リテラルの一致を静的に検証する。
       # core/ の型を変更した場合に api.ts との乖離を早期検出する。
       - name: Rust-TypeScript 型契約チェック
