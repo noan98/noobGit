@@ -71,7 +71,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend deps
@@ -123,6 +123,9 @@ jobs:
       # sccache のキャッシュバックエンドに GitHub Actions キャッシュを使う
       # （sccache-action がこの環境変数を読んで GHA バックエンドを有効化する）。
       SCCACHE_GHA_ENABLED: "true"
+      # Tauri 2 の Linux ビルドに必要な apt パッケージ。キャッシュ復元と
+      # フォールバックの再インストールで同じ一覧を使うため、ここで一元管理する。
+      TAURI_APT_PACKAGES: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libayatana-appindicator3-dev build-essential curl wget file libssl-dev
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -132,13 +135,29 @@ jobs:
       - name: System deps (Tauri 2 prerequisites)
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libayatana-appindicator3-dev build-essential curl wget file libssl-dev
+          packages: ${{ env.TAURI_APT_PACKAGES }}
           version: noobgit-tauri-2
+
+      # aptキャッシュの復元が不完全だと .pc ファイル（glib-2.0.pc など）が欠け、
+      # glib-sys のビルドが「Package glib-2.0 was not found」で失敗する。
+      # 実際にこの失敗は同じブランチでも出たり出なかったりする不安定な事象で、
+      # Rustジョブを断続的に赤くしていた。pkg-config で復元結果を検証し、
+      # 欠けていれば通常の apt で入れ直して自己修復する。
+      - name: システム依存の健全性チェック（復元漏れなら入れ直す）
+        run: |
+          if pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1; then
+            echo "システム依存はそろっている（aptキャッシュの復元に成功）"
+          else
+            echo "::warning::aptキャッシュの復元が不完全なため、通常の apt で入れ直す"
+            sudo apt-get update
+            sudo apt-get install -y $TAURI_APT_PACKAGES
+            pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Setup Rust
