@@ -53,7 +53,11 @@ import { IdentityDialog } from "./components/IdentityDialog";
 import { CommitDiffViewer } from "./components/CommitDiffViewer";
 import { BlameView } from "./components/BlameView";
 import { ThemeToggle } from "./components/ThemeToggle";
-import { WelcomeScreen, rememberRepo } from "./components/WelcomeScreen";
+import {
+  WelcomeScreen,
+  rememberRepo,
+  loadRecentRepos,
+} from "./components/WelcomeScreen";
 import { OnboardingWizard } from "./components/OnboardingWizard"; // #64 オンボーディング
 import { ShortcutHelpDialog } from "./components/ShortcutHelpDialog"; // #63 ショートカット
 import { SettingsDialog } from "./components/SettingsDialog"; // 設定（表示言語）
@@ -616,6 +620,28 @@ export default function App() {
     setBlameHunks(null);
     setBlameError(null);
   }
+
+  // #262 起動時の自動オープン: 前回開いたリポジトリ（履歴の先頭）があれば、初期画面を
+  // 挟まずに続きから開く。自動で開くのは起動直後の 1 回だけで、「別のリポジトリ」で
+  // 初期画面へ戻ったあとは通常の導線に任せる。開けなかった場合（フォルダ削除など）は
+  // openRepo が初期画面へ戻すので、エラーはそこで案内される。
+  //
+  // setRepoPath の反映は次のレンダリングになるため、ここではパスを ref に控えるだけにし、
+  // repoPath が実際にそのパスへ更新されたのを見届けてから開く（下の effect）。
+  const autoOpenPath = useRef<string | null>(null);
+  useEffect(() => {
+    const last = loadRecentRepos()[0];
+    if (last) {
+      autoOpenPath.current = last.path;
+      setRepoPath(last.path);
+    }
+  }, []);
+  useEffect(() => {
+    if (autoOpenPath.current !== null && repoPath === autoOpenPath.current) {
+      autoOpenPath.current = null;
+      void openRepo();
+    }
+  }, [repoPath]);
 
   async function openRepo() {
     if (!repoPath.trim()) return;
