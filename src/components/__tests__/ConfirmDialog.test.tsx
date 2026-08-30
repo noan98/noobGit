@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
@@ -248,5 +248,128 @@ describe("ConfirmDialog", () => {
     reasons.forEach((r) => {
       expect(screen.getByText(r)).toBeInTheDocument();
     });
+  });
+
+  // --- #151 フォーカストラップ / Esc 挙動 ---
+
+  it("safe/caution レベルでは Esc キーで onCancel が呼ばれること", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("caution")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("destructive レベルでは Esc キーを押しても onCancel・onConfirm どちらも呼ばれないこと（誤操作防止）", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("destructive")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("destructive レベルでは Esc が無効であることを示す注記が表示されること", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("destructive")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(screen.getByText(/Esc キーでは閉じられません/)).toBeInTheDocument();
+  });
+
+  it("safe/caution レベルでは Esc 無効の注記が表示されないこと", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("safe")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/Esc キーでは閉じられません/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("destructive レベルでは role が alertdialog になること", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("destructive")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("safe レベルでは role が dialog のままであること", () => {
+    renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("safe")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("Tab キーでダイアログ内の要素だけがフォーカス循環すること", () => {
+    const { container } = renderWithChakra(
+      <ConfirmDialog
+        title="テスト"
+        assessment={makeAssessment("safe")}
+        explanation={baseExplanation}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    // ダイアログ内のフォーカス可能な要素（「困ったときは」の summary も含む）を
+    // DOM 順に取得する。
+    const dialogEl = container.querySelector(".dialog") as HTMLElement;
+    const focusable = Array.from(
+      dialogEl.querySelectorAll<HTMLElement>("button, summary"),
+    );
+    expect(focusable.length).toBeGreaterThan(1);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    // 末尾の要素から Tab を押すと先頭の要素へ循環する。
+    expect(first).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    // 先頭の要素から Shift+Tab を押すと末尾の要素へ循環する。
+    expect(last).toHaveFocus();
   });
 });

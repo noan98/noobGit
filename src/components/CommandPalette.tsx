@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { fadeIn, scaleIn } from "../theme/motion";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 /** コマンドパレットに登録する操作の定義。 */
 export interface PaletteCommand {
@@ -46,6 +47,11 @@ export function CommandPalette({ open, onClose, commands }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+
+  // #151 フォーカストラップ + Esc キーで閉じる（共通フック）。
+  // AnimatePresence の exit アニメーション中も要素は残るため、open で
+  // トラップの有効/無効を切り替える。
+  const panelRef = useModalA11y<HTMLDivElement>({ active: open, onEscape: onClose });
 
   // パレットが開くたびに入力と選択位置をリセットする。
   useEffect(() => {
@@ -96,10 +102,8 @@ export function CommandPalette({ open, onClose, commands }: Props) {
         }
         break;
       }
-      case "Escape":
-        e.preventDefault();
-        onClose();
-        break;
+      // Escape は useModalA11y（document 単位の共通フック）が処理するので
+      // ここでは扱わない（重複実装を避ける）。
     }
   }
 
@@ -120,6 +124,7 @@ export function CommandPalette({ open, onClose, commands }: Props) {
         >
           {/* 中央パネル。オーバーレイへの伝播を止める。 */}
           <motion.div
+            ref={panelRef}
             className="command-palette-panel"
             variants={scaleIn}
             initial="hidden"

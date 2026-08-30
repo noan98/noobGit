@@ -1699,6 +1699,21 @@ textarea {
   margin-top: 16px;
 }
 
+/* #151 destructive な確認ダイアログ: Esc 無効化の明示テキスト。
+   誤操作防止のため Esc では閉じられないことを視覚的に伝える。 */
+.esc-disabled-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--destructive-bg);
+  color: var(--destructive);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* 設定ダイアログ: 各設定項目のレイアウト。 */
 .settings-field {
   margin: 8px 0 4px;

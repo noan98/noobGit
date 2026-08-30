@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { Box } from "@chakra-ui/react";
 import { motion, useAnimation } from "framer-motion";
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "../api";
 import { fadeIn, shakeXKeyframes, spring, transitions } from "../theme/motion";
 import { StatusBadge } from "./StatusBadge";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 const levelLabel: Record<RiskLevel, string> = {
   safe: "安全な操作",
@@ -43,6 +44,16 @@ export function ConfirmDialog({
 }: Props) {
   const tone = levelTone[assessment.level];
   const isDestructive = assessment.level === "destructive";
+
+  // #151 タイトルを aria-labelledby で結び付けるための id。
+  const titleId = useId();
+
+  // #151 フォーカストラップ + Esc 制御。destructive のときだけ Esc を無効化し、
+  // ボタンクリックでの明示的な選択を必須にする（誤操作防止）。
+  const dialogRef = useModalA11y<HTMLDivElement>({
+    onEscape: onCancel,
+    disableEscape: isDestructive,
+  });
 
   // ダイアログのアニメーション制御。
   // destructive の場合は scale-in に続けて水平震えを実行して危険を訴える。
@@ -83,13 +94,15 @@ export function ConfirmDialog({
     // （destructive の場合はさらに水平震え）で現れる。
     <motion.div
       className="overlay"
-      role="dialog"
+      role={isDestructive ? "alertdialog" : "dialog"}
       aria-modal="true"
+      aria-labelledby={titleId}
       variants={fadeIn}
       initial="hidden"
       animate="visible"
     >
       <motion.div
+        ref={dialogRef}
         className={`dialog risk-${assessment.level}`}
         initial={{ opacity: 0, scale: 0.96, x: 0 }}
         animate={dialogControls}
@@ -109,7 +122,7 @@ export function ConfirmDialog({
           >
             {levelLabel[assessment.level]}
           </Box>
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
         </div>
 
         <section className="explain">
@@ -169,6 +182,14 @@ export function ConfirmDialog({
           <summary className="trouble-summary">困ったときは</summary>
           <p className="trouble">{explanation.on_trouble}</p>
         </details>
+
+        {/* #151 destructive では Esc キーでの取り消しを無効化する（誤操作防止）。
+            キーボード操作をブロックするだけでなく、その旨を必ず視覚的に示す。 */}
+        {isDestructive && (
+          <p className="esc-disabled-note" role="note">
+            ⚠ Esc キーでは閉じられません。下のボタンで選んでください。
+          </p>
+        )}
 
         {/* destructive: [実行（左・非優先）] [やめておく（右・優先・フォーカス）]
             その他:      [やめておく（左）]   [実行（右）] */}
