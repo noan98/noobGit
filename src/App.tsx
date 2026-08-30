@@ -56,7 +56,7 @@ import { SettingsDialog } from "./components/SettingsDialog"; // 設定（表示
 import { useLanguage } from "./i18n";
 import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 管理
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
-import { ResizableColumns } from "./components/ResizableColumns"; // #89 リサイズ可能レイアウト
+import { Sidebar, type MainView } from "./components/Sidebar"; // SourceTree 風レイアウトのサイドバー
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette"; // #105 コマンドパレット
@@ -301,6 +301,20 @@ export default function App() {
   // #105 コマンドパレット: Ctrl+K / ⌘K で開くパレットの表示状態。
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // SourceTree 風レイアウト: メイン領域に表示するビュー。サイドバーで切り替える。
+  const [view, setView] = useState<MainView>("status");
+
+  // コミット入力欄へ移動してフォーカスする（ツールバーの「コミット」や履歴の
+  // Empty State から呼ばれる）。入力欄はファイルステータスビューにだけあるので、
+  // ビューを切り替えてから次フレームでフォーカスする。
+  const goToCommitBox = useCallback(() => {
+    setView("status");
+    setTimeout(() => {
+      commitInput.current?.focus();
+      commitInput.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+  }, []);
+
   const refresh = useCallback(
     async (parts: RefreshParts = FULL_REFRESH): Promise<boolean> => {
       if (!repoPath) return false;
@@ -422,6 +436,13 @@ export default function App() {
       cancelled = true;
     };
   }, [repoPath, status]);
+
+  // コンフリクトが発生したら、解消ウィザードのあるファイルステータスビューへ
+  // 自動で切り替える（他のビューを見ていて気づかない事故を防ぐ）。
+  const hasConflicts = conflicts.length > 0;
+  useEffect(() => {
+    if (hasConflicts) setView("status");
+  }, [hasConflicts]);
 
   // ファイル名クリックで選択。同じものを再クリックしたら選択解除。
   const selectFile = useCallback((path: string, source: DiffSource) => {
@@ -1180,6 +1201,10 @@ export default function App() {
       ]
     : [];
 
+  // タイトルバーに出すリポジトリ名（パスの末尾のフォルダ名）。
+  const repoName =
+    repoPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || repoPath;
+
   if (!opened) {
     return (
       <WelcomeScreen
@@ -1198,57 +1223,14 @@ export default function App() {
       <header className="topbar">
         <div className="repo-info">
           <strong>noobGit</strong>
+          <span className="repo-name" title={repoPath}>
+            📁 {repoName}
+          </span>
           <span className="current-branch">
             {status?.branch ? `🌿 ${status.branch}` : "(ブランチ不明)"}
           </span>
         </div>
         <div className="topbar-actions">
-          {/* #104 操作説明ツールチップ */}
-          <ExplainTooltip op="fetch">
-            <button
-              className="btn btn-small"
-              onClick={doFetch}
-              disabled={isNetworkBusy}
-              title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
-            >
-              {isNetworkBusy ? (
-                <>
-                  <span className="network-spinner">🔄</span>取得中…
-                </>
-              ) : (
-                "🔄 取得"
-              )}
-            </button>
-          </ExplainTooltip>
-          {/* #104 操作説明ツールチップ */}
-          <ExplainTooltip op="pull">
-            <button
-              className="btn btn-small"
-              onClick={doPull}
-              disabled={isNetworkBusy}
-              title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
-            >
-              {isNetworkBusy ? (
-                <>
-                  <span className="network-spinner">⬇</span>取り込み中…
-                </>
-              ) : (
-                "⬇ 取り込む"
-              )}
-            </button>
-          </ExplainTooltip>
-          {undoInfo && (
-            // #104 操作説明ツールチップ: undoInfo.op を使って対応する説明を表示する。
-            <ExplainTooltip op={undoInfo.op}>
-              <button
-                className="btn btn-undo"
-                onClick={doUndo}
-                title={`直前の操作を取り消します [Ctrl+Z]`}
-              >
-                ↩ 取り消す: {undoInfo.description}
-              </button>
-            </ExplainTooltip>
-          )}
           <button
             className="btn btn-small"
             onClick={() => setShowIdentity(true)}
@@ -1276,13 +1258,6 @@ export default function App() {
           </button>
           <button
             className="btn btn-small"
-            onClick={() => void refresh()}
-            title="ステータスを再取得します [Ctrl+R]"
-          >
-            更新
-          </button>
-          <button
-            className="btn btn-small"
             onClick={() => {
               setOpened(false);
               setStatus(null);
@@ -1300,12 +1275,119 @@ export default function App() {
               setCompareBase(null);
               setCompareTarget(null);
               setCommitDiffs(null);
+              // 次のリポジトリはファイルステータスから見せる。
+              setView("status");
             }}
           >
             別のリポジトリ
           </button>
         </div>
       </header>
+
+      {/* SourceTree 風の大型ツールバー: 主要操作をアイコン＋ラベルで横並びにする */}
+      <div className="toolbar" role="toolbar" aria-label="主要操作">
+        {/* #104 操作説明ツールチップ */}
+        <ExplainTooltip op="commit">
+          <button
+            className="toolbar-btn"
+            onClick={goToCommitBox}
+            title="コミット入力欄へ移動します [Ctrl+Enter でコミット]"
+          >
+            <span className="toolbar-btn-icon">✅</span>
+            <span className="toolbar-btn-label">コミット</span>
+          </button>
+        </ExplainTooltip>
+        <span className="toolbar-sep" />
+        {/* #104 操作説明ツールチップ */}
+        <ExplainTooltip op="pull">
+          <button
+            className="toolbar-btn"
+            onClick={doPull}
+            disabled={isNetworkBusy}
+            title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
+          >
+            <span className="toolbar-btn-icon">
+              {isNetworkBusy ? <span className="network-spinner">⬇</span> : "⬇"}
+            </span>
+            <span className="toolbar-btn-label">プル</span>
+          </button>
+        </ExplainTooltip>
+        {/* #104 操作説明ツールチップ */}
+        <ExplainTooltip op="push">
+          <button
+            className="toolbar-btn"
+            onClick={doPushCurrentBranch}
+            disabled={isNetworkBusy || !status?.branch}
+            title="現在のブランチをリモートへ送信します [Ctrl+P]"
+          >
+            <span className="toolbar-btn-icon">
+              {isNetworkBusy ? <span className="network-spinner">⬆</span> : "⬆"}
+            </span>
+            <span className="toolbar-btn-label">プッシュ</span>
+          </button>
+        </ExplainTooltip>
+        {/* #104 操作説明ツールチップ */}
+        <ExplainTooltip op="fetch">
+          <button
+            className="toolbar-btn"
+            onClick={doFetch}
+            disabled={isNetworkBusy}
+            title="リモートの最新情報だけを取得します（作業中のファイルは変わりません）"
+          >
+            <span className="toolbar-btn-icon">
+              {isNetworkBusy ? <span className="network-spinner">🔄</span> : "🔄"}
+            </span>
+            <span className="toolbar-btn-label">フェッチ</span>
+          </button>
+        </ExplainTooltip>
+        <span className="toolbar-sep" />
+        <button
+          className="toolbar-btn"
+          onClick={() => setView("branches")}
+          title="ブランチの作成・切り替え・マージを行います"
+        >
+          <span className="toolbar-btn-icon">🌿</span>
+          <span className="toolbar-btn-label">ブランチ</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={() => setView("stashes")}
+          title="作業中の変更を一時退避（スタッシュ）します"
+        >
+          <span className="toolbar-btn-icon">📦</span>
+          <span className="toolbar-btn-label">スタッシュ</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={() => setView("tags")}
+          title="タグの作成・削除を行います"
+        >
+          <span className="toolbar-btn-icon">🏷</span>
+          <span className="toolbar-btn-label">タグ</span>
+        </button>
+        <span className="toolbar-spacer" />
+        {undoInfo && (
+          // #104 操作説明ツールチップ: undoInfo.op を使って対応する説明を表示する。
+          <ExplainTooltip op={undoInfo.op}>
+            <button
+              className="toolbar-btn toolbar-btn-undo"
+              onClick={doUndo}
+              title={`直前の操作を取り消します: ${undoInfo.description} [Ctrl+Z]`}
+            >
+              <span className="toolbar-btn-icon">↩</span>
+              <span className="toolbar-btn-label">取り消す</span>
+            </button>
+          </ExplainTooltip>
+        )}
+        <button
+          className="toolbar-btn"
+          onClick={() => void refresh()}
+          title="ステータスを再取得します [Ctrl+R]"
+        >
+          <span className="toolbar-btn-icon">↻</span>
+          <span className="toolbar-btn-label">更新</span>
+        </button>
+      </div>
 
       {error && (
         <div className="banner error" onClick={() => setError(null)}>
@@ -1331,10 +1413,39 @@ export default function App() {
         </div>
       )}
 
-      {/* #89 リサイズ可能レイアウト: ResizableColumns で 3 カラムをラップ */}
-      <ResizableColumns>
-        {/* カラム 1: ステージ・コミット・退避 */}
-        <section className="col">
+      {/* SourceTree 風レイアウト: 左サイドバー + メインビュー */}
+      <div className="workspace">
+        <Sidebar
+          view={view}
+          onSelectView={setView}
+          changeCount={
+            status
+              ? status.staged.length +
+                status.unstaged.length +
+                status.untracked.length
+              : 0
+          }
+          conflictCount={status?.conflicted.length ?? 0}
+          branches={branches}
+          tags={tags}
+          remotes={remotes}
+          stashes={stashes}
+          undoCount={undoJournal.length}
+          onSwitchBranch={(name) =>
+            void guarded(
+              `ブランチ「${name}」へ切り替え`,
+              "switch_branch",
+              () => api.switchBranch(repoPath, name),
+              name,
+            )
+          }
+        />
+
+        <main className="main-view">
+          {/* ファイルステータス: 変更一覧 + 差分（スクロール）と、下部固定のコミット欄 */}
+          {view === "status" && (
+          <div className="view-status">
+          <div className="view-scroll">
           <AnimatePresence mode="wait">
             {repoLoading ? (
               <motion.div
@@ -1455,8 +1566,11 @@ export default function App() {
             }
           />
 
-          <div className="panel commit-box">
-            <h2>コミット</h2>
+          </div>
+
+          {/* SourceTree 風にコミット欄はビュー下部へ固定する */}
+          <div className="commit-dock">
+            <div className="commit-dock-head">コミットメッセージ</div>
             {/* Conventional Commits プレフィックスボタン (#77) */}
             <div className="prefix-buttons">
               {COMMIT_PREFIXES.map(({ label, desc }) => (
@@ -1523,18 +1637,12 @@ export default function App() {
             </div>
           </div>
 
-          <StashPanel
-            stashes={stashes}
-            canStash={!!status && !status.is_clean}
-            onSave={doStashSave}
-            onApply={doStashApply}
-            onPop={doStashPop}
-            onLoadDiff={loadStashDiff}
-          />
-        </section>
+          </div>
+          )}
 
-        {/* カラム 2: 履歴 */}
-        <section className="col">
+          {/* 履歴: コミット一覧とコミット間差分 */}
+          {view === "history" && (
+          <div className="view-scroll">
           <AnimatePresence mode="wait">
             {repoLoading ? (
               <motion.div
@@ -1561,13 +1669,7 @@ export default function App() {
                   onLoadMore={loadMore}
                   onSearch={runSearch}
                   searching={searching}
-                  onGoToCommit={() => {
-                    commitInput.current?.focus();
-                    commitInput.current?.scrollIntoView({
-                      behavior: "smooth",
-                      block: "center",
-                    });
-                  }}
+                  onGoToCommit={goToCommitBox}
                   onReset={(c) =>
                     void guarded(
                       `「${c.short_id}」までハードリセット`,
@@ -1603,105 +1705,122 @@ export default function App() {
               onClose={closeCommitDiff}
             />
           )}
-        </section>
+          </div>
+          )}
 
-        {/* カラム 3: ブランチ・タグ */}
-        <section className="col">
-          <AnimatePresence mode="wait">
+          {/* ブランチ: 作成・切り替え・マージ・送信 */}
+          {view === "branches" && (
+          <div className="view-scroll">
             {repoLoading ? (
-              <motion.div
-                key="branch-skeleton"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-              >
-                <BranchPanelSkeleton />
-              </motion.div>
+              <BranchPanelSkeleton />
             ) : (
-              <motion.div
-                key="branch-content"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.2 }}
-              >
-                <BranchPanel
-                  branches={branches}
-                  graph={branchGraph}
-                  networkBusy={isNetworkBusy}
-                  onCreate={(name) =>
-                    void guarded("ブランチを作成", "create_branch", () =>
-                      api.createBranch(repoPath, name),
-                    )
-                  }
-                  onSwitch={(name) =>
-                    void guarded(
-                      `ブランチ「${name}」へ切り替え`,
-                      "switch_branch",
-                      () => api.switchBranch(repoPath, name),
-                      name,
-                    )
-                  }
-                  onDelete={(name) =>
-                    void guarded(
-                      `ブランチ「${name}」を削除`,
-                      "delete_branch",
-                      () => api.deleteBranch(repoPath, name),
-                      name,
-                    )
-                  }
-                  onMerge={(name) => doMergeBranch(name)}
-                  onPush={(name) =>
-                    void guarded(
-                      `ブランチ「${name}」を送信`,
-                      "push",
-                      () =>
-                        api.push(
-                          repoPath,
-                          "origin",
-                          `refs/heads/${name}:refs/heads/${name}`,
-                          false,
-                        ),
-                      name,
-                      true, // networkOp
-                    )
-                  }
-                  onForcePush={(name) =>
-                    void guarded(
-                      `ブランチ「${name}」を強制送信`,
-                      "force_push",
-                      () =>
-                        api.push(
-                          repoPath,
-                          "origin",
-                          `refs/heads/${name}:refs/heads/${name}`,
-                          true,
-                        ),
-                      name,
-                      true, // networkOp
-                    )
-                  }
-                />
-                <TagPanel
-                  tags={tags}
-                  canTag={commits.length > 0}
-                  onCreate={doCreateTag}
-                  onDelete={doDeleteTag}
-                />
-                {/* #71 リモート管理: リモートの一覧・追加・URL変更・削除。 */}
-                <RemotePanel
-                  remotes={remotes}
-                  onAdd={doAddRemote}
-                  onSetUrl={doSetRemoteUrl}
-                  onRemove={doRemoveRemote}
-                />
-                {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
-                <UndoTimeline entries={[...undoJournal].reverse()} />
-              </motion.div>
+              <BranchPanel
+                branches={branches}
+                graph={branchGraph}
+                networkBusy={isNetworkBusy}
+                onCreate={(name) =>
+                  void guarded("ブランチを作成", "create_branch", () =>
+                    api.createBranch(repoPath, name),
+                  )
+                }
+                onSwitch={(name) =>
+                  void guarded(
+                    `ブランチ「${name}」へ切り替え`,
+                    "switch_branch",
+                    () => api.switchBranch(repoPath, name),
+                    name,
+                  )
+                }
+                onDelete={(name) =>
+                  void guarded(
+                    `ブランチ「${name}」を削除`,
+                    "delete_branch",
+                    () => api.deleteBranch(repoPath, name),
+                    name,
+                  )
+                }
+                onMerge={(name) => doMergeBranch(name)}
+                onPush={(name) =>
+                  void guarded(
+                    `ブランチ「${name}」を送信`,
+                    "push",
+                    () =>
+                      api.push(
+                        repoPath,
+                        "origin",
+                        `refs/heads/${name}:refs/heads/${name}`,
+                        false,
+                      ),
+                    name,
+                    true, // networkOp
+                  )
+                }
+                onForcePush={(name) =>
+                  void guarded(
+                    `ブランチ「${name}」を強制送信`,
+                    "force_push",
+                    () =>
+                      api.push(
+                        repoPath,
+                        "origin",
+                        `refs/heads/${name}:refs/heads/${name}`,
+                        true,
+                      ),
+                    name,
+                    true, // networkOp
+                  )
+                }
+              />
             )}
-          </AnimatePresence>
-        </section>
-      </ResizableColumns>
+          </div>
+          )}
+
+          {/* タグ: 作成・削除 */}
+          {view === "tags" && (
+          <div className="view-scroll">
+            <TagPanel
+              tags={tags}
+              canTag={commits.length > 0}
+              onCreate={doCreateTag}
+              onDelete={doDeleteTag}
+            />
+          </div>
+          )}
+
+          {/* #71 リモート管理: リモートの一覧・追加・URL変更・削除。 */}
+          {view === "remotes" && (
+          <div className="view-scroll">
+            <RemotePanel
+              remotes={remotes}
+              onAdd={doAddRemote}
+              onSetUrl={doSetRemoteUrl}
+              onRemove={doRemoveRemote}
+            />
+          </div>
+          )}
+
+          {/* スタッシュ（退避）: 保存・適用・取り出し */}
+          {view === "stashes" && (
+          <div className="view-scroll">
+            <StashPanel
+              stashes={stashes}
+              canStash={!!status && !status.is_clean}
+              onSave={doStashSave}
+              onApply={doStashApply}
+              onPop={doStashPop}
+              onLoadDiff={loadStashDiff}
+            />
+          </div>
+          )}
+
+          {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
+          {view === "undo" && (
+          <div className="view-scroll">
+            <UndoTimeline entries={[...undoJournal].reverse()} />
+          </div>
+          )}
+        </main>
+      </div>
 
       {guard && (
         <ConfirmDialog
