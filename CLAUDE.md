@@ -207,16 +207,33 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     する不安定な事象で、Rust ジョブを断続的に赤くしていた）。その後
     先にフロントエンドをビルドし
     （`src-tauri` の `generate_context!` マクロが `../dist` を必要とする）、その後
-    `cargo clippy --workspace --all-targets --locked -- -D warnings` と
-    `cargo nextest run --workspace --locked --all-targets` を実行する。Clippy の
-    警告はビルドを失敗させる — ツリーを警告ゼロに保つこと。`--locked` は
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` を実行する。
+    Clippy の警告はビルドを失敗させる — ツリーを警告ゼロに保つこと。`--locked` は
     `Cargo.lock` がコミット済みかつ最新であることを意味する。コンパイルは
     `sccache`（`mozilla-actions/sccache-action`）でラップし（`RUSTC_WRAPPER:
     sccache` + `SCCACHE_GHA_ENABLED: "true"` で GitHub Actions キャッシュを
     バックエンドに使う）、コンパイラ出力レベルのキャッシュで再コンパイルを
     減らす。`Swatinem/rust-cache`（registry/target のキャッシュ）とは併用し、
     ジョブ末尾で `sccache --show-stats` によりキャッシュヒット率をログに出力
-    する。Rust のパス
+    する。
+    テスト実行は素の `cargo nextest run` ではなく `cargo llvm-cov nextest
+    --workspace --locked --all-targets --profile ci --lcov --output-path
+    lcov.info` に統合している — `cargo llvm-cov nextest` が nextest 実行自体を
+    兼ねるため、二重実行にはならない。`llvm-tools-preview`（`Setup Rust`
+    ステップの `components`）と `cargo-llvm-cov`（`taiki-e/install-action` で
+    `cargo-nextest` と同じステップからインストール）が前提。テストの成否は
+    このステップの終了コードでこれまで通り判定する（`continue-on-error` は
+    付けない）。コード計装は独自の RUSTFLAGS を注入し `RUSTC_WRAPPER=sccache`
+    と競合しうるため、このステップに限り `RUSTC_WRAPPER` を空文字で上書きして
+    sccache を無効化する（他のステップは通常どおり sccache を使う）。続く
+    `cargo llvm-cov report --summary-only >> $GITHUB_STEP_SUMMARY` ステップは、
+    直前のステップで収集済みのカバレッジデータを整形するだけでテストを
+    再実行せず、モジュール別カバレッジ率をジョブサマリーに表示する。テストの
+    成否は上のステップで既に判定済みなので、このサマリー出力ステップは
+    `if: always()` + `continue-on-error: true` とし、失敗してもジョブ全体は
+    落とさずワーニングに留める（テスト失敗とカバレッジ計測の失敗を区別する）。
+    `lcov.info` は将来の codecov 連携などを見据えて出力するのみで、現時点では
+    どこにもアップロードしない。Rust のパス
     トリガー: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`。
     フロントエンドのみの変更では Rust ジョブは**実行されない**（Rust のソース/
     テストは影響を受けず、frontend ジョブがすでにビルドを検証している）。
