@@ -230,6 +230,11 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null);
 
+  // #203 サブモジュール検出: サブモジュール未対応バナーを閉じたか。
+  // リポジトリを開き直すたびにリセットする（新しいリポジトリでは改めて案内する）。
+  const [submoduleBannerDismissed, setSubmoduleBannerDismissed] =
+    useState(false);
+
   // #126 ネットワーク診断: ネットワーク操作のエラー種別と生メッセージ。
   // null のときはダイアログ非表示。
   const [networkErrorInfo, setNetworkErrorInfo] = useState<{
@@ -535,6 +540,8 @@ export default function App() {
   async function openRepo() {
     if (!repoPath.trim()) return;
     setNotice(null);
+    // #203 サブモジュール検出: 新しいリポジトリでは改めてバナーを案内する。
+    setSubmoduleBannerDismissed(false);
     // 先に開いた状態にしてスケルトンを表示し、その裏で初期読み込みを行う。
     setRepoLoading(true);
     setOpened(true);
@@ -1262,6 +1269,8 @@ export default function App() {
               setOpened(false);
               setStatus(null);
               setIdentity(null);
+              // #203 サブモジュール検出: 次のリポジトリでは改めて案内する。
+              setSubmoduleBannerDismissed(false);
               // 次に開くリポジトリは初期件数から軽く表示し直す。
               setCommits([]);
               setHasMoreCommits(false);
@@ -1409,6 +1418,23 @@ export default function App() {
             onClick={() => setShowIdentity(true)}
           >
             設定する
+          </button>
+        </div>
+      )}
+
+      {/* #203 サブモジュール検出: 未対応であることと、見慣れない表示の意味を説明する */}
+      {status?.has_submodules && !submoduleBannerDismissed && (
+        <div className="banner setup">
+          <span>
+            📦 このリポジトリは「リポジトリの中に別のリポジトリ」（サブモジュール）を含んでいます。
+            noobGit では中身の操作（クローン・更新・コミットなど）はできません。
+            サブモジュールの変更は、ターミナルや他の Git ツールで扱ってください。
+          </span>
+          <button
+            className="btn btn-small"
+            onClick={() => setSubmoduleBannerDismissed(true)}
+          >
+            閉じる
           </button>
         </div>
       )}
