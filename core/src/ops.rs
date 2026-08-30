@@ -9,7 +9,8 @@ use git2::{
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, PullOutcome, StashInfo,
+    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, NetworkProgress,
+    NetworkProgressStage, PullOutcome, StashInfo,
 };
 use crate::repo::{current_branch, is_submodule_path};
 use crate::safety::OperationKind;
@@ -1075,6 +1076,18 @@ pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
 /// 作業ツリー・インデックス・現在ブランチには一切触れない安全操作。取り込む前に
 /// 「何が来ているか」を確認するために使う。更新された追跡ブランチ数を返す。
 pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
+    fetch_with_progress(repo, remote_name, &mut |_| {})
+}
+
+/// [`fetch`] と同じ処理を行いつつ、通信の進捗を `on_progress` へ都度通知する。
+///
+/// `on_progress` は UI スレッドをブロックしないよう軽量に保つこと（例: Tauri の
+/// Channel へ送るだけ）。`fetch` はこの関数を何もしないコールバックで呼ぶ薄いラッパー。
+pub fn fetch_with_progress(
+    repo: &Repository,
+    remote_name: &str,
+    on_progress: &mut dyn FnMut(NetworkProgress),
+) -> Result<FetchOutcome> {
     let remote_name = remote_name.trim();
     if remote_name.is_empty() {
         return Err(CoreError::InvalidInput(
@@ -1086,6 +1099,18 @@ pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
             "リモート「{remote_name}」が見つかりません。取得先の名前を確認してください。"
         ))
     })?;
+
+    // まだ何も届いていない「接続待ち」の段階を最初に一度だけ通知する。
+    // transfer_progress のコールバックは接続確立後にしか呼ばれないため、これが無いと
+    // 接続に時間がかかるとき UI が完全に無反応に見えてしまう。
+    on_progress(NetworkProgress {
+        stage: NetworkProgressStage::Connecting,
+        received_objects: 0,
+        total_objects: 0,
+        received_bytes: 0,
+        indexed_deltas: 0,
+        total_deltas: 0,
+    });
 
     // 更新（前進・新規取得）された追跡ブランチ数を update_tips コールバックで数える。
     let updated = Cell::new(0usize);
@@ -1099,6 +1124,22 @@ pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
             if old != new {
                 updated.set(updated.get() + 1);
             }
+            true
+        });
+        cb.transfer_progress(|stats| {
+            let stage = if stats.indexed_deltas() > 0 || stats.total_deltas() > 0 {
+                NetworkProgressStage::ResolvingDeltas
+            } else {
+                NetworkProgressStage::ReceivingObjects
+            };
+            on_progress(NetworkProgress {
+                stage,
+                received_objects: stats.received_objects(),
+                total_objects: stats.total_objects(),
+                received_bytes: stats.received_bytes(),
+                indexed_deltas: stats.indexed_deltas(),
+                total_deltas: stats.total_deltas(),
+            });
             true
         });
 
@@ -1133,6 +1174,17 @@ pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
 ///   **何も変更せずに中断** する（[`CoreError::Blocked`]）。マージと解決は別途のコンフリクト
 ///   解決 UI に委ねる。これによりデータ消失が起きないことを保証する。
 pub fn pull(repo: &Repository, remote_name: &str, branch: &str) -> Result<PullOutcome> {
+    pull_with_progress(repo, remote_name, branch, &mut |_| {})
+}
+
+/// [`pull`] と同じ処理を行いつつ、fetch 部分の通信進捗を `on_progress` へ都度通知する。
+/// `pull` はこの関数を何もしないコールバックで呼ぶ薄いラッパー。
+pub fn pull_with_progress(
+    repo: &Repository,
+    remote_name: &str,
+    branch: &str,
+    on_progress: &mut dyn FnMut(NetworkProgress),
+) -> Result<PullOutcome> {
     let branch = branch.trim();
     if branch.is_empty() {
         return Err(CoreError::InvalidInput(
@@ -1141,7 +1193,7 @@ pub fn pull(repo: &Repository, remote_name: &str, branch: &str) -> Result<PullOu
     }
 
     // 1. まずリモートの最新を取得する（ネットワーク操作はここだけ）。
-    fetch(repo, remote_name)?;
+    fetch_with_progress(repo, remote_name, on_progress)?;
     let remote_name = remote_name.trim();
 
     // 2. 取り込み元（例: refs/remotes/origin/main）の先端コミットを得る。
@@ -1389,6 +1441,18 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
 /// （例: `refs/heads/main:refs/heads/main`）。`force` が真のときは強制 push（リモートの
 /// 履歴を上書き）を行う。push はローカルだけでは取り消せないため undo は記録しない。
 pub fn push(repo: &Repository, remote: &str, refspec: &str, force: bool) -> Result<()> {
+    push_with_progress(repo, remote, refspec, force, &mut |_| {})
+}
+
+/// [`push`] と同じ処理を行いつつ、通信の進捗を `on_progress` へ都度通知する。
+/// `push` はこの関数を何もしないコールバックで呼ぶ薄いラッパー。
+pub fn push_with_progress(
+    repo: &Repository,
+    remote: &str,
+    refspec: &str,
+    force: bool,
+    on_progress: &mut dyn FnMut(NetworkProgress),
+) -> Result<()> {
     let remote = remote.trim();
     let refspec = refspec.trim();
     if remote.is_empty() {
@@ -1419,6 +1483,17 @@ pub fn push(repo: &Repository, remote: &str, refspec: &str, force: bool) -> Resu
     // push() 自体は成功(Ok)を返しつつ、拒否はこの callback の status で通知されることがある。
     let rejection: RefCell<Option<String>> = RefCell::new(None);
 
+    // fetch と同様、接続確立前は push_transfer_progress が一度も呼ばれないため、
+    // まず「接続待ち」を一度通知しておく。
+    on_progress(NetworkProgress {
+        stage: NetworkProgressStage::Connecting,
+        received_objects: 0,
+        total_objects: 0,
+        received_bytes: 0,
+        indexed_deltas: 0,
+        total_deltas: 0,
+    });
+
     {
         let mut callbacks = RemoteCallbacks::new();
         // 認証は SSH エージェント → 資格情報ヘルパ（トークン等）→ 既定 の順で試す。
@@ -1447,6 +1522,17 @@ pub fn push(repo: &Repository, remote: &str, refspec: &str, force: bool) -> Resu
                 *rejection.borrow_mut() = Some(format!("{refname}: {msg}"));
             }
             Ok(())
+        });
+        // 送信オブジェクトの進捗。(current, total, bytes) の順で渡される。
+        callbacks.push_transfer_progress(|current, total, bytes| {
+            on_progress(NetworkProgress {
+                stage: NetworkProgressStage::SendingObjects,
+                received_objects: current,
+                total_objects: total,
+                received_bytes: bytes,
+                indexed_deltas: 0,
+                total_deltas: 0,
+            });
         });
 
         let mut opts = PushOptions::new();
@@ -1884,6 +1970,33 @@ mod tests {
         assert!(status(&repo).unwrap().is_clean);
     }
 
+    /// #167 進捗フィードバック: fetch_with_progress が「接続待ち」を最初に必ず通知し、
+    /// 通信中も進捗コールバックを呼ぶこと。
+    #[test]
+    fn fetch_with_progress_reports_connecting_first() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let (_keep, local_path) = clone_local(&upstream);
+        upstream.write_file("a.txt", "2");
+        upstream.stage_all();
+        upstream.commit("c2");
+
+        let repo = git2::Repository::open(&local_path).unwrap();
+        let mut events: Vec<NetworkProgress> = Vec::new();
+        let outcome = fetch_with_progress(&repo, "origin", &mut |p| events.push(p)).unwrap();
+
+        assert_eq!(outcome.updated_refs, 1);
+        // 最初のイベントは必ず「接続待ち」（オブジェクト数がまだ分からない段階）。
+        assert_eq!(
+            events.first().unwrap().stage,
+            NetworkProgressStage::Connecting
+        );
+        assert_eq!(events.first().unwrap().total_objects, 0);
+    }
+
     #[test]
     fn fetch_unknown_remote_is_rejected() {
         let fx = TestRepo::new();
@@ -1965,6 +2078,30 @@ mod tests {
         );
         // 取り込み後はクリーンな状態。
         assert!(status(&repo).unwrap().is_clean);
+    }
+
+    /// #167 進捗フィードバック: pull_with_progress は内部の fetch 部分の進捗を通知する。
+    #[test]
+    fn pull_with_progress_reports_fetch_progress() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1\n");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let (_keep, local_path) = clone_local(&upstream);
+        upstream.write_file("a.txt", "2\n");
+        upstream.stage_all();
+        upstream.commit("c2");
+
+        let repo = git2::Repository::open(&local_path).unwrap();
+        let mut events: Vec<NetworkProgress> = Vec::new();
+        let outcome = pull_with_progress(&repo, "origin", "main", &mut |p| events.push(p)).unwrap();
+
+        assert!(matches!(outcome, PullOutcome::FastForwarded { .. }));
+        assert_eq!(
+            events.first().unwrap().stage,
+            NetworkProgressStage::Connecting
+        );
     }
 
     #[test]
@@ -2078,6 +2215,36 @@ mod tests {
 
         let bare_repo = bare.open();
         assert_eq!(bare_repo.refname_to_id("refs/heads/main").unwrap(), oid);
+    }
+
+    /// #167 進捗フィードバック: push_with_progress が「接続待ち」を最初に通知し、
+    /// 通常の push と同じくリモートに反映されること。
+    #[test]
+    fn push_with_progress_reports_connecting_first() {
+        let bare = TestRepo::new_bare();
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let oid = fx.commit("c1");
+        fx.add_remote("origin", bare.path().to_str().unwrap());
+
+        let repo = fx.open();
+        let mut events: Vec<NetworkProgress> = Vec::new();
+        push_with_progress(
+            &repo,
+            "origin",
+            "refs/heads/main:refs/heads/main",
+            false,
+            &mut |p| events.push(p),
+        )
+        .unwrap();
+
+        let bare_repo = bare.open();
+        assert_eq!(bare_repo.refname_to_id("refs/heads/main").unwrap(), oid);
+        assert_eq!(
+            events.first().unwrap().stage,
+            NetworkProgressStage::Connecting
+        );
     }
 
     /// 非fast-forward の push は拒否され、日本語のブロックエラーになる。

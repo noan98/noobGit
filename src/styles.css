@@ -490,6 +490,69 @@ textarea {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
 }
+/* #167 進捗フィードバック: fetch/pull/push 実行中に表示するプログレスバー。
+   トグルバーの直下に置き、進行中は accent、完了は safe、失敗は destructive の
+   意味色に切り替える。framer-motion の height アニメーションでスライドイン/アウトする。 */
+.network-progress {
+  overflow: hidden;
+  padding: 8px 16px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.network-progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.network-progress-label {
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.network-progress-text {
+  color: var(--muted);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.network-progress-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border-muted);
+  overflow: hidden;
+}
+.network-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.network-progress-success .network-progress-fill {
+  background: var(--safe);
+}
+.network-progress-success .network-progress-text {
+  color: var(--safe);
+}
+.network-progress-error .network-progress-fill {
+  background: var(--destructive);
+}
+.network-progress-error .network-progress-text {
+  color: var(--destructive);
+}
+/* 総数が分からない（接続待ちなど）間の不確定表示: 短い帯が左右にスライドする。 */
+.network-progress-fill-indeterminate {
+  position: absolute;
+  width: 40%;
+  animation: network-progress-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes network-progress-indeterminate {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
 /* テーマ切り替えボタン: アイコンとラベルを横並びにし、アイコンを縦中央に揃える。
    アイコンは currentColor で描くので --text に追従する（ThemeToggle.tsx 参照）。 */
 .theme-toggle {

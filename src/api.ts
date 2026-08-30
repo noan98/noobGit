@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 // --- core の serde 型に対応する TypeScript 型 -----------------------------
 
@@ -205,6 +205,30 @@ export type PullOutcome =
   | { kind: "up_to_date" }
   | { kind: "fast_forwarded"; commit: CommitInfo };
 
+// #167 進捗フィードバック: fetch / pull / push の通信段階（core の
+// NetworkProgressStage に対応）。この型は check_type_contract.py の自動検証
+// 対象ではない（対象は OperationKind / RiskLevel / ChangeKind / DiffLineKind /
+// NetworkErrorKind のみ）ため、core/src/model.rs の enum を変更したら
+// ここも必ず手動で同期すること。
+export type NetworkProgressStage =
+  | "connecting"
+  | "receiving_objects"
+  | "resolving_deltas"
+  | "sending_objects";
+
+// #167 進捗フィードバック: fetch / pull / push の進捗1件（core の NetworkProgress
+// に対応）。Tauri の Channel でストリーミング配信される。total_objects が 0 の間は
+// まだ総数が分かっていない（stage が "connecting" のときなど）ので、パーセント表示は
+// total_objects > 0 のときだけ行うこと。
+export interface NetworkProgress {
+  stage: NetworkProgressStage;
+  received_objects: number;
+  total_objects: number;
+  received_bytes: number;
+  indexed_deltas: number;
+  total_deltas: number;
+}
+
 // merge（ブランチ統合）の結果。
 export type MergeOutcome =
   | { kind: "up_to_date" }
@@ -367,10 +391,27 @@ export const api = {
     invoke<void>("switch_branch", { repoPath, name }),
   deleteBranch: (repoPath: string, name: string) =>
     invoke<void>("delete_branch", { repoPath, name }),
-  fetch: (repoPath: string, remote: string) =>
-    invoke<FetchOutcome>("fetch", { repoPath, remote }),
-  pull: (repoPath: string, remote: string, branch: string) =>
-    invoke<PullOutcome>("pull", { repoPath, remote, branch }),
+  // #167 進捗フィードバック: onProgress を渡すと、受信オブジェクト数などの進捗を
+  // 都度呼び出す（Tauri の Channel でストリーミング配信される）。省略可能で、
+  // 省略時は何もしない Channel を渡すだけで動作は変わらない
+  // （Rust 側の `Channel<T>` 引数は IPC 参照型のため Option にできない）。
+  fetch: (
+    repoPath: string,
+    remote: string,
+    onProgress?: (progress: NetworkProgress) => void,
+  ) => {
+    const progress = new Channel<NetworkProgress>(onProgress ?? (() => {}));
+    return invoke<FetchOutcome>("fetch", { repoPath, remote, progress });
+  },
+  pull: (
+    repoPath: string,
+    remote: string,
+    branch: string,
+    onProgress?: (progress: NetworkProgress) => void,
+  ) => {
+    const progress = new Channel<NetworkProgress>(onProgress ?? (() => {}));
+    return invoke<PullOutcome>("pull", { repoPath, remote, branch, progress });
+  },
   resetHard: (repoPath: string, revspec: string) =>
     invoke<void>("reset_hard", { repoPath, revspec }),
   push: (
@@ -378,7 +419,17 @@ export const api = {
     remote: string,
     refspec: string,
     force: boolean,
-  ) => invoke<void>("push", { repoPath, remote, refspec, force }),
+    onProgress?: (progress: NetworkProgress) => void,
+  ) => {
+    const progress = new Channel<NetworkProgress>(onProgress ?? (() => {}));
+    return invoke<void>("push", {
+      repoPath,
+      remote,
+      refspec,
+      force,
+      progress,
+    });
+  },
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),

@@ -4,14 +4,15 @@
 //! 日本語のエラーメッセージをそのまま表示できる。
 
 use git2::Repository;
+use tauri::ipc::Channel;
 
 use noobgit_core::error::{classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, LfsCandidate, MergeOutcome, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
-    SensitiveWarning, StashInfo, TagInfo,
+    FileDiff, LfsCandidate, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo,
+    RepoStatus, SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -300,17 +301,41 @@ fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
 }
 
 /// リモートから最新を取得し、リモート追跡ブランチを更新する（作業ツリーは変えない）。
+///
+/// `progress` へ受信オブジェクト数などの進捗を Tauri の Channel 経由で
+/// フロントエンドへ都度ストリーミング送信する（#167 進捗フィードバック）。
+/// 送信自体が失敗しても fetch は継続する（進捗表示はベストエフォート）。
+/// `Channel<T>` は Tauri の IPC 参照型で `Option` にはできないため、フロントエンドは
+/// 進捗を使わないときも（何もしない onmessage の）Channel を渡す（`src/api.ts` 参照）。
 #[tauri::command]
-fn fetch(repo_path: String, remote: String) -> Result<FetchOutcome, String> {
+fn fetch(
+    repo_path: String,
+    remote: String,
+    progress: Channel<NetworkProgress>,
+) -> Result<FetchOutcome, String> {
     let r = open(&repo_path)?;
-    ops::fetch(&r, &remote).map_err(|e| e.to_string())
+    let mut on_progress = move |p: NetworkProgress| {
+        let _ = progress.send(p);
+    };
+    ops::fetch_with_progress(&r, &remote, &mut on_progress).map_err(|e| e.to_string())
 }
 
 /// fetch 後、安全に進められるとき（fast-forward）だけ取り込む。分岐時は中断する。
+///
+/// `progress` は fetch 部分（データ受信）の進捗を通知する。fast-forward 自体は
+/// ローカルの作業なので進捗イベントは発生しない。
 #[tauri::command]
-fn pull(repo_path: String, remote: String, branch: String) -> Result<PullOutcome, String> {
+fn pull(
+    repo_path: String,
+    remote: String,
+    branch: String,
+    progress: Channel<NetworkProgress>,
+) -> Result<PullOutcome, String> {
     let r = open(&repo_path)?;
-    ops::pull(&r, &remote, &branch).map_err(|e| e.to_string())
+    let mut on_progress = move |p: NetworkProgress| {
+        let _ = progress.send(p);
+    };
+    ops::pull_with_progress(&r, &remote, &branch, &mut on_progress).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -320,10 +345,23 @@ fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
 }
 
 /// ローカルのコミットをリモートへ送信する。`force` が真なら強制 push。
+///
+/// `progress` を渡すと、送信オブジェクト数などの進捗を Tauri の Channel 経由で
+/// フロントエンドへ都度ストリーミング送信する（#167 進捗フィードバック）。
 #[tauri::command]
-fn push(repo_path: String, remote: String, refspec: String, force: bool) -> Result<(), String> {
+fn push(
+    repo_path: String,
+    remote: String,
+    refspec: String,
+    force: bool,
+    progress: Channel<NetworkProgress>,
+) -> Result<(), String> {
     let r = open(&repo_path)?;
-    ops::push(&r, &remote, &refspec, force).map_err(|e| e.to_string())
+    let mut on_progress = move |p: NetworkProgress| {
+        let _ = progress.send(p);
+    };
+    ops::push_with_progress(&r, &remote, &refspec, force, &mut on_progress)
+        .map_err(|e| e.to_string())
 }
 
 /// 指定したローカルブランチを現在のブランチにマージする。
