@@ -23,11 +23,11 @@ pub fn open(path: &str) -> Result<Repository> {
 /// 現在のブランチ名を取得する。未誕生ブランチ（コミット0件）でも名前を返す。
 pub fn current_branch(repo: &Repository) -> Option<String> {
     match repo.head() {
-        Ok(h) => h.shorthand().map(|s| s.to_string()),
+        Ok(h) => h.shorthand().ok().map(|s| s.to_string()),
         Err(_) => repo
             .find_reference("HEAD")
             .ok()
-            .and_then(|r| r.symbolic_target().map(strip_branch_prefix)),
+            .and_then(|r| r.symbolic_target().ok().flatten().map(strip_branch_prefix)),
     }
 }
 
@@ -198,7 +198,7 @@ pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
     let mut out = Vec::new();
 
     let names = repo.tag_names(None)?;
-    for name in names.iter().flatten() {
+    for name in names.iter().filter_map(|r| r.ok().flatten()) {
         // タグ参照（refs/tags/<name>）を解決する。
         let refname = format!("refs/tags/{name}");
         let reference = match repo.find_reference(&refname) {
@@ -213,7 +213,11 @@ pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
         // 注釈付きタグなら、その oid から Tag オブジェクトを取得できる。
         let (target_oid, message) = match repo.find_tag(oid) {
             Ok(tag) => {
-                let msg = tag.message().map(|m| m.trim_end().to_string());
+                let msg = tag
+                    .message()
+                    .ok()
+                    .flatten()
+                    .map(|m| m.trim_end().to_string());
                 (tag.target_id(), msg)
             }
             // 軽量タグ: 参照が直接対象（コミット等）を指す。
@@ -243,13 +247,13 @@ pub fn list_remotes(repo: &Repository) -> Result<Vec<RemoteInfo>> {
     })?;
 
     let mut out = Vec::new();
-    for name in names.iter().flatten() {
+    for name in names.iter().filter_map(|r| r.ok().flatten()) {
         let remote = match repo.find_remote(name) {
             Ok(r) => r,
             Err(_) => continue,
         };
         let fetch_url = remote.url().unwrap_or("").to_string();
-        let push_raw = remote.pushurl().unwrap_or("");
+        let push_raw = remote.pushurl().ok().flatten().unwrap_or("");
         // push URL が空か fetch URL と同じなら None とする（UI を簡潔に保つ）。
         let push_url = if push_raw.is_empty() || push_raw == fetch_url {
             None
@@ -468,7 +472,7 @@ pub fn log_filtered(
         out.push(CommitInfo {
             id: oid.to_string(),
             short_id: oid.to_string().chars().take(7).collect(),
-            summary: commit.summary().unwrap_or("").to_string(),
+            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
@@ -527,7 +531,7 @@ pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitI
         out.push(CommitInfo {
             id: oid.to_string(),
             short_id: oid.to_string().chars().take(7).collect(),
-            summary: commit.summary().unwrap_or("").to_string(),
+            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
@@ -943,7 +947,7 @@ pub fn blame_file(repo: &Repository, path: &str) -> Result<Vec<BlameHunk>> {
             lines_count: hunk.lines_in_hunk(),
             commit_id: oid.to_string(),
             short_id: oid.to_string().chars().take(7).collect(),
-            message_short: commit.summary().unwrap_or("").to_string(),
+            message_short: commit.summary().ok().flatten().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("").to_string(),
             time: commit.time().seconds(),
         });
@@ -1071,7 +1075,7 @@ pub fn read_reflog(repo: &Repository, max: usize) -> Result<Vec<ReflogEntry>> {
         let new_oid = entry.id_new().to_string();
         let old_oid = entry.id_old().to_string();
         let short_id: String = new_oid.chars().take(7).collect();
-        let message = entry.message().unwrap_or("").to_string();
+        let message = entry.message().ok().flatten().unwrap_or("").to_string();
         let short_message = reflog_short_message(&message);
         let timestamp = entry.committer().when().seconds();
 
@@ -1092,6 +1096,49 @@ pub fn read_reflog(repo: &Repository, max: usize) -> Result<Vec<ReflogEntry>> {
 mod tests {
     use super::*;
     use crate::test_support::*;
+
+    // git2 0.21 で summary()/message() が Option から Result へ変わり、
+    // デコードできないメッセージはエラーとして表に出るようになった。noobGit は
+    // 「1 件でも壊れたコミットがあると履歴全体が見られない」状態を避けたいので、
+    // 0.20 までと同じく空文字へフォールバックする。その挙動を固定するテスト。
+    #[test]
+    fn log_survives_non_utf8_commit_message() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello");
+        fx.stage_all();
+        fx.commit("最初のコミット");
+
+        // Shift-JIS の「テスト」。UTF-8 としては不正なバイト列になる。
+        fx.write_file("b.txt", "world");
+        fx.stage_all();
+        let broken = fx.commit_with_raw_message(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+
+        let repo = fx.open();
+        let entries = log(&repo, 10).unwrap();
+
+        // 壊れたコミットも一覧から欠落しない（エラーで全体が落ちない）。
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, broken.to_string());
+        // デコードできない件名は空文字にフォールバックする。
+        assert_eq!(entries[0].summary, "");
+        // 後続の正常なコミットはこれまでどおり読める。
+        assert_eq!(entries[1].summary, "最初のコミット");
+    }
+
+    #[test]
+    fn blame_survives_non_utf8_commit_message() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello\n");
+        fx.stage_all();
+        fx.commit_with_raw_message(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+
+        let repo = fx.open();
+        let hunks = blame_file(&repo, "a.txt").unwrap();
+
+        // blame もエラーにならず、件名だけが空文字になる。
+        assert!(!hunks.is_empty());
+        assert_eq!(hunks[0].message_short, "");
+    }
 
     #[test]
     fn open_discovers_repo_from_subdir() {
