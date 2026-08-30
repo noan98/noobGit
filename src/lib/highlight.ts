@@ -1,20 +1,83 @@
 /*
  * シンタックスハイライトユーティリティ（shiki ベース）。
  *
- * - ハイライターはシングルトンで保持し、初回のみ初期化する。
+ * - `shiki` パッケージ本体（`"shiki"` から `getSingletonHighlighter` /
+ *   `createHighlighter` を import する形）は、内部で 200 以上ある全言語ぶんの
+ *   動的 import を静的に列挙しているため、実際に使う言語が数個でも
+ *   Vite/Rollup がビルド時に全言語のチャンクを生成してしまう（#153）。
+ * - これを避けるため、`shiki/core` の `createHighlighterCore` と、
+ *   `EXT_LANG` が実際にマッピングしうる言語・テーマだけを個別に静的 import
+ *   する「Fine-Grained Bundle」方式で初期化する。ビルドに含まれるのは
+ *   ここで import した言語・テーマのみになる。
+ * - ハイライターはモジュールスコープのシングルトンとして一度だけ生成する
+ *   （必要な言語・テーマは初期化時にすべて読み込み済みのため、以降の
+ *   遅延ロードは不要）。
  * - テーマ: ダーク = github-dark、ライト = github-light。
- * - 言語は使う分だけ動的ロードして、バンドルサイズを抑える。
- * - 失敗時はプレーン文字列を返してクラッシュしない。
+ * - 未知の言語（`langFromPath` が "text" を返す場合）や失敗時はプレーン
+ *   文字列を返してクラッシュしない。
  */
-import { getSingletonHighlighter, type HighlighterGeneric } from "shiki";
+import { createHighlighterCore, type HighlighterCore } from "shiki/core";
+import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 
-// shiki の型（内部的に BundledLanguage / BundledTheme を使うが、
-// 文字列リテラルとして扱うため any で受ける）
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyHighlighter = HighlighterGeneric<any, any>;
+import bash from "@shikijs/langs/bash";
+import c from "@shikijs/langs/c";
+import cpp from "@shikijs/langs/cpp";
+import csharp from "@shikijs/langs/csharp";
+import css from "@shikijs/langs/css";
+import go from "@shikijs/langs/go";
+import html from "@shikijs/langs/html";
+import java from "@shikijs/langs/java";
+import javascript from "@shikijs/langs/javascript";
+import json from "@shikijs/langs/json";
+import kotlin from "@shikijs/langs/kotlin";
+import markdown from "@shikijs/langs/markdown";
+import php from "@shikijs/langs/php";
+import python from "@shikijs/langs/python";
+import ruby from "@shikijs/langs/ruby";
+import rust from "@shikijs/langs/rust";
+import scss from "@shikijs/langs/scss";
+import sql from "@shikijs/langs/sql";
+import svelte from "@shikijs/langs/svelte";
+import swift from "@shikijs/langs/swift";
+import toml from "@shikijs/langs/toml";
+import typescript from "@shikijs/langs/typescript";
+import vue from "@shikijs/langs/vue";
+import xml from "@shikijs/langs/xml";
+import yaml from "@shikijs/langs/yaml";
 
-// 使用するテーマ。両方を最初に読み込んでおく。
-const THEMES = ["github-dark", "github-light"] as const;
+import githubDark from "@shikijs/themes/github-dark";
+import githubLight from "@shikijs/themes/github-light";
+
+// 実際に読み込む言語（下の EXT_LANG の値の集合と一致させること。
+// 言語を追加する場合は、対応する @shikijs/langs/<lang> の import を
+// ここにも足す。漏れると該当言語は "text" と同様プレーン表示になる）。
+const LANGS = [
+  bash,
+  c,
+  cpp,
+  csharp,
+  css,
+  go,
+  html,
+  java,
+  javascript,
+  json,
+  kotlin,
+  markdown,
+  php,
+  python,
+  ruby,
+  rust,
+  scss,
+  sql,
+  svelte,
+  swift,
+  toml,
+  typescript,
+  vue,
+  xml,
+  yaml,
+];
 
 // 拡張子 → shiki 言語名のマッピング。
 const EXT_LANG: Record<string, string> = {
@@ -57,41 +120,20 @@ export function langFromPath(path: string): string {
   return EXT_LANG[ext] ?? "text";
 }
 
-// ハイライター本体（シングルトン）。
-let highlighterPromise: Promise<AnyHighlighter> | null = null;
-// 読み込み済みの言語セット。
-const loadedLangs = new Set<string>();
+// ハイライター本体（シングルトン）。必要な言語・テーマは全て初期化時に
+// 静的インポート済みなので、生成は一度だけで済む。
+let highlighterPromise: Promise<HighlighterCore> | null = null;
 
-// シングルトンのハイライターを取得する（必要な言語を追加しながら）。
-async function getHighlighter(langs: string[]): Promise<AnyHighlighter> {
-  // "text" は shiki に渡さない（プレーンで返すため）。
-  const realLangs = langs.filter((l) => l !== "text");
-
+// シングルトンのハイライターを取得する（初回のみ生成する）。
+function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
-    // 初回: ハイライターを作成する。
-    highlighterPromise = getSingletonHighlighter({
-      themes: [...THEMES],
-      langs: realLangs,
-    }).then((h) => {
-      for (const l of realLangs) loadedLangs.add(l);
-      return h;
+    highlighterPromise = createHighlighterCore({
+      themes: [githubDark, githubLight],
+      langs: LANGS,
+      engine: createOnigurumaEngine(import("shiki/wasm")),
     });
-    return highlighterPromise;
   }
-
-  // 2回目以降: 未読み込みの言語があれば追加する。
-  const h = await highlighterPromise;
-  const missing = realLangs.filter((l) => !loadedLangs.has(l));
-  if (missing.length > 0) {
-    await Promise.all(
-      missing.map((l) =>
-        h.loadLanguage(l as Parameters<typeof h.loadLanguage>[0]).then(() => {
-          loadedLangs.add(l);
-        }),
-      ),
-    );
-  }
-  return h;
+  return highlighterPromise;
 }
 
 // shiki の ThemedToken 型（簡易定義）。
@@ -150,7 +192,7 @@ export async function highlightLine(
   if (lang === "text" || !code.trim()) return escapeHtml(code);
 
   try {
-    const h = await getHighlighter([lang]);
+    const h = await getHighlighter();
     const theme = isDark ? "github-dark" : "github-light";
 
     // codeToTokensBase は行ごとのトークン配列を返す（改行で分割）。
@@ -159,7 +201,7 @@ export async function highlightLine(
     const tokens = lineTokens[0] ?? [];
     return tokensToHtml(tokens);
   } catch {
-    // 失敗時はエスケープ済みプレーン文字列にフォールバック。
+    // 失敗時（未対応言語を含む）はエスケープ済みプレーン文字列にフォールバック。
     return escapeHtml(code);
   }
 }
@@ -182,7 +224,7 @@ export async function highlightLines(
   }
 
   try {
-    const h = await getHighlighter([lang]);
+    const h = await getHighlighter();
     const theme = isDark ? "github-dark" : "github-light";
 
     // 各行を個別にトークン化する（行ごとに正確な結果を得るため）。

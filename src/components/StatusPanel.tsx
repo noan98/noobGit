@@ -180,6 +180,8 @@ function FileCard({
   onCheck,
   // #125 hunk 単位ステージ
   onStageHunk,
+  // #203 サブモジュール検出
+  isSubmodule,
 }: {
   path: string;
   isSelected: boolean;
@@ -199,12 +201,18 @@ function FileCard({
   onCheck?: (checked: boolean) => void;
   // #125 hunk 単位ステージ: hunk ヘッダーを受け取り親へ委譲する。
   onStageHunk?: (hunkHeader: string) => void;
+  // #203 サブモジュール検出: このパスがサブモジュール（リポジトリの中の別リポジトリ）か。
+  // アイコンとツールチップを差し替え、noobGit では中身を操作できないことを伝える。
+  isSubmodule?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
   const dragging = useRef(false);
   const { dir, name } = splitPath(path);
-  const icon = fileIcon(name);
+  const icon = isSubmodule ? "📦" : fileIcon(name);
+  const iconTitle = isSubmodule
+    ? "サブモジュール（このフォルダの中は別の Git リポジトリです）。noobGit では中身を操作できません。ターミナルや他の Git ツールで操作してください。"
+    : undefined;
 
   return (
     // #78 ステージング移動アニメーション + #87 ドラッグ&ドロップ
@@ -277,12 +285,13 @@ function FileCard({
             />
           )}
 
-          {/* ファイルアイコン（拡張子絵文字）*/}
+          {/* ファイルアイコン（拡張子絵文字）。#203: サブモジュールは 📦 + ツールチップ */}
           <Text
             as="span"
             fontSize="14px"
             lineHeight="1"
-            aria-hidden="true"
+            aria-hidden={isSubmodule ? undefined : "true"}
+            title={iconTitle}
             flexShrink={0}
           >
             {icon}
@@ -717,6 +726,7 @@ export function StatusPanel({
                       inlineDiffSource="staged"
                       checked={checkedPaths.has(f.path)}
                       onCheck={(c) => toggleCheck(f.path, c)}
+                      isSubmodule={f.is_submodule}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -801,6 +811,7 @@ export function StatusPanel({
                           ? (h) => onStageHunk(f.path, h)
                           : undefined
                       }
+                      isSubmodule={f.is_submodule}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -828,21 +839,32 @@ export function StatusPanel({
                           </button>
                           <button
                             className="link"
+                            disabled={f.is_submodule}
                             onClick={(e) => {
                               e.stopPropagation();
                               onStagePath(f.path);
                             }}
+                            title={
+                              f.is_submodule
+                                ? "サブモジュールなのでステージできません（noobGit は未対応）"
+                                : undefined
+                            }
                             style={{ marginLeft: "6px" }}
                           >
                             ステージ
                           </button>
                           <button
                             className="link danger"
+                            disabled={f.is_submodule}
                             onClick={(e) => {
                               e.stopPropagation();
                               onDiscard(f.path);
                             }}
-                            title="この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
+                            title={
+                              f.is_submodule
+                                ? "サブモジュールなので破棄できません（noobGit は未対応）"
+                                : "この変更を捨てて、最後にコミットした状態に戻します（元に戻せません）"
+                            }
                           >
                             破棄
                           </button>

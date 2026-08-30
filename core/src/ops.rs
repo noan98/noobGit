@@ -11,7 +11,7 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, PullOutcome, StashInfo,
 };
-use crate::repo::current_branch;
+use crate::repo::{current_branch, is_submodule_path};
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
 
@@ -25,8 +25,27 @@ pub fn stage_all(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+/// サブモジュール（`.gitmodules` に登録された「リポジトリの中の別リポジトリ」）のパスに
+/// 対する書き込み操作を拒否するときの共通メッセージ。
+///
+/// noobGit はサブモジュールの中身（クローン・更新・コミット等）を一切サポートしない。
+/// 中途半端に操作すると壊れた中間状態を作りかねないので、検出したら安全に拒否し、
+/// 代わりにターミナルや他の Git ツールでの操作を案内する。
+fn submodule_blocked_message(path: &str) -> String {
+    format!(
+        "「{path}」はサブモジュール（リポジトリの中に埋め込まれた別のGitリポジトリ）です。\
+         noobGit はサブモジュールの中身を操作できません。\
+         ターミナルや他のGitツールで操作してください。"
+    )
+}
+
 /// 指定パスをステージする。ファイルが消えていれば削除としてステージする。
+///
+/// サブモジュールのパスが指定された場合は、意図しない挙動を避けるため安全に拒否する。
 pub fn stage_path(repo: &Repository, path: &str) -> Result<()> {
+    if is_submodule_path(repo, path) {
+        return Err(CoreError::Blocked(submodule_blocked_message(path)));
+    }
     let mut index = repo.index()?;
     let exists = repo
         .workdir()
@@ -99,6 +118,9 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
         return Err(CoreError::InvalidInput(
             "ステージする変更の塊（hunk）を指定してください。".to_string(),
         ));
+    }
+    if is_submodule_path(repo, file_path) {
+        return Err(CoreError::Blocked(submodule_blocked_message(file_path)));
     }
 
     // 対象パスだけの未ステージ差分（index → 作業ツリー）を取る。
@@ -499,7 +521,14 @@ pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
 /// - HEAD に無いファイル（新規）: インデックスから外し、作業ツリーから削除する。
 ///
 /// 捨てた内容は元に戻せない破壊的操作。安全な代替は stash（退避）。undo は記録しない。
+///
+/// サブモジュールのパスが指定された場合は、中の別リポジトリを壊しかねないため
+/// 実行せず安全に拒否する。
 pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
+    if is_submodule_path(repo, path) {
+        return Err(CoreError::Blocked(submodule_blocked_message(path)));
+    }
+
     let workdir = repo
         .workdir()
         .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
@@ -727,6 +756,9 @@ fn stash_changed_files(repo: &Repository, oid: git2::Oid) -> Result<Vec<FileChan
 }
 
 /// diff の1デルタを [`FileChange`] に変換する（新パス優先、無ければ旧パス）。
+///
+/// stash の変更ファイル一覧（プレビュー専用・非破壊）で使うため、サブモジュール
+/// 判定はここでは行わない（常に `is_submodule: false`）。
 fn delta_to_file_change(delta: &git2::DiffDelta) -> FileChange {
     let path = delta
         .new_file()
@@ -737,6 +769,7 @@ fn delta_to_file_change(delta: &git2::DiffDelta) -> FileChange {
     FileChange {
         path,
         kind: delta_change_kind(delta.status()),
+        is_submodule: false,
     }
 }
 
@@ -3396,5 +3429,86 @@ mod tests {
             matches!(err, CoreError::InvalidInput(_)),
             "存在しないパスは InvalidInput エラー: {err:?}"
         );
+    }
+
+    // --- サブモジュールへの書き込み操作の拒否（#203） ---
+
+    /// サブモジュールを1つ含む親リポジトリを作り、そのサブモジュールパス
+    /// （"libs/foo"）を返す。中身は upstream のコミット1件を指したまま。
+    fn repo_with_submodule() -> (TestRepo, &'static str) {
+        let upstream = TestRepo::new();
+        upstream.write_file("readme.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("upstream c1");
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.add_submodule("libs/foo", &upstream);
+        fx.commit("サブモジュールを追加");
+
+        (fx, "libs/foo")
+    }
+
+    #[test]
+    fn stage_path_rejects_submodule() {
+        let (fx, sub_path) = repo_with_submodule();
+        let repo = fx.open();
+
+        let err = stage_path(&repo, sub_path).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Blocked(_)),
+            "サブモジュールへの stage は Blocked のはず: {err:?}"
+        );
+        // 拒否メッセージには何が起きたか・なぜダメかが日本語で含まれる。
+        assert!(err.to_string().contains("サブモジュール"));
+
+        // 状態は変わっていない（壊れた中間状態を作らない）。
+        let st = status(&repo).unwrap();
+        assert!(st.is_clean, "拒否後も状態はクリーンなまま: {st:?}");
+    }
+
+    #[test]
+    fn discard_path_rejects_submodule() {
+        let (fx, sub_path) = repo_with_submodule();
+        let repo = fx.open();
+
+        let err = discard_path(&repo, sub_path).unwrap_err();
+        assert!(
+            matches!(err, CoreError::Blocked(_)),
+            "サブモジュールへの discard は Blocked のはず: {err:?}"
+        );
+
+        // サブモジュールのディレクトリ自体は消えていない。
+        assert!(fx.path().join(sub_path).join("readme.txt").exists());
+    }
+
+    #[test]
+    fn stage_hunk_rejects_submodule() {
+        let (fx, sub_path) = repo_with_submodule();
+        let repo = fx.open();
+
+        let err = stage_hunk(&repo, sub_path, "@@ -1,1 +1,1 @@").unwrap_err();
+        assert!(
+            matches!(err, CoreError::Blocked(_)),
+            "サブモジュールへの hunk ステージは Blocked のはず: {err:?}"
+        );
+    }
+
+    #[test]
+    fn stage_path_still_works_for_normal_files_alongside_submodule() {
+        // サブモジュールが存在していても、通常ファイルの stage は妨げられない。
+        let (fx, _sub_path) = repo_with_submodule();
+        fx.write_file("b.txt", "normal file");
+
+        let repo = fx.open();
+        stage_path(&repo, "b.txt").unwrap();
+
+        let st = status(&repo).unwrap();
+        assert!(st
+            .staged
+            .iter()
+            .any(|f| f.path == "b.txt" && !f.is_submodule));
     }
 }

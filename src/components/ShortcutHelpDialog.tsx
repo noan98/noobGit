@@ -8,6 +8,7 @@ import { fadeIn, spring, transitions } from "../theme/motion";
 
 // ショートカット一覧の定義。
 const SHORTCUTS: { key: string; desc: string }[] = [
+  { key: "Ctrl + K", desc: "コマンドパレットを開く" },
   { key: "Ctrl + Enter", desc: "コミット（メッセージ入力済みのとき）" },
   { key: "Ctrl + Shift + A", desc: "全ファイルをステージ" },
   { key: "Ctrl + Z", desc: "Undo（取り消し可能なときのみ）" },
@@ -80,7 +81,7 @@ export function ShortcutHelpDialog({ onClose }: Props) {
         <p className="shortcut-note">
           Mac では Ctrl の代わりに Cmd（⌘）が使えます。
           <br />
-          テキスト入力欄にフォーカスがある場合、Ctrl+Enter 以外のショートカットは無効です。
+          テキスト入力欄にフォーカスがある場合、Ctrl+K と Ctrl+Enter 以外のショートカットは無効です。
         </p>
 
         <div className="dialog-actions">
