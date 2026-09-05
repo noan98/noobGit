@@ -13,7 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chakra-ui/react": "^3.36.1",
+    "@chakra-ui/react": "^3.37.0",
     "@emotion/react": "^11.14.0",
     "@shikijs/core": "^4.4.3",
     "@shikijs/engine-oniguruma": "^4.4.3",
@@ -21,7 +21,7 @@
     "@shikijs/themes": "^4.4.3",
     "@tabler/icons-react": "^3.46.0",
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
     "framer-motion": "^12.43.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -30,11 +30,11 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^7.0.1",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
-    "@vitejs/plugin-react": "^6.1.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
