@@ -1238,6 +1238,10 @@ textarea {
 .diff-hunk-stage {
   flex: 0 0 auto;
 }
+/* #158 hunk ヘッダー行に「この塊だけアンステージ」ボタンを並べる。 */
+.diff-hunk-unstage {
+  flex: 0 0 auto;
+}
 .diff-conflict-marker {
   background: var(--caution-bg);
   font-weight: 600;

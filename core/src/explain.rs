@@ -23,13 +23,17 @@ pub fn explain(op: OperationKind) -> Explanation {
         OperationKind::Stage => Explanation {
             title: "ステージ（コミット準備）".into(),
             what: "変更したファイルを「次のコミットに含める」印を付けます。".into(),
-            why: "ファイルの中身は変わりません。間違えても unstage で簡単に外せます。".into(),
+            why: "ファイルの中身は変わりません。間違えても unstage で簡単に外せます。差分の中の \
+                  hunk（変更のまとまり。ファイル内の連続した変更箇所ごとのブロック）単位で \
+                  一部だけステージすることもできます。".into(),
             on_trouble: "対象を間違えたら、コミット前ならいつでも外せます。".into(),
         },
         OperationKind::Unstage => Explanation {
             title: "ステージ解除".into(),
             what: "コミットに含める印を外します。変更そのものは残ります。".into(),
-            why: "中身は消えないので安全です。".into(),
+            why: "中身は消えないので安全です。差分の中の hunk（変更のまとまり。ファイル内の \
+                  連続した変更箇所ごとのブロック）単位で一部だけアンステージすることもできます。"
+                .into(),
             on_trouble: "もう一度ステージし直せば元に戻ります。".into(),
         },
         OperationKind::Commit => Explanation {

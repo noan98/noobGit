@@ -93,6 +93,24 @@ describe("api ラッパー", () => {
     });
   });
 
+  describe("unstageHunk", () => {
+    it("unstage_hunk コマンドをファイルパスと hunk ヘッダーとともに呼ぶこと", async () => {
+      mockInvoke.mockResolvedValueOnce(undefined);
+
+      await api.unstageHunk(
+        "/path/to/repo",
+        "src/file.ts",
+        "@@ -1,3 +1,4 @@",
+      );
+
+      expect(mockInvoke).toHaveBeenCalledWith("unstage_hunk", {
+        repoPath: "/path/to/repo",
+        filePath: "src/file.ts",
+        hunkHeader: "@@ -1,3 +1,4 @@",
+      });
+    });
+  });
+
   describe("getBranches", () => {
     it("get_branches コマンドを正しい引数で呼ぶこと", async () => {
       mockInvoke.mockResolvedValueOnce([]);
