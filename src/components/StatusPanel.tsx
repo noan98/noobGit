@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, HStack, Input, InputGroup, Text, VStack } from "@chakra-ui/react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import type { PanInfo } from "framer-motion";
-import type { RepoStatus } from "../api";
+import { api, type GitignoreSuggestion, type RepoStatus } from "../api";
 import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
@@ -539,6 +539,8 @@ interface ContextMenuState {
   source: DiffSource;
   x: number;
   y: number;
+  // #173 .gitignore 提案: 未追跡ファイルの右クリックかどうか（無視の提案を出すか）。
+  isUntracked: boolean;
 }
 
 export function StatusPanel({
@@ -742,7 +744,13 @@ export function StatusPanel({
   const totalChecked = checkedPaths.size;
 
   // #88 右クリックメニュー: 指定ファイル・セクションに対応したメニュー項目を生成する。
-  function buildMenuItems(path: string, source: DiffSource): ContextMenuItem[] {
+  // #173 .gitignore 提案: 未追跡ファイルの右クリックでは「無視」の提案（このファイル/
+  // 同じ拡張子/ディレクトリ全体）をメニュー項目として追加する。
+  function buildMenuItems(
+    path: string,
+    source: DiffSource,
+    isUntracked: boolean,
+  ): ContextMenuItem[] {
     if (source === "staged") {
       return [
         {
@@ -758,7 +766,7 @@ export function StatusPanel({
       ];
     }
     // 未ステージ・未追跡
-    return [
+    const items: ContextMenuItem[] = [
       {
         label: "ステージする",
         title: "このファイルをコミット対象に加えます",
@@ -769,20 +777,47 @@ export function StatusPanel({
         title: "変更内容を確認します",
         onClick: () => onSelect(path, source),
       },
-      {
-        label: "変更を破棄",
-        danger: true,
-        title: "この変更を元に戻します（元に戻せません）",
-        onClick: () => onDiscard(path),
-      },
     ];
+    // #173 .gitignore 提案: 未追跡ファイルだけ「無視」の候補を出す
+    // （すでに追跡中のファイルは .gitignore に足しても無視されないため対象外）。
+    if (isUntracked && onIgnore) {
+      for (const s of gitignoreSuggestions) {
+        items.push({
+          label: `無視: ${s.label}`,
+          title: s.description,
+          onClick: () => onIgnore(s.pattern),
+        });
+      }
+    }
+    items.push({
+      label: "変更を破棄",
+      danger: true,
+      title: "この変更を元に戻します（元に戻せません）",
+      onClick: () => onDiscard(path),
+    });
+    return items;
   }
 
+  // #173 .gitignore 提案: 右クリックした未追跡ファイルに対する無視パターン候補
+  // （このファイルのみ／同じ拡張子／ディレクトリ全体）。core で生成しメニューに出す。
+  const [gitignoreSuggestions, setGitignoreSuggestions] = useState<GitignoreSuggestion[]>(
+    [],
+  );
+
   // #88 右クリックメニュー: FileCard の onContextMenu ハンドラを生成する。
-  function handleContextMenu(path: string, source: DiffSource) {
+  function handleContextMenu(path: string, source: DiffSource, isUntracked = false) {
     return (e: React.MouseEvent) => {
       e.preventDefault();
-      setContextMenu({ path, source, x: e.clientX, y: e.clientY });
+      setContextMenu({ path, source, x: e.clientX, y: e.clientY, isUntracked });
+      if (isUntracked && onIgnore) {
+        setGitignoreSuggestions([]);
+        void api
+          .suggestGitignorePatterns(path)
+          .then(setGitignoreSuggestions)
+          .catch(() => setGitignoreSuggestions([]));
+      } else {
+        setGitignoreSuggestions([]);
+      }
     };
   }
 
@@ -1225,7 +1260,7 @@ export function StatusPanel({
                       path={p}
                       isSelected={isSelected(p, "unstaged")}
                       onSelect={() => onSelect(p, "unstaged")}
-                      onContextMenu={handleContextMenu(p, "unstaged")}
+                      onContextMenu={handleContextMenu(p, "unstaged", true)}
                       draggable
                       onDragStart={() => setHighlightZone("staged")}
                       onDragEnd={(info) => handleUnstagedDragEnd(p, info)}
@@ -1334,7 +1369,7 @@ export function StatusPanel({
           <FileContextMenu
             x={contextMenu.x}
             y={contextMenu.y}
-            items={buildMenuItems(contextMenu.path, contextMenu.source)}
+            items={buildMenuItems(contextMenu.path, contextMenu.source, contextMenu.isUntracked)}
             onClose={() => setContextMenu(null)}
           />
         )}
