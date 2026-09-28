@@ -255,6 +255,8 @@ export function RepoWorkspace({
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [branchGraph, setBranchGraph] = useState<BranchGraph | null>(null);
+  // #169 保護ブランチの設定一覧（git config `noobgit.protectedBranches`）。
+  const [protectedBranches, setProtectedBranches] = useState<string[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -522,6 +524,9 @@ export function RepoWorkspace({
         if (parts.branches) {
           tasks.push(api.getBranches(repoPath).then(setBranches));
           tasks.push(api.getBranchGraph(repoPath).then(setBranchGraph));
+          tasks.push(
+            api.getProtectedBranches(repoPath).then(setProtectedBranches),
+          );
         }
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
@@ -796,6 +801,29 @@ export function RepoWorkspace({
       setError(msg);
       showToast(msg, "error");
     }
+  }
+
+  // #169 保護ブランチの設定: 新しい一覧を丸ごと保存し、ブランチ表示を更新する。
+  // set_protected_branches は core 側で正規化・検証する（空配列で既定値に戻る）。
+  async function saveProtectedBranches(names: string[]) {
+    try {
+      await api.setProtectedBranches(repoPath, names);
+      await refresh({ branches: true });
+      setError(null);
+    } catch (e) {
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
+    }
+  }
+
+  function addProtectedBranch(name: string) {
+    if (protectedBranches.includes(name)) return;
+    void saveProtectedBranches([...protectedBranches, name]);
+  }
+
+  function removeProtectedBranch(name: string) {
+    void saveProtectedBranches(protectedBranches.filter((n) => n !== name));
   }
 
   // 安全な操作はそのまま実行し、結果を更新する。
@@ -2140,6 +2168,9 @@ export function RepoWorkspace({
                 branches={branches}
                 graph={branchGraph}
                 networkBusy={isNetworkBusy}
+                protectedBranches={protectedBranches}
+                onAddProtected={addProtectedBranch}
+                onRemoveProtected={removeProtectedBranch}
                 riskLevels={riskLevels}
                 onCreate={(name) =>
                   void guarded("ブランチを作成", "create_branch", () =>

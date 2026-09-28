@@ -283,7 +283,12 @@ export function Sidebar({
               {b.is_head ? <Icon name="current" label="現在のブランチ" /> : null}
             </span>
             <span className="sidebar-item-label">{b.name}</span>
-            {b.is_protected && <span className="protected">保護</span>}
+            {b.is_protected && (
+              <span className="protected" title="保護ブランチ">
+                <Icon name="protected" />
+                保護
+              </span>
+            )}
           </button>
         ))}
         {localBranches.length === 0 && (
