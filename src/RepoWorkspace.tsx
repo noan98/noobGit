@@ -285,6 +285,24 @@ export function RepoWorkspace({
     loadedCount.current = commits.length;
   }, [commits]);
 
+  // #277 履歴のカーソルベースページング用。直前に取得したページが返した
+  // カーソル ID（続きが無ければ null）。loadMore() が「続きから」取得するのに使う。
+  const logCursorRef = useRef<string | null>(null);
+  // 使い終わった（先頭から取り直す・検索条件を変える等で不要になった）カーソルを
+  // 手放す。失敗しても致命的ではない（core 側の上限超過での自動立ち退きが
+  // 安全網になる）ので、エラーは無視する。
+  const releaseLogCursor = useCallback(() => {
+    const id = logCursorRef.current;
+    if (id) {
+      logCursorRef.current = null;
+      void api.closeLogCursor(id).catch(() => {});
+    }
+  }, []);
+  // タブを閉じる（アンマウントする）ときも、握ったままのカーソルを手放す。
+  useEffect(() => {
+    return () => releaseLogCursor();
+  }, [releaseLogCursor]);
+
   const [commitMsg, setCommitMsg] = useState("");
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
   const commitInput = useRef<HTMLTextAreaElement>(null);
@@ -445,10 +463,13 @@ export function RepoWorkspace({
           // 検索条件があればそれを渡す（無ければ未指定で全件＝従来動作）。
           const filter = logFilterRef.current;
           const arg = hasFilter(filter) ? filter : undefined;
+          // 先頭から取り直すので、直前のカーソルはもう使わない。
+          releaseLogCursor();
           tasks.push(
-            api.getLog(repoPath, 0, want, arg).then((cs) => {
-              setCommits(cs);
-              setHasMoreCommits(cs.length === want);
+            api.getLogPage(repoPath, want, arg).then((page) => {
+              setCommits(page.commits);
+              setHasMoreCommits(page.has_more);
+              logCursorRef.current = page.cursor;
             }),
           );
         }
@@ -466,7 +487,7 @@ export function RepoWorkspace({
         return false;
       }
     },
-    [repoPath],
+    [repoPath, releaseLogCursor],
   );
 
   // identity の取得は補助的なので、失敗しても画面表示は止めない（バナーで案内に倒す）。
@@ -823,6 +844,13 @@ export function RepoWorkspace({
 
   // 「もっと見る」: 末尾から次のページを読み、現在の一覧に追記する。
   // 検索条件があれば同じ条件で続きを取得する（条件と無関係なコミットが混ざらない）。
+  //
+  // #277 カーソルベースのページング: 直前のページが返したカーソルを渡すことで、
+  // core 側が revwalk の続きから読む。ページを重ねても各回のコストは
+  // 「すでに読んだ件数」に依存しない（skip を渡す従来方式は O(表示済み件数) を
+  // 毎回払うため、無限スクロールで N ページ捲ると合計 O(N^2) になっていた）。
+  // `commits.length` は、カーソルが失効していた場合にだけ core 側のフォール
+  // バック（従来の skip ベース取得）で使われる。
   function loadMore() {
     if (loadingMore || !repoPath) return;
     setLoadingMore(true);
@@ -830,14 +858,16 @@ export function RepoWorkspace({
       try {
         const filter = logFilterRef.current;
         const arg = hasFilter(filter) ? filter : undefined;
-        const more = await api.getLog(
+        const page = await api.getLogPage(
           repoPath,
-          commits.length,
           LOG_PAGE_SIZE,
           arg,
+          logCursorRef.current ?? undefined,
+          commits.length,
         );
-        setCommits((prev) => [...prev, ...more]);
-        setHasMoreCommits(more.length === LOG_PAGE_SIZE);
+        setCommits((prev) => [...prev, ...page.commits]);
+        setHasMoreCommits(page.has_more);
+        logCursorRef.current = page.cursor;
         setError(null);
       } catch (e) {
         const errMsg = String(e);
@@ -867,12 +897,15 @@ export function RepoWorkspace({
       if (!repoPath) return;
       setSearching(true);
       void (async () => {
-        // ページングはリセットし、先頭ページから取り直す。
+        // ページングはリセットし、先頭ページから取り直す（＝新しいカーソルを開く）。
+        // 直前のカーソルはもう使わないので手放す。
+        releaseLogCursor();
         const arg = hasFilter(filter) ? filter : undefined;
         try {
-          const cs = await api.getLog(repoPath, 0, LOG_PAGE_SIZE, arg);
-          setCommits(cs);
-          setHasMoreCommits(cs.length === LOG_PAGE_SIZE);
+          const page = await api.getLogPage(repoPath, LOG_PAGE_SIZE, arg);
+          setCommits(page.commits);
+          setHasMoreCommits(page.has_more);
+          logCursorRef.current = page.cursor;
           setError(null);
         } catch (e) {
           const errMsg = String(e);
@@ -883,7 +916,7 @@ export function RepoWorkspace({
         }
       })();
     },
-    [repoPath],
+    [repoPath, releaseLogCursor],
   );
 
   function doUndo() {
