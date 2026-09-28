@@ -135,6 +135,27 @@ export interface BranchGraph {
   relations: BranchRelation[];
 }
 
+// #269 ブランチクリーンアップ: マージ済みローカルブランチ1件の情報（一括削除候補）。
+// 保護ブランチ自身・現在チェックアウト中のブランチは含まれない。
+export interface MergedBranchInfo {
+  name: string;
+  // 取り込み済みと判定された保護ブランチ名。
+  merged_into: string;
+  short_id: string;
+}
+
+// #269 ブランチクリーンアップ: 一括削除でスキップされた1件（理由付き）。
+export interface SkippedBranch {
+  name: string;
+  reason: string;
+}
+
+// #269 ブランチクリーンアップ: 一括削除の結果。
+export interface BulkDeleteBranchesOutcome {
+  deleted: string[];
+  skipped: SkippedBranch[];
+}
+
 export type OperationKind =
   | "stage"
   | "unstage"
@@ -499,6 +520,13 @@ export const api = {
     invoke<void>("switch_branch", { repoPath, name }),
   deleteBranch: (repoPath: string, name: string) =>
     invoke<void>("delete_branch", { repoPath, name }),
+  // #269 ブランチクリーンアップ: マージ済みローカルブランチの一覧を返す。
+  getMergedBranches: (repoPath: string) =>
+    invoke<MergedBranchInfo[]>("get_merged_branches", { repoPath }),
+  // #269 ブランチクリーンアップ: マージ済みブランチを一括削除する。
+  // core 側で削除直前に再検証するため、渡した一覧の一部だけが削除されることがある。
+  deleteBranches: (repoPath: string, names: string[]) =>
+    invoke<BulkDeleteBranchesOutcome>("delete_branches", { repoPath, names }),
   // #167 進捗フィードバック: onProgress を渡すと、受信オブジェクト数などの進捗を
   // 都度呼び出す（Tauri の Channel でストリーミング配信される）。省略可能で、
   // 省略時は何もしない Channel を渡すだけで動作は変わらない
