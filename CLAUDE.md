@@ -217,10 +217,28 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     存在せず、手動マージのままになる。
   - **frontend**（`if frontend`）— `npm ci` のあと `npm run build`（`tsc && vite
     build` なので型チェックも含まれる）。パストリガー: `src/**`, `index.html`,
-    `package*.json`, `tsconfig*.json`, `vite.config.*`。
+    `package*.json`, `tsconfig*.json`, `vite.config.*`。rust も変更されている
+    PR（`needs.changes.outputs.rust == 'true'`）では、ビルドした `dist/` を
+    `actions/upload-artifact`（アーティファクト名 `frontend-dist`,
+    `retention-days: 1`）で rust ジョブに共有する。rust が変わらない PR では
+    アップロード自体をスキップする。
   - **rust (fmt)**（`if rust`）— `cargo fmt --all -- --check`。ビルドしないので
-    速く失敗する。
-  - **rust (check + clippy + test)**（`if rust`）— Tauri 2 の Linux システム依存を
+    速く失敗する。`changes` にのみ依存し、frontend ジョブとは独立に即座に
+    始まる。
+  - **rust (check + clippy + test)**（`if rust`）— `needs: [changes, frontend]`
+    で、`if` は `!cancelled() && needs.changes.outputs.rust == 'true'`（既定の
+    「needs 全成功」条件を外す）。frontend ジョブが**成功**した（frontend/rust
+    両方変更の）PR では、その `dist/` を `actions/download-artifact` で
+    ダウンロードして使い、このジョブ内での `npm ci` / `npm run build` の二重
+    実行を省く。frontend ジョブが成功しなかった場合 — rust のみの変更で
+    スキップされた、または（Vitest だけが落ちた等で）失敗した — は、これまで
+    通りこのジョブ内で自前に `npm ci` + `npm run build` する。frontend の失敗で
+    Rust のテスト結果まで失わないためのフォールバックで、`npm run build` 自体が
+    壊れていればここでも同じく失敗する。トレードオフ: rust のみの変更では
+    frontend ジョブが即座にスキップ終了するので開始はほぼ遅れないが、両方変更の
+    PR では frontend ジョブの完了を待ってから始まる（二重ビルドの計算資源削減と
+    引き換え）。
+    Tauri 2 の Linux システム依存を
     （cached-apt アクションで）インストールする。パッケージ一覧はジョブの
     `env.TAURI_APT_PACKAGES` に一元化し、直後の健全性チェックが `pkg-config` で
     `glib-2.0` / `gtk+-3.0` / `webkit2gtk-4.1` の有無を検証する。キャッシュの
@@ -228,7 +246,7 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     「Package glib-2.0 was not found」で落ちるため、欠けていれば通常の apt で
     入れ直して自己修復する（この復元漏れは同じブランチでも再現したりしなかったり
     する不安定な事象で、Rust ジョブを断続的に赤くしていた）。その後
-    先にフロントエンドをビルドし
+    上記の通りフロントエンドを用意し
     （`src-tauri` の `generate_context!` マクロが `../dist` を必要とする）、その後
     `cargo clippy --workspace --all-targets --locked -- -D warnings` を実行する。
     Clippy の警告はビルドを失敗させる — ツリーを警告ゼロに保つこと。`--locked` は
