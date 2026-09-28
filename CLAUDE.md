@@ -221,22 +221,18 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     速く失敗する。`changes` にのみ依存し、frontend ジョブとは独立に即座に
     始まる。
   - **rust (check + clippy + test)**（`if rust`）— `needs: [changes, frontend]`
-    で、`if` は `always() && needs.changes.outputs.rust == 'true' &&
-    (needs.frontend.result == 'success' || needs.frontend.result ==
-    'skipped')`。frontend ジョブが実際に走った（frontend/rust 両方変更の）PR
-    では、その `dist/` を `actions/download-artifact` でダウンロードして使い、
-    このジョブ内での `npm ci` / `npm run build` の二重実行（同じビルドをもう
-    一度走らせるだけの無駄）を省く。frontend ジョブが走らなかった（rust のみの
-    変更）PR では、これまで通りこのジョブ内で自前に `npm ci` + `npm run build`
-    する（`needs: frontend` があっても、frontend 自体が即座にスキップ終了する
-    ため apt/Rust セットアップの開始が遅れることはなく、rust 単独変更時の
-    フィードバック速度は変わらない）。frontend ジョブが**失敗**した場合は
-    `if` が false になりこの rust ジョブはスキップされる（自前ビルドへの
-    フォールバックはしない — frontend の失敗は `npm run build` 自体が壊れている
-    ことを意味し、rust ジョブで同じビルドをやり直しても失敗するだけで無駄。
-    かつ frontend ジョブの失敗自体で ci.yml の run 結論は既に `failure` に
-    なるため、rust ジョブが `skipped` になっても automerge の「run が
-    success」ゲートを誤って通すことはない）。
+    で、`if` は `!cancelled() && needs.changes.outputs.rust == 'true'`（既定の
+    「needs 全成功」条件を外す）。frontend ジョブが**成功**した（frontend/rust
+    両方変更の）PR では、その `dist/` を `actions/download-artifact` で
+    ダウンロードして使い、このジョブ内での `npm ci` / `npm run build` の二重
+    実行を省く。frontend ジョブが成功しなかった場合 — rust のみの変更で
+    スキップされた、または（Vitest だけが落ちた等で）失敗した — は、これまで
+    通りこのジョブ内で自前に `npm ci` + `npm run build` する。frontend の失敗で
+    Rust のテスト結果まで失わないためのフォールバックで、`npm run build` 自体が
+    壊れていればここでも同じく失敗する。トレードオフ: rust のみの変更では
+    frontend ジョブが即座にスキップ終了するので開始はほぼ遅れないが、両方変更の
+    PR では frontend ジョブの完了を待ってから始まる（二重ビルドの計算資源削減と
+    引き換え）。
     Tauri 2 の Linux システム依存を
     （cached-apt アクションで）インストールする。パッケージ一覧はジョブの
     `env.TAURI_APT_PACKAGES` に一元化し、直後の健全性チェックが `pkg-config` で

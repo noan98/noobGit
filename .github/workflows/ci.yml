@@ -123,27 +123,22 @@ jobs:
 
   rust:
     name: rust (check + clippy + test)
-    # frontend ジョブが実際に走った（frontend/rust 両方変更）場合は、その dist/
+    # frontend ジョブが成功した（frontend/rust 両方変更）場合は、その dist/
     # 成果物をダウンロードして再利用するため、needs に frontend を追加する。
-    # ただし frontend が走らない（rustのみの変更）PR では needs 解決はほぼ
-    # 即座に完了する（frontendジョブ自体がスキップとして即終了するため）ので、
-    # apt/Rustセットアップの開始が遅れることはなく、rust単独変更時のフィード
-    # バック速度は維持される。
+    # rust のみの変更では frontend ジョブが即座にスキップ終了するので、
+    # apt/Rust セットアップの開始はほぼ遅れない。両方変更の PR では frontend
+    # ジョブ（数分程度）の完了を待ってから始まる — 二重ビルドの計算資源と
+    # 引き換えに受け入れるトレードオフ。
     needs: [changes, frontend]
-    # 既定の if は「needs の全ジョブが成功」を要求し、frontendがスキップ
-    # されただけでも rust ジョブ自体がスキップされてしまうため、always() で
-    # その既定を外し、成功/スキップの両方を許可する条件を自前で書く。
-    # frontend が失敗した場合はここで false になり rust ジョブはスキップされる
-    # （フォールバックで自前ビルドし直すことはしない）。frontendが失敗する
-    # ＝ npm run build 自体が壊れているということなので、rust ジョブが同じ
-    # ビルドをやり直しても失敗するだけで無駄であり、かつ frontend ジョブの
-    # 失敗自体で ci.yml の run 結論はすでに failure になるため、rust を
-    # skipped にしても automerge の「run が success」ゲートを誤って通す
-    # ことはない。
+    # 既定の if は「needs の全ジョブが成功」を要求し、frontend がスキップ/失敗
+    # しただけで rust ジョブもスキップされてしまうため、!cancelled() で既定を
+    # 外して自前の条件を書く。frontend が失敗した場合（例: Vitest だけが落ちた）
+    # でも Rust のテスト結果は得られるよう、rust ジョブは実行し、dist は下の
+    # ステップで自前ビルドにフォールバックする（npm run build 自体が壊れて
+    # いれば、ここでも同じく失敗する）。
     if: |
-      always() &&
-      needs.changes.outputs.rust == 'true' &&
-      (needs.frontend.result == 'success' || needs.frontend.result == 'skipped')
+      !cancelled() &&
+      needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -187,10 +182,10 @@ jobs:
           fi
 
       # frontend ジョブの dist をダウンロードするだけなら npm/Node は不要なので、
-      # frontend ジョブが走らなかった（自前で npm run build する）場合のみ
-      # セットアップする。
-      - name: Setup Node（frontendジョブが走らなかった場合の自前ビルド用）
-        if: needs.frontend.result == 'skipped'
+      # frontend ジョブが成功しなかった（スキップ/失敗。自前で npm run build
+      # する）場合のみセットアップする。
+      - name: Setup Node（frontendジョブの dist が無い場合の自前ビルド用）
+        if: needs.frontend.result != 'success'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -231,17 +226,16 @@ jobs:
           name: frontend-dist
           path: dist
 
-      # frontend ジョブが走らなかった（rustのみの変更）場合は、これまで通り
-      # ここで自前にビルドする。frontendジョブの完了を待つ必要がないため、
-      # フィードバック速度は変更前と同じ。
-      - name: Install frontend deps（frontendジョブが走らなかった場合のみ）
-        if: needs.frontend.result == 'skipped'
+      # frontend ジョブが成功しなかった（rust のみの変更でスキップ、または失敗）
+      # 場合は、これまで通りここで自前にビルドする。
+      - name: Install frontend deps（frontendジョブの dist が無い場合のみ）
+        if: needs.frontend.result != 'success'
         run: npm ci
 
       # src-tauri の `tauri::generate_context!` が frontendDist(../dist) を
       # 参照するため、Rustのビルド前にフロントエンドを用意しておく。
-      - name: Build frontend（frontendジョブが走らなかった場合のみ。tauri::generate_context! に必要）
-        if: needs.frontend.result == 'skipped'
+      - name: Build frontend（frontendジョブの dist が無い場合のみ。tauri::generate_context! に必要）
+        if: needs.frontend.result != 'success'
         run: npm run build
 
       # Tauriコマンド登録漏れをPythonスクリプトで検証する。
