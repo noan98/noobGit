@@ -41,9 +41,12 @@ jobs:
       # という1行1ベンチのシンプルな形式で出力する（criterion独自形式より後段の
       # パースが容易なため採用）。warm-up/measurement は既定より短くして、
       # 週次ジョブの実行時間を抑える（それでも受け入れ条件の検証には十分な精度）。
-      - name: cargo bench -p noobgit-core
+      # `--bench repo_bench` で対象を criterion のベンチに限定する。付けないと
+      # lib の単体テストバイナリ（libtest）にも同じ引数が渡り、criterion 専用の
+      # `--output-format` を知らないため「Unrecognized option」で失敗する。
+      - name: cargo bench -p noobgit-core --bench repo_bench
         run: |
-          cargo bench -p noobgit-core --locked -- \
+          cargo bench -p noobgit-core --locked --bench repo_bench -- \
             --output-format bencher --noplot \
             --warm-up-time 1 --measurement-time 3 \
             | tee bench_output.txt

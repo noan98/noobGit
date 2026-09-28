@@ -189,10 +189,13 @@ cargo bench -p noobgit-core --bench repo_bench -- \
   --warm-up-time 1 --measurement-time 3                        # 手元で手早く確認する場合
 ```
 
-`cargo bench -p noobgit-core` は通常の `cargo test` には一切影響しない
-（別ターゲットなので `cargo test` はビルドも実行もしない）。通常の PR の CI
-（`ci.yml`）にも含めない — 週次スケジュールの `.github/workflows/bench.yml`
-（後述）でのみ実行し、結果をジョブサマリーに出す。
+計測（`cargo bench`）は通常の PR の CI（`ci.yml`）には含めない — 週次
+スケジュールの `.github/workflows/bench.yml`（後述）でのみ実行し、結果をジョブ
+サマリーに出す。ただし ci.yml の `cargo llvm-cov nextest --all-targets` は
+ベンチのターゲットも**テストモード**（`--bench` 引数なし。各ベンチを 1 回だけ
+実行してコードが壊れていないことを確かめる）で実行する。PR の CI を遅くしない
+よう、`repo_bench.rs` は `--bench` 引数の有無を見て、テストモードでは 50
+コミットの小さなリポジトリに切り替える（10k コミットの生成は計測時だけ）。
 
 ## 規約
 
