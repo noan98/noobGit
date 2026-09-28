@@ -12,9 +12,9 @@ use noobgit_core::error::{classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BisectStatus, BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome,
-    FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion, LfsCandidate, LogPage,
-    MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    BisectStatus, BlameHunk, BranchGraph, BranchInfo, CloneOutcome, CommitInfo, ConflictFile,
+    FetchOutcome, FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion, LfsCandidate,
+    LogPage, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
     SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
@@ -505,6 +505,25 @@ fn push(
         .map_err(|e| e.to_string())
 }
 
+/// リモートリポジトリを `dest_path` へ新規にクローンする。
+///
+/// クローンはまだリポジトリが存在しない状態から始めるので、他のコマンドと違い
+/// `open()` を経由しない（`repo_path` を取らない）。`progress` へ受信オブジェクト数
+/// などの進捗を Tauri の Channel 経由でフロントエンドへ都度ストリーミング送信する
+/// （fetch / pull / push と同じ方式。#167 進捗フィードバック）。
+#[tauri::command]
+fn clone_repo(
+    url: String,
+    dest_path: String,
+    progress: Channel<NetworkProgress>,
+) -> Result<CloneOutcome, String> {
+    let mut on_progress = move |p: NetworkProgress| {
+        let _ = progress.send(p);
+    };
+    ops::clone_with_progress(&url, std::path::Path::new(&dest_path), &mut on_progress)
+        .map_err(|e| e.to_string())
+}
+
 /// 指定したローカルブランチを現在のブランチにマージする。
 /// コンフリクトが発生した場合は `Conflicted` を返し、リポジトリをマージ中の状態にする。
 #[tauri::command]
@@ -755,6 +774,7 @@ pub fn run() {
             pull,
             reset_hard,
             push,
+            clone_repo,
             cherry_pick,
             merge_branch,
             list_tags,

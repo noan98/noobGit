@@ -34,6 +34,7 @@ pub enum OperationKind {
     RestoreFile,
     BisectStart,
     BisectReset,
+    Clone,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -485,6 +486,9 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             permanent_data_loss: false,
             recommended_alternative: None,
         },
+        OperationKind::Clone => RiskAssessment::safe(
+            "指定したフォルダへリモートリポジトリを新しく取得するだけで、既存のファイルには一切触れません。",
+        ),
     }
 }
 
@@ -739,6 +743,12 @@ mod tests {
         ] {
             assert_eq!(assess(op, &ctx).level, RiskLevel::Safe);
         }
+    }
+
+    #[test]
+    fn clone_is_safe() {
+        let ctx = SafetyContext::default();
+        assert_eq!(assess(OperationKind::Clone, &ctx).level, RiskLevel::Safe);
     }
 
     #[test]
@@ -1002,6 +1012,7 @@ mod tests {
             OperationKind::RestoreFile,
             OperationKind::BisectStart,
             OperationKind::BisectReset,
+            OperationKind::Clone,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }

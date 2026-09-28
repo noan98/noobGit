@@ -31,9 +31,9 @@ pub use error::{classify_network_error, CoreError, ErrorKind, NetworkErrorKind, 
 pub use explain::{explain, Explanation};
 pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{
-    BisectStatus, BranchInfo, ChangeKind, CommitInfo, DiffLine, DiffLineKind, FetchOutcome,
-    FileChange, FileDiff, LfsCandidate, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
-    SensitiveWarning, StashInfo,
+    BisectStatus, BranchInfo, ChangeKind, CloneOutcome, CommitInfo, DiffLine, DiffLineKind,
+    FetchOutcome, FileChange, FileDiff, LfsCandidate, PullOutcome, ReflogEntry, RemoteInfo,
+    RepoStatus, SensitiveWarning, StashInfo,
 };
 pub use safety::{assess, OperationKind, RiskAssessment, RiskLevel, SafetyContext};
 pub use undo::{can_undo, peek, undo_last, UndoAction, UndoEntry};

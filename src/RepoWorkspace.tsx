@@ -228,6 +228,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   // undo も bisect_start では積まれる（bisect_reset 自体は記録しない）。
   bisect_start: FULL_REFRESH,
   bisect_reset: FULL_REFRESH,
+  // クローンはタブの外（WelcomeScreen）で完結する操作で、このタブの状態には影響しない。
+  clone: {},
 };
 
 interface Guard {
