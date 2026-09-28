@@ -25,6 +25,17 @@ fn open(repo_path: &str) -> Result<Repository, String> {
     repo::open(repo_path).map_err(|e| e.to_string())
 }
 
+/// 保護ブランチ一覧を返す。読み込みに失敗した場合は安全側に倒し、既定値
+/// （main/master）にフォールバックする。
+fn protected_branches_or_default(r: &Repository) -> Vec<String> {
+    repo::load_protected_branches(r).unwrap_or_else(|_| {
+        noobgit_core::safety::DEFAULT_PROTECTED_BRANCHES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    })
+}
+
 #[tauri::command]
 fn get_status(repo_path: String) -> Result<RepoStatus, String> {
     let r = open(&repo_path)?;
@@ -34,7 +45,22 @@ fn get_status(repo_path: String) -> Result<RepoStatus, String> {
 #[tauri::command]
 fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
     let r = open(&repo_path)?;
-    repo::branches(&r, &[]).map_err(|e| e.to_string())
+    let protected = protected_branches_or_default(&r);
+    repo::branches(&r, &protected).map_err(|e| e.to_string())
+}
+
+/// 保護ブランチ一覧を返す（未設定なら既定値の main/master）。
+#[tauri::command]
+fn get_protected_branches(repo_path: String) -> Result<Vec<String>, String> {
+    let r = open(&repo_path)?;
+    Ok(protected_branches_or_default(&r))
+}
+
+/// 保護ブランチ一覧を保存する。空配列を渡すと既定値（main/master）に戻る。
+#[tauri::command]
+fn set_protected_branches(repo_path: String, names: Vec<String>) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    ops::save_protected_branches(&r, &names).map_err(|e| e.to_string())
 }
 
 /// コミット履歴をページングして返す。`filter` を渡すとメッセージ・作者・日付範囲で
@@ -219,7 +245,7 @@ fn assess_operation(
     let ctx = SafetyContext {
         target_branch,
         working_dir_dirty,
-        protected_branches: Vec::new(),
+        protected_branches: protected_branches_or_default(&r),
         head_published,
     };
     Ok(assess(op, &ctx))
@@ -623,6 +649,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_branches,
+            get_protected_branches,
+            set_protected_branches,
             get_log,
             get_log_page,
             close_log_cursor,
