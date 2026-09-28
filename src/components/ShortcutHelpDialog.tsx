@@ -15,6 +15,9 @@ const SHORTCUTS: { key: string; desc: string }[] = [
   { key: "Ctrl + Z", desc: "Undo（取り消し可能なときのみ）" },
   { key: "Ctrl + R", desc: "ステータス再取得" },
   { key: "Ctrl + P", desc: "現在ブランチをプッシュ" },
+  // #272: ファイル一覧・コミット一覧にフォーカスがあるときの行ナビゲーション。
+  { key: "↑ / ↓", desc: "一覧の行を移動（ファイル一覧・コミット一覧・reflog）" },
+  { key: "Enter / Space", desc: "フォーカス中の行の主操作を実行（ステージ・選択など）" },
   { key: "? / F1", desc: "このヘルプを表示" },
 ];
 

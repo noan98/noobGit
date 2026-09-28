@@ -1515,6 +1515,18 @@ textarea {
   position: relative;
 }
 
+/* ---- #272 矢印キーの行ナビゲーション ----
+   aria-activedescendant パターン: フォーカスは一覧コンテナ自体に乗るため、
+   「現在の行」はこのクラスの枠線で視覚的に示す（コンテナがフォーカスされて
+   いる間だけ付与する。マウス操作中に枠が残って紛らわしくならないように）。
+   StatusPanel の FileCard（Chakra の boxShadow プロップ）と HistoryPanel の
+   コミット行・reflog 行の両方で使う共通クラス。ライト/ダークは
+   --focus-ring に自動追従する。 */
+.list-row-active {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
 /* ---- HistoryPanel コミット行リデザイン (#109) ---- */
 .commit-row {
   display: flex;

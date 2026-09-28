@@ -124,7 +124,9 @@ describe("HistoryPanel のコミット一覧（仮想スクロール）", () => 
     const commits = makeCommits(2000);
     renderHistoryPanel({ commits });
 
-    const rows = screen.getAllByRole("listitem");
+    // #272: 各行は aria-activedescendant パターンのため role="option"
+    // （listbox の子）になっている。
+    const rows = screen.getAllByRole("option");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(commits.length);
   });
@@ -199,7 +201,9 @@ describe("HistoryPanel の reflog 一覧（仮想スクロール）", () => {
 
     await screen.findByText(entries[0].message.length > 60 ? `${entries[0].message.slice(0, 60)}…` : entries[0].message);
 
-    const rows = screen.getAllByRole("listitem");
+    // #272: 各行は aria-activedescendant パターンのため role="option"
+    // （listbox の子）になっている。
+    const rows = screen.getAllByRole("option");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(entries.length);
   });
@@ -225,5 +229,114 @@ describe("HistoryPanel の reflog 一覧（仮想スクロール）", () => {
     fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
 
     expect(await screen.findByText("reflog がありません")).toBeInTheDocument();
+  });
+});
+
+// #272: 矢印キーの行ナビゲーション。仮想スクロール下でも aria-activedescendant で
+// 現在行を示せること、Enter/Space で主操作（コミット一覧はチェックボックスの
+// トグル）が実行されること、reflog 一覧では破壊的な「戻す」に割り当てられて
+// いないことを検証する。
+describe("HistoryPanel の矢印キー行ナビゲーション（#272）", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("コミット一覧: ArrowDown で先頭行が aria-activedescendant になること", () => {
+    const commits = makeCommits(20);
+    renderHistoryPanel({ commits });
+
+    const listbox = screen.getByRole("listbox", { name: "コミット一覧" });
+    expect(listbox).toHaveAttribute("tabindex", "0");
+    expect(listbox.getAttribute("aria-activedescendant")).toBeNull();
+
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+
+    expect(listbox.getAttribute("aria-activedescendant")).toBe(
+      `history-commit-row-${commits[0].id}`,
+    );
+  });
+
+  it("コミット一覧: ArrowDown を 2 回押すと 2 行目に進むこと", () => {
+    const commits = makeCommits(20);
+    renderHistoryPanel({ commits });
+
+    const listbox = screen.getByRole("listbox", { name: "コミット一覧" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+
+    expect(listbox.getAttribute("aria-activedescendant")).toBe(
+      `history-commit-row-${commits[1].id}`,
+    );
+  });
+
+  it("コミット一覧: Enter でフォーカス中の行の onToggleSelect が呼ばれること", () => {
+    const commits = makeCommits(20);
+    const onToggleSelect = vi.fn();
+    renderHistoryPanel({ commits, onToggleSelect });
+
+    const listbox = screen.getByRole("listbox", { name: "コミット一覧" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(listbox, { key: "Enter" });
+
+    expect(onToggleSelect).toHaveBeenCalledWith(commits[0].id);
+  });
+
+  it("コミット一覧: スペースキーでも onToggleSelect が呼ばれること", () => {
+    const commits = makeCommits(20);
+    const onToggleSelect = vi.fn();
+    renderHistoryPanel({ commits, onToggleSelect });
+
+    const listbox = screen.getByRole("listbox", { name: "コミット一覧" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(listbox, { key: " " });
+
+    expect(onToggleSelect).toHaveBeenCalledWith(commits[0].id);
+  });
+
+  it("コミット一覧: End で末尾行、Home で先頭行に移動すること", () => {
+    const commits = makeCommits(50);
+    renderHistoryPanel({ commits });
+
+    const listbox = screen.getByRole("listbox", { name: "コミット一覧" });
+    fireEvent.keyDown(listbox, { key: "End" });
+    expect(listbox.getAttribute("aria-activedescendant")).toBe(
+      `history-commit-row-${commits[commits.length - 1].id}`,
+    );
+
+    fireEvent.keyDown(listbox, { key: "Home" });
+    expect(listbox.getAttribute("aria-activedescendant")).toBe(
+      `history-commit-row-${commits[0].id}`,
+    );
+  });
+
+  it("reflog 一覧: ArrowDown で aria-activedescendant が設定されること", async () => {
+    const entries = makeReflogEntries(30);
+    vi.mocked(invoke).mockResolvedValue(entries);
+    renderHistoryPanel({ commits: makeCommits(5) });
+
+    fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
+    await screen.findAllByText("戻す");
+
+    const listbox = screen.getByRole("listbox", { name: "reflog 一覧" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+
+    expect(listbox.getAttribute("aria-activedescendant")).toBe("history-reflog-row-0");
+  });
+
+  it("reflog 一覧: Enter を押しても破壊的な onResetTo は呼ばれないこと", async () => {
+    const entries = makeReflogEntries(30);
+    vi.mocked(invoke).mockResolvedValue(entries);
+    const onResetTo = vi.fn();
+    renderHistoryPanel({ commits: makeCommits(5), onResetTo });
+
+    fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
+    await screen.findAllByText("戻す");
+
+    const listbox = screen.getByRole("listbox", { name: "reflog 一覧" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(listbox, { key: "Enter" });
+    fireEvent.keyDown(listbox, { key: " " });
+
+    expect(onResetTo).not.toHaveBeenCalled();
   });
 });
