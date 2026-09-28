@@ -153,7 +153,7 @@ pub fn explain(op: OperationKind) -> Explanation {
                 .into(),
             why: "目印を付けるだけで、ファイルの中身や履歴は何も変わりません。安全な操作です。"
                 .into(),
-            on_trouble: "名前を間違えたら、そのタグを削除して付け直せます。コミットには影響しません。"
+            on_trouble: "名前を間違えたら、直後なら Undo で取り消せます。時間が経っていても、そのタグを削除して付け直せます。コミットには影響しません。"
                 .into(),
         },
         OperationKind::DeleteTag => Explanation {

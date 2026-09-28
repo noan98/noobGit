@@ -36,6 +36,8 @@ pub enum UndoAction {
         target: String,
         message: Option<String>,
     },
+    /// 作成したタグを削除して取り消す。既に削除済みなら何もしない（冪等）。
+    DeleteTag { name: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -285,6 +287,12 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                         repo.tag_lightweight(name, &obj, false)?;
                     }
                 }
+            }
+        }
+        UndoAction::DeleteTag { name } => {
+            // 既に削除済みなら何もしない（冪等）。
+            if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+                repo.tag_delete(name)?;
             }
         }
     }
@@ -675,6 +683,150 @@ mod tests {
         // undo エントリは積まれていない。
         assert!(!can_undo(&repo).unwrap());
         assert!(peek(&repo).unwrap().is_none());
+    }
+
+    // SoftResetTo: 固定oidへのソフトリセットは2回適用してもエラーにならず、
+    // HEADが同じ位置に留まり、インデックス・作業ツリーは変わらない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_soft_reset_to() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let first = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let repo = fx.open();
+        let action = UndoAction::SoftResetTo {
+            previous: first.clone(),
+        };
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+
+        // 2回目も成功し、HEADは同じ位置のまま。
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+    }
+
+    // HardResetTo: 固定oidへのハードリセットも2回適用してエラーにならず、
+    // 作業ツリーの内容も同じ結果に落ち着く（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_hard_reset_to() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let first = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let repo = fx.open();
+        let action = UndoAction::HardResetTo {
+            previous: first.clone(),
+        };
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "1"
+        );
+
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "1"
+        );
+    }
+
+    // UncommitInitial: 最初のコミットを取り消すブランチ参照の削除は、
+    // 2回適用しても（2回目は参照が既に無いので no-op）エラーにならない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_uncommit_initial() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // 前提: 適用前は main が存在する（存在しないまま「無いこと」を確かめる空振りを防ぐ）。
+        assert!(repo.find_reference("refs/heads/main").is_ok());
+        let action = UndoAction::UncommitInitial {
+            branch: "main".into(),
+        };
+        apply(&repo, &action).unwrap();
+        assert!(repo.find_reference("refs/heads/main").is_err());
+
+        // 2回目: 参照は既に無いので no-op。エラーにならない。
+        apply(&repo, &action).unwrap();
+        assert!(repo.find_reference("refs/heads/main").is_err());
+    }
+
+    // UnstagePath: ステージ済みの変更をHEADの内容に戻す（アンステージ）操作を
+    // 2回適用しても、エラーにならず結果（未ステージ）が変わらない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_unstage_path() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // HEADと異なる内容をステージする。
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+
+        let repo = fx.open();
+        // 前提: 適用前はステージ済みの変更がある。
+        assert_eq!(crate::repo::status(&repo).unwrap().staged.len(), 1);
+        let action = UndoAction::UnstagePath {
+            path: "a.txt".into(),
+        };
+        apply(&repo, &action).unwrap();
+        assert!(crate::repo::status(&repo).unwrap().staged.is_empty());
+
+        // 2回目も成功し、引き続き未ステージのまま。
+        apply(&repo, &action).unwrap();
+        assert!(crate::repo::status(&repo).unwrap().staged.is_empty());
+    }
+
+    // RecreateTag: 削除したタグの再作成は、2回適用しても（2回目は同名タグが
+    // 既に存在するので no-op）エラーにならない（冪等）。軽量・注釈付きの両方を確認する。
+    #[test]
+    fn apply_is_idempotent_for_recreate_tag() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+
+        // 軽量タグ。
+        let lightweight = UndoAction::RecreateTag {
+            name: "v1".into(),
+            target: target.clone(),
+            message: None,
+        };
+        apply(&repo, &lightweight).unwrap();
+        assert!(repo.find_reference("refs/tags/v1").is_ok());
+        apply(&repo, &lightweight).unwrap();
+        assert!(repo.find_reference("refs/tags/v1").is_ok());
+
+        // 注釈付きタグ。
+        let annotated = UndoAction::RecreateTag {
+            name: "v2".into(),
+            target,
+            message: Some("リリース v2".into()),
+        };
+        apply(&repo, &annotated).unwrap();
+        assert!(repo.find_reference("refs/tags/v2").is_ok());
+        apply(&repo, &annotated).unwrap();
+        assert!(repo.find_reference("refs/tags/v2").is_ok());
     }
 
     // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。
