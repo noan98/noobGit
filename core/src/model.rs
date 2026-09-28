@@ -179,6 +179,41 @@ pub struct BranchRelation {
     pub behind: usize,
 }
 
+/// マージ済みローカルブランチ1件の情報（ブランチクリーンアップの一括削除候補）。
+///
+/// 保護ブランチ自身・現在チェックアウト中のブランチは対象に含まれない
+/// （[`crate::repo::merged_branches`] が除外する）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergedBranchInfo {
+    /// 取り込み済みと判定されたローカルブランチ名。
+    pub name: String,
+    /// 取り込み済みと判定された保護ブランチ名（複数の保護ブランチに取り込み済みの
+    /// 場合は、そのうちの1つ）。
+    pub merged_into: String,
+    /// 先端コミットの短縮ID（先頭7文字）。
+    pub short_id: String,
+}
+
+/// マージ済みブランチの一括削除でスキップされた1件（理由付き）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedBranch {
+    pub name: String,
+    /// スキップした理由の日本語説明。
+    pub reason: String,
+}
+
+/// マージ済みブランチの一括削除の結果。
+///
+/// フロントから渡された一覧をそのまま信用せず、削除直前に core 側で再検証するため、
+/// 一部だけ削除されて残りはスキップされることがある（[`crate::ops::delete_branches`]）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BulkDeleteBranchesOutcome {
+    /// 削除できたブランチ名の一覧。
+    pub deleted: Vec<String>,
+    /// 削除しなかったブランチ（理由付き）。
+    pub skipped: Vec<SkippedBranch>,
+}
+
 /// コミット1件の情報。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitInfo {

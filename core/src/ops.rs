@@ -9,10 +9,10 @@ use git2::{
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, NetworkProgress,
-    NetworkProgressStage, PullOutcome, StashInfo,
+    BulkDeleteBranchesOutcome, ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome,
+    NetworkProgress, NetworkProgressStage, PullOutcome, SkippedBranch, StashInfo,
 };
-use crate::repo::{current_branch, is_submodule_path};
+use crate::repo::{current_branch, is_submodule_path, merged_branches};
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
 
@@ -946,6 +946,56 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// マージ済みブランチ（Issue #269: ブランチクリーンアップ）を一括で削除する。
+///
+/// フロントから渡された `names` をそのまま信用せず、削除の直前に
+/// [`crate::repo::merged_branches`] で候補を計算し直し、各ブランチがそこに
+/// 含まれているか（＝保護されていない・現在ブランチでない・いずれかの保護
+/// ブランチに取り込み済み）を再検証する。含まれないブランチは理由付きで
+/// スキップし、削除は行わない。
+///
+/// 削除は既存の [`delete_branch`] をそのまま使うため、削除したブランチは
+/// 1件ごとに `RecreateBranch` の undo エントリが積まれ、個別に元へ戻せる。
+/// 途中の1件が失敗（他プロセスによる同時削除など）しても、それ以降のブランチの
+/// 削除は続行する。
+pub fn delete_branches(
+    repo: &Repository,
+    names: &[String],
+    protected: &[String],
+) -> Result<BulkDeleteBranchesOutcome> {
+    let candidates = merged_branches(repo, protected)?;
+
+    let mut deleted = Vec::new();
+    let mut skipped = Vec::new();
+
+    for raw_name in names {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        if !candidates.iter().any(|c| c.name == name) {
+            skipped.push(SkippedBranch {
+                name: name.to_string(),
+                reason:
+                    "マージ済みブランチの一覧に含まれていないため、安全のためスキップしました。"
+                        .to_string(),
+            });
+            continue;
+        }
+
+        match delete_branch(repo, name) {
+            Ok(()) => deleted.push(name.to_string()),
+            Err(e) => skipped.push(SkippedBranch {
+                name: name.to_string(),
+                reason: e.to_string(),
+            }),
+        }
+    }
+
+    Ok(BulkDeleteBranchesOutcome { deleted, skipped })
 }
 
 /// コミットに目印（タグ）を付ける。
@@ -1976,6 +2026,106 @@ mod tests {
         // Undo で feature を復元。
         undo_last(&repo).unwrap();
         assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+    }
+
+    // Issue #269: マージ済みブランチの一括削除。
+    #[test]
+    fn delete_branches_deletes_only_merged_and_records_individual_undo() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        // merged1 / merged2 は c1 のまま据え置く（main が進むので取り込み済みになる）。
+        create_branch(&repo, "merged1").unwrap();
+        create_branch(&repo, "merged2").unwrap();
+        // feature は独自コミットを持たせて未取り込みにする。
+        create_branch(&repo, "feature").unwrap();
+
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("b.txt", "x");
+        fx.stage_all();
+        fx.commit("feature-c2");
+
+        let repo = fx.open();
+        switch_branch(&repo, "main").unwrap();
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("main-c2"); // main: c1 -> main-c2
+
+        let repo = fx.open();
+        // "feature"（未マージ）と "main"（保護ブランチ・現在ブランチ）を混ぜて渡しても、
+        // core 側の再検証でスキップされ、削除されるのは merged1 / merged2 だけ。
+        let outcome = delete_branches(
+            &repo,
+            &[
+                "merged1".to_string(),
+                "merged2".to_string(),
+                "feature".to_string(),
+                "main".to_string(),
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let mut deleted = outcome.deleted.clone();
+        deleted.sort();
+        assert_eq!(deleted, vec!["merged1".to_string(), "merged2".to_string()]);
+
+        let skipped_names: Vec<&str> = outcome.skipped.iter().map(|s| s.name.as_str()).collect();
+        assert!(skipped_names.contains(&"feature"));
+        assert!(skipped_names.contains(&"main"));
+        assert!(outcome.skipped.iter().all(|s| !s.reason.is_empty()));
+
+        // 実際にブランチが消えている。
+        assert!(repo.find_branch("merged1", BranchType::Local).is_err());
+        assert!(repo.find_branch("merged2", BranchType::Local).is_err());
+        // 未マージ・保護ブランチは手を付けられていない。
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+        assert!(repo.find_branch("main", BranchType::Local).is_ok());
+
+        // 削除した2件は、それぞれ個別に undo できる（1回の undo_last で1件だけ戻る）。
+        let desc1 = undo_last(&repo).unwrap();
+        let restored_after_first = ["merged1", "merged2"]
+            .iter()
+            .filter(|n| repo.find_branch(n, BranchType::Local).is_ok())
+            .count();
+        assert_eq!(
+            restored_after_first, 1,
+            "1回目の undo で2件のうち1件だけ復元されるはず: {desc1}"
+        );
+
+        let desc2 = undo_last(&repo).unwrap();
+        assert!(repo.find_branch("merged1", BranchType::Local).is_ok());
+        assert!(repo.find_branch("merged2", BranchType::Local).is_ok());
+        assert_ne!(desc1, desc2);
+    }
+
+    #[test]
+    fn delete_branches_with_empty_candidate_list_skips_everything() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_branch(&repo, "feature").unwrap();
+
+        // feature はまだ main に取り込まれていない独自コミットが無い（main と同じ）ため、
+        // 実は merged 扱いになりうる。ここでは意図的に未マージにしておく。
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("b.txt", "x");
+        fx.stage_all();
+        fx.commit("feature-c2");
+        switch_branch(&repo, "main").unwrap();
+
+        let repo = fx.open();
+        // 存在しないブランチ名を渡してもパニックせず、スキップ扱いになる。
+        let outcome = delete_branches(&repo, &["no-such-branch".to_string()], &[]).unwrap();
+        assert!(outcome.deleted.is_empty());
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].name, "no-such-branch");
     }
 
     #[test]
