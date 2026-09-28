@@ -36,6 +36,10 @@ interface Props {
   // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
   // 親（App）が guarded("reset_hard") に配線する。
   onResetTo: (newOid: string) => void;
+  // #274 危険度カラー: 各トリガーボタンに付与する強調クラス。
+  // 未取得の間は空文字（Safe相当の通常スタイル）。
+  resetRiskClass?: string;
+  cherryPickRiskClass?: string;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -140,6 +144,9 @@ export function HistoryPanel({
   onStartRebase,
   repoPath,
   onResetTo,
+  // #274 危険度カラー
+  resetRiskClass = "",
+  cherryPickRiskClass = "",
 }: Props) {
   // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
   // グラフ列（レーン線・ノード）を表示する。
@@ -444,14 +451,14 @@ export function HistoryPanel({
                           {isCompareBase ? "基準" : "比較"}
                         </button>
                         <button
-                          className="link commit-cherry-pick-btn"
+                          className={`link commit-cherry-pick-btn ${cherryPickRiskClass}`}
                           title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
                           onClick={() => onCherryPick(c)}
                         >
                           コピー
                         </button>
                         <button
-                          className="link danger commit-reset-btn"
+                          className={`link commit-reset-btn ${resetRiskClass}`}
                           title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
                           onClick={() => onReset(c)}
                         >
@@ -555,7 +562,7 @@ export function HistoryPanel({
                       </div>
                       {/* 「この時点に戻す」ボタン */}
                       <button
-                        className="link danger reflog-reset-btn"
+                        className={`link reflog-reset-btn ${resetRiskClass}`}
                         title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
                         onClick={() => onResetTo(entry.new_oid)}
                       >

@@ -3933,4 +3933,252 @@ mod tests {
             .iter()
             .any(|f| f.path == "b.txt" && !f.is_submodule));
     }
+
+    // --- 出力形式のスナップショットテスト（#175） ---------------------------------
+    //
+    // ops.rs の返り値の「形式」（serde でフロントに渡る JSON 形状、stash の自動命名
+    // 規則、squash の合成メッセージ形式など）が静かに変わっても気づけるよう、insta の
+    // スナップショットで固定する。コミット id / short_id / タイムスタンプのように
+    // 実行のたびに変わる値は redaction で伏せるが、伏せる前に「長さ・16進である」など
+    // 形式そのものを assert で検証してから伏せる（伏せすぎて形式を検証しなくなるのを
+    // 避けるため）。
+    mod snapshot_format {
+        use super::*;
+
+        /// 完全なコミットID（40桁の16進文字列）であることを検証する。
+        fn assert_full_oid_format(id: &str) {
+            assert_eq!(id.len(), 40, "完全なコミットIDは40桁のはず: {id}");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "完全なコミットIDは16進のはず: {id}"
+            );
+        }
+
+        /// 短縮コミットID（7桁の16進文字列）であることを検証する。
+        fn assert_short_oid_format(id: &str) {
+            assert_eq!(id.len(), 7, "短縮コミットIDは7桁のはず: {id}");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "短縮コミットIDは16進のはず: {id}"
+            );
+        }
+
+        #[test]
+        fn commit_info_initial_commit_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "hello");
+            let repo = fx.open();
+            stage_all(&repo).unwrap();
+            let info = commit(&repo, "最初のコミット").unwrap();
+
+            // 実行ごとに変わる値は、まず形式そのものを検証してから伏せる。
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert!(info.id.starts_with(&info.short_id));
+            assert!(info.parent_ids.is_empty(), "最初のコミットは親を持たない");
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+            });
+        }
+
+        #[test]
+        fn commit_info_with_parent_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+
+            let repo = fx.open();
+            fx.write_file("a.txt", "2");
+            stage_all(&repo).unwrap();
+            let info = commit(&repo, "c2").unwrap();
+
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert_eq!(info.parent_ids.len(), 1);
+            assert_full_oid_format(&info.parent_ids[0]);
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+                ".parent_ids[]" => "[parent_id]",
+            });
+        }
+
+        // 空メッセージでの退避は、libgit2 の自動命名（"WIP on <branch>: <短縮id> <summary>"
+        // または "On <branch>: ..."）に落ち着く。この形式が変わると一覧表示の見え方が
+        // 変わるため固定する（#110 関連）。
+        #[test]
+        fn stash_save_empty_message_auto_name_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+            fx.write_file("a.txt", "2");
+
+            let mut repo = fx.open();
+            stash_save(&mut repo, "").unwrap();
+            let list = stash_list(&mut repo).unwrap();
+            assert_eq!(list.len(), 1);
+            let info = list.into_iter().next().unwrap();
+
+            assert_full_oid_format(&info.id);
+
+            // 自動命名メッセージの形式を検証する: "(WIP on|On) main: <短縮id> c1"。
+            let prefix = if info.message.starts_with("WIP on main: ") {
+                "WIP on main: "
+            } else if info.message.starts_with("On main: ") {
+                "On main: "
+            } else {
+                panic!("想定外の自動命名メッセージ: {}", info.message);
+            };
+            let rest = &info.message[prefix.len()..];
+            let mut parts = rest.splitn(2, ' ');
+            let short = parts.next().unwrap_or("");
+            let summary = parts.next().unwrap_or("");
+            assert_short_oid_format(short);
+            assert_eq!(summary, "c1");
+
+            // 上ですでに可変部分（短縮id）の形式は検証済みなので、スナップショットでは
+            // 固定のプレースホルダーに伏せる。接頭辞（"WIP on"/"On"）はそのまま残す。
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".message" => insta::dynamic_redaction(move |value, _path| {
+                    let s = value.as_str().expect("message は文字列のはず");
+                    let prefix = if s.starts_with("WIP on main: ") {
+                        "WIP on main: "
+                    } else {
+                        "On main: "
+                    };
+                    format!("{prefix}[short_id] c1")
+                }),
+            });
+        }
+
+        // squash が「まとめ後のメッセージ」を一切加工せずそのまま採用すること（#175）。
+        // フロントエンド（RebaseWizard）は選んだコミットのメッセージを古い順に "\n\n" で
+        // 連結して渡す。この複数段落のメッセージが squash 後もそのまま保たれ、
+        // summary（先頭段落）が正しく切り出されることを固定する。
+        #[test]
+        fn squash_commits_preserves_composed_message_format() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1\n");
+            fx.stage_all();
+            fx.commit("c1");
+            fx.write_file("a.txt", "2\n");
+            fx.stage_all();
+            fx.commit("c2");
+            fx.write_file("a.txt", "3\n");
+            fx.stage_all();
+            fx.commit("c3");
+
+            let repo = fx.open();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            let c3 = head.id();
+            let c2 = head.parent(0).unwrap().id();
+
+            // フロントエンドと同じ形式: 古い順のメッセージを "\n\n" で連結する。
+            let composed = "c2\n\nc3";
+            squash_commits(&repo, &[&c3.to_string(), &c2.to_string()], composed).unwrap();
+
+            let repo = fx.open();
+            let squashed = repo.head().unwrap().peel_to_commit().unwrap();
+            let full_message = squashed.message().unwrap().to_string();
+            let summary = squashed.summary().unwrap().unwrap_or("").to_string();
+
+            #[derive(serde::Serialize)]
+            struct SquashedMessageShape {
+                summary: String,
+                full_message: String,
+            }
+
+            // ここに現れる値はすべて決定的（コミットハッシュや時刻を含まない）ので
+            // redaction は不要。
+            insta::assert_yaml_snapshot!(SquashedMessageShape {
+                summary,
+                full_message
+            });
+        }
+
+        // cherry-pick 成功時の CommitInfo の形式（#175）。
+        #[test]
+        fn cherry_pick_success_commit_info_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "base\n");
+            fx.stage_all();
+            fx.commit("c1");
+
+            {
+                let repo = fx.open();
+                create_branch(&repo, "feature").unwrap();
+                switch_branch(&repo, "feature").unwrap();
+            }
+            fx.write_file("b.txt", "feature work\n");
+            fx.stage_all();
+            let feature_oid = fx.commit("feature: b.txt を追加");
+
+            {
+                let repo = fx.open();
+                switch_branch(&repo, "main").unwrap();
+            }
+            fx.write_file("c.txt", "main work\n");
+            fx.stage_all();
+            fx.commit("main: c.txt を追加");
+
+            let repo = fx.open();
+            let info = cherry_pick(&repo, &feature_oid.to_string()).unwrap();
+
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert_eq!(info.parent_ids.len(), 1);
+            assert_full_oid_format(&info.parent_ids[0]);
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+                ".parent_ids[]" => "[parent_id]",
+            });
+        }
+
+        // cherry-pick がコンフリクトで Blocked になったときのメッセージ文言（#175）。
+        // この文言は固定の日本語文字列で動的な値を含まないため、redaction は不要。
+        #[test]
+        fn cherry_pick_conflict_blocked_message_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "base\n");
+            fx.stage_all();
+            fx.commit("c1");
+
+            {
+                let repo = fx.open();
+                create_branch(&repo, "feature").unwrap();
+                switch_branch(&repo, "feature").unwrap();
+            }
+            fx.write_file("a.txt", "feature change\n");
+            fx.stage_all();
+            let feature_oid = fx.commit("feature: a.txt を変更");
+
+            {
+                let repo = fx.open();
+                switch_branch(&repo, "main").unwrap();
+            }
+            fx.write_file("a.txt", "main change\n");
+            fx.stage_all();
+            fx.commit("main: a.txt を変更");
+
+            let repo = fx.open();
+            let err = cherry_pick(&repo, &feature_oid.to_string()).unwrap_err();
+            let message = match err {
+                CoreError::Blocked(m) => m,
+                other => panic!("Blocked エラーのはず: {other:?}"),
+            };
+
+            insta::assert_snapshot!(message);
+        }
+    }
 }
