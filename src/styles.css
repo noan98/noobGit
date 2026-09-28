@@ -598,8 +598,77 @@ textarea {
   cursor: not-allowed;
 }
 
+/* ---- カスタムタイトルバー (#273) ---- */
+/* OS 標準タイトルバーはダークテーマで浮いて見えるため、
+   src-tauri/tauri.conf.json 側で decorations: false にして消し、
+   ここでアプリ本体と同じ配色のタイトルバーを描く。 */
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  /* テキスト選択不可（ドラッグ操作中に選択が走らないようにする）。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* data-tauri-drag-region を持つ要素をドラッグ領域にする。Windows の
+   タッチ/ペン操作でのドラッグに必要（Tauri 公式ドキュメント推奨）。 */
+*[data-tauri-drag-region] {
+  app-region: drag;
+}
+.titlebar-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+  padding-left: 12px;
+}
+.titlebar-title {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titlebar-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  /* ボタンはドラッグ対象外（data-tauri-drag-region を付けていないので
+     既定で no-drag だが、明示しておく）。 */
+  app-region: no-drag;
+}
+.titlebar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 100%;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.titlebar-btn:hover {
+  background: var(--border-muted);
+  color: var(--text);
+}
+/* 閉じるボタンだけホバー時に警告色（--destructive）にする。従来の慣習
+   （Windows の閉じるボタンが赤くなる）に合わせつつ、色はトークン経由。 */
+.titlebar-btn-close:hover {
+  background: var(--destructive);
+  color: var(--on-emphasis);
+}
+
 /* ---- リポジトリタブ (#263) ---- */
-/* ウィンドウ全体: 上部にタブバー、残りをタブの中身が占める。 */
+/* ウィンドウ全体: 上部にタイトルバー、その下にタブバー、残りをタブの中身が
+   占める（100vh の内訳は .tabs-root の flex column が自動で振り分ける）。 */
 .tabs-root {
   height: 100vh;
   display: flex;

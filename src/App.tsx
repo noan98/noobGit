@@ -16,6 +16,7 @@
 import { useEffect, useState } from "react";
 import { RepoWorkspace } from "./RepoWorkspace";
 import { TabBar, type TabItem } from "./components/TabBar";
+import { TitleBar } from "./components/TitleBar";
 import { loadRecentRepos } from "./components/WelcomeScreen";
 
 // タブセッションの localStorage キー。
@@ -173,6 +174,7 @@ export default function App() {
 
   return (
     <div className="tabs-root">
+      <TitleBar />
       <TabBar
         tabs={tabItems}
         activeId={activeId}
