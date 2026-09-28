@@ -37,6 +37,10 @@ export interface BranchInfo {
   is_remote: boolean;
   upstream: string | null;
   is_protected: boolean;
+  // #268 fetch のプルーニング対応: upstream の設定はあるが、その追跡ブランチ
+  // （refs/remotes/...）がもう存在しない（リモートで削除された）か。
+  // ローカルブランチ自体は消えていない。リモートブランチや upstream 未設定では常に false。
+  upstream_gone: boolean;
 }
 
 export interface CommitInfo {
@@ -228,6 +232,10 @@ export interface FetchOutcome {
   remote: string;
   // 今回更新（前進・新規取得）された追跡ブランチ数。0 ならリモートにも新着なし。
   updated_refs: number;
+  // #268 fetch のプルーニング対応: リモートで削除されて整理（削除）された追跡ブランチ名
+  // （例: "origin/feature-x"）の一覧。ローカルブランチ本体はここには含まれない
+  // （削除されないため）。
+  pruned: string[];
 }
 
 // pull（取り込み）の結果。fast-forward でのみ取り込む。

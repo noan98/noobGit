@@ -1643,6 +1643,13 @@ textarea {
   background: var(--destructive-bg);
   color: var(--destructive);
 }
+.badge.upstream-gone {
+  background: var(--caution-bg);
+  color: var(--caution);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 .branch-relation {
   font-size: 11px;
   color: var(--muted);

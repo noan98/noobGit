@@ -229,17 +229,42 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
                     .ok()
                     .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()))
             };
+            let upstream_gone = !is_remote && is_upstream_gone(repo, &branch);
             out.push(BranchInfo {
                 is_head: branch.is_head(),
                 is_protected: !is_remote && is_protected(&name, protected),
                 name,
                 is_remote,
                 upstream,
+                upstream_gone,
             });
         }
     }
 
     Ok(out)
+}
+
+/// ローカルブランチに upstream の**設定**はあるが、その追跡ブランチの参照
+/// （`refs/remotes/...`）がもう存在しない（＝リモート側でブランチが消えた）か。
+///
+/// `Repository::branch_upstream_name` は設定（`branch.<name>.remote` /
+/// `branch.<name>.merge`）だけから追跡ブランチ名を組み立てる（参照の実在は
+/// 見ない）ので、その名前の参照が見つからなければ「upstream 設定はあるが
+/// 追跡ブランチが消えている」と判定できる。ネットワーク接続は不要。
+/// upstream が最初から設定されていなければ `false`（判定対象外）。
+fn is_upstream_gone(repo: &Repository, branch: &git2::Branch) -> bool {
+    let refname = match branch.get().name() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    match repo.branch_upstream_name(refname) {
+        Ok(buf) => match buf.as_str() {
+            Ok(tracking_ref) => repo.find_reference(tracking_ref).is_err(),
+            Err(_) => false,
+        },
+        // upstream が設定されていない（通常のローカルブランチ）。
+        Err(_) => false,
+    }
 }
 
 /// リポジトリローカルの git config `noobgit.protectedBranches` から保護ブランチ
@@ -2118,6 +2143,44 @@ mod tests {
         // 既定ブランチ名(main)は保護対象。
         assert!(head.is_protected);
         assert!(!head.is_remote);
+        // upstream 未設定のローカルブランチは upstream_gone が立たない。
+        assert!(!head.upstream_gone);
+    }
+
+    /// #268 fetch のプルーニング: upstream の追跡ブランチが（fetch の prune 等で）
+    /// 消えたローカルブランチは、ネットワーク接続なしで `upstream_gone` が立つ。
+    /// upstream 設定が無い通常のブランチや、追跡ブランチが実在するブランチでは立たない。
+    #[test]
+    fn branches_flags_upstream_gone_when_tracking_ref_missing() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("clone");
+        let cloned = git2::Repository::clone(upstream.path().to_str().unwrap(), &dest).unwrap();
+        drop(cloned);
+
+        let repo = Repository::open(&dest).unwrap();
+
+        // main は upstream (origin/main) の追跡ブランチが実在するので upstream_gone は立たない。
+        let list = branches(&repo, &[]).unwrap();
+        let main = list.iter().find(|b| b.name == "main").unwrap();
+        assert!(!main.upstream_gone);
+
+        // 追跡ブランチをローカルだけで人為的に消し、「upstream 設定はあるが参照が無い」
+        // 状態を再現する（fetch のプルーニング後と同じ状態）。
+        repo.find_reference("refs/remotes/origin/main")
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let list = branches(&repo, &[]).unwrap();
+        let main = list.iter().find(|b| b.name == "main").unwrap();
+        assert!(main.upstream_gone);
+        // ローカルブランチ自体は変わらず存在する。
+        assert!(repo.find_branch("main", BranchType::Local).is_ok());
     }
 
     #[test]

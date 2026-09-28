@@ -157,6 +157,8 @@ const ICONS = {
   undo: IconArrowBackUp,
   branch: IconGitBranch,
   branchDelete: IconGitBranchDeleted,
+  /** upstream（リモート）のブランチが削除済みの目印バッジ（#268）。 */
+  remoteGone: IconGitBranchDeleted,
   branchSwitch: IconSwitchHorizontal,
   /** マージ済みブランチの一括整理（#269）。 */
   branchCleanup: IconTrashX,
