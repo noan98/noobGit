@@ -7,10 +7,18 @@ interface Props {
   canTag: boolean;
   onCreate: (name: string, message?: string) => void;
   onDelete: (name: string) => void;
+  // #274 危険度カラー: 削除ボタンに付与する強調クラス（未取得の間は空文字）。
+  deleteRiskClass?: string;
 }
 
 // タグ（目印）パネル。リリース地点などに覚えやすい名前を付け、一覧・削除できる。
-export function TagPanel({ tags, canTag, onCreate, onDelete }: Props) {
+export function TagPanel({
+  tags,
+  canTag,
+  onCreate,
+  onDelete,
+  deleteRiskClass = "",
+}: Props) {
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
 
@@ -78,7 +86,7 @@ export function TagPanel({ tags, canTag, onCreate, onDelete }: Props) {
               <code className="sha">{t.target_short_id}</code>
               <span className="branch-actions">
                 <button
-                  className="link danger"
+                  className={`link ${deleteRiskClass}`}
                   onClick={() => onDelete(t.name)}
                   title="このタグ（目印）を削除します。コミットは消えません。"
                 >

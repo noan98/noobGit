@@ -70,6 +70,18 @@
   --avatar-6-bg: #e6f0ff; --avatar-6-fg: #1b60d1;
   --avatar-7-bg: #e6ffec; --avatar-7-fg: #116329;
 
+  /* コミットグラフのレーン色（8 色循環）。#168: HistoryPanel の行内グラフ列
+     （CommitGraph.tsx）がノードと接続線の両方に使う。ライト/ダーク両方で
+     定義し、data-theme 経由で自動切り替えする。 */
+  --graph-lane-0: #1b60d1;
+  --graph-lane-1: #1a7f37;
+  --graph-lane-2: #9a6700;
+  --graph-lane-3: #cf222e;
+  --graph-lane-4: #8250df;
+  --graph-lane-5: #bc4c00;
+  --graph-lane-6: #1b7a8f;
+  --graph-lane-7: #57606a;
+
   /* ボタン */
   --btn-bg: #ffffff;
   --btn-hover: #f3f4f6;
@@ -80,11 +92,26 @@
   --shadow: 0 1px 3px rgba(27, 31, 36, 0.08), 0 1px 2px rgba(27, 31, 36, 0.06);
   --shadow-lg: 0 12px 32px rgba(27, 31, 36, 0.2);
   --focus-ring: rgba(9, 105, 218, 0.4);
+  /* #155: オンボーディングウィザードの全画面オーバーレイ（通常の --overlay より濃い）。 */
+  --overlay-strong: rgba(0, 0, 0, 0.55);
+  /* #155: オンボーディングウィザードのカード影。 */
+  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.32);
+  /* #155: 操作説明ツールチップの影。 */
+  --shadow-tooltip: 0 4px 16px rgba(0, 0, 0, 0.18);
+  /* #155: ホーム画面の最近使ったリポジトリカードの、アクセント色を帯びた影。 */
+  --shadow-accent-hover: 0 4px 12px rgba(9, 105, 218, 0.12);
+  --shadow-accent-primary: 0 2px 10px rgba(9, 105, 218, 0.1);
 
   /* 形 */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+
+  /* スクロールバー（#275）。既存トークンを再利用し、OS 標準の明るいバーが
+     ダークテーマで浮かないようにする。 */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: var(--border);
+  --scrollbar-thumb-hover: var(--muted);
 
   /* タイポグラフィ。日本語最適化フォントスタックと、本文/UI の行間・字間。
      Noto Sans JP を先頭に置き、未読込時もシステムフォントで崩れないよう
@@ -156,6 +183,16 @@
   --avatar-6-bg: rgba(56, 139, 253, 0.12); --avatar-6-fg: #79c0ff;
   --avatar-7-bg: rgba(46, 160, 67, 0.12);  --avatar-7-fg: #56d364;
 
+  /* コミットグラフのレーン色（ダーク版）。#168 */
+  --graph-lane-0: #58a6ff;
+  --graph-lane-1: #3fb950;
+  --graph-lane-2: #d29922;
+  --graph-lane-3: #f85149;
+  --graph-lane-4: #d2a8ff;
+  --graph-lane-5: #ec775c;
+  --graph-lane-6: #39c5cf;
+  --graph-lane-7: #8b949e;
+
   --btn-bg: #21262d;
   --btn-hover: #30363d;
   --btn-active: #282e36;
@@ -164,10 +201,49 @@
   --shadow: 0 1px 3px rgba(1, 4, 9, 0.5);
   --shadow-lg: 0 16px 40px rgba(1, 4, 9, 0.7);
   --focus-ring: rgba(56, 139, 253, 0.5);
+  --overlay-strong: rgba(0, 0, 0, 0.7);
+  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.6);
+  --shadow-tooltip: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-accent-hover: 0 4px 12px rgba(88, 166, 255, 0.18);
+  --shadow-accent-primary: 0 2px 10px rgba(88, 166, 255, 0.15);
+
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: var(--border);
+  --scrollbar-thumb-hover: var(--muted);
 }
 
 * {
   box-sizing: border-box;
+}
+
+/*
+ * カスタムスクロールバー（#275）。
+ * noobGit は Windows の WebView2（Chromium 最新系）専用なので `::-webkit-scrollbar`
+ * 系の疑似要素で見た目を作る。標準の `scrollbar-color` / `scrollbar-width` は
+ * Chromium 121 以降、指定すると `::-webkit-scrollbar` 系を無視してしまうため
+ * 併用しない（どちらか一方に統一）。細幅・角丸の thumb はここでしか表現できず、
+ * hover 時のみ強調したいので `::-webkit-scrollbar` 側を採用する。
+ * 全パネル・ダイアログに一括適用するためグローバルセレクタにする。
+ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: var(--radius-md);
+  /* track との間に余白を作って細く見せる（padding-box クリップで背景だけ縮める） */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
 }
 
 body {
@@ -291,7 +367,7 @@ textarea:focus-visible {
 }
 .recent-repo-card:hover {
   border-color: var(--accent);
-  box-shadow: 0 4px 12px rgba(9, 105, 218, 0.12);
+  box-shadow: var(--shadow-accent-hover);
 }
 /* カード内の「開く」領域（カードの大部分を占めるボタン）。 */
 .recent-repo-open {
@@ -409,7 +485,7 @@ textarea:focus-visible {
 /* 前回のリポジトリカード: アクセント枠で続きを開く主導線を強調。 */
 .recent-repo-card-primary {
   border-color: var(--accent);
-  box-shadow: 0 2px 10px rgba(9, 105, 218, 0.1);
+  box-shadow: var(--shadow-accent-primary);
 }
 .recent-repo-card-primary .recent-repo-open {
   padding: 16px;
@@ -590,16 +666,120 @@ textarea {
 .link:hover {
   color: var(--accent-hover);
 }
-.link.danger {
-  color: var(--destructive);
-}
 .link:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
+/* ---- 操作トリガーボタンの危険度カラー (#274) ----
+   クリック前から危険度を伝える。安全（safe）な操作は見た目を変えない
+   （色の乱用で視認性を落とさないため、クラス自体を付けない）。
+   注意（caution）はアウトライン強調程度、危険（destructive）は赤系
+   アクセントを常時薄く見せる。色はすべて #107 で定義した
+   --caution* / --destructive* トークン経由（ConfirmDialog と同じ配色）で、
+   ライト/ダーク両方に自動追従する。
+   .btn / .toolbar-btn（枠のあるボタン）と .link（枠なしテキストボタン）の
+   両方に対応する。どのリスクレベルにするかは一切ここで判断しない — 呼び出し
+   側（RepoWorkspace）が core の assess_operation の結果をそのままクラス名に
+   変換しているだけ。 */
+.btn.risk-trigger-caution,
+.toolbar-btn.risk-trigger-caution {
+  border-color: var(--caution-border);
+  background: var(--caution-bg);
+}
+.btn.risk-trigger-caution:hover:not(:disabled),
+.toolbar-btn.risk-trigger-caution:hover:not(:disabled) {
+  background: var(--caution-border);
+}
+.btn.risk-trigger-destructive,
+.toolbar-btn.risk-trigger-destructive {
+  border-color: var(--destructive-border);
+  background: var(--destructive-bg);
+  color: var(--destructive);
+}
+.btn.risk-trigger-destructive:hover:not(:disabled),
+.toolbar-btn.risk-trigger-destructive:hover:not(:disabled) {
+  background: var(--destructive-border);
+}
+/* .link は枠のないテキストボタンなので、文字色だけで伝える。 */
+.link.risk-trigger-caution {
+  color: var(--caution);
+}
+.link.risk-trigger-destructive {
+  color: var(--destructive);
+}
+
+/* ---- カスタムタイトルバー (#273) ---- */
+/* OS 標準タイトルバーはダークテーマで浮いて見えるため、
+   src-tauri/tauri.conf.json 側で decorations: false にして消し、
+   ここでアプリ本体と同じ配色のタイトルバーを描く。 */
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  /* テキスト選択不可（ドラッグ操作中に選択が走らないようにする）。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* data-tauri-drag-region を持つ要素をドラッグ領域にする。Windows の
+   タッチ/ペン操作でのドラッグに必要（Tauri 公式ドキュメント推奨）。 */
+*[data-tauri-drag-region] {
+  app-region: drag;
+}
+.titlebar-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+  padding-left: 12px;
+}
+.titlebar-title {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titlebar-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  /* ボタンはドラッグ対象外（data-tauri-drag-region を付けていないので
+     既定で no-drag だが、明示しておく）。 */
+  app-region: no-drag;
+}
+.titlebar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 100%;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.titlebar-btn:hover {
+  background: var(--border-muted);
+  color: var(--text);
+}
+/* 閉じるボタンだけホバー時に警告色（--destructive）にする。従来の慣習
+   （Windows の閉じるボタンが赤くなる）に合わせつつ、色はトークン経由。 */
+.titlebar-btn-close:hover {
+  background: var(--destructive);
+  color: var(--on-emphasis);
+}
+
 /* ---- リポジトリタブ (#263) ---- */
-/* ウィンドウ全体: 上部にタブバー、残りをタブの中身が占める。 */
+/* ウィンドウ全体: 上部にタイトルバー、その下にタブバー、残りをタブの中身が
+   占める（100vh の内訳は .tabs-root の flex column が自動で振り分ける）。 */
 .tabs-root {
   height: 100vh;
   display: flex;
@@ -644,6 +824,8 @@ textarea {
   color: inherit;
   font-size: 12px;
   cursor: pointer;
+  /* #270: ここがドラッグ並べ替えの起点（タッチ操作でスクロールと競合しないように）。 */
+  touch-action: none;
 }
 .tabbar-tab-icon {
   display: inline-flex;
@@ -1509,6 +1691,31 @@ textarea {
   pointer-events: none;
 }
 
+/* ---- #271 仮想スクロール ----
+   コミット一覧・reflog 一覧は絶対配置された行を持つスクロール領域。表示範囲
+   ＋オーバースキャン分だけが DOM に生成されるため、数千件でも描画コストが
+   一定に保たれる（詳細は HistoryPanel.tsx の commitsVirtualizer 参照）。
+   高さは file-history-commits（ファイル別履歴モーダル）と同じ vh ベースの
+   上限方式に合わせている。 */
+.commits-scroll,
+.reflog-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* ---- #272 矢印キーの行ナビゲーション ----
+   aria-activedescendant パターン: フォーカスは一覧コンテナ自体に乗るため、
+   「現在の行」はこのクラスの枠線で視覚的に示す（コンテナがフォーカスされて
+   いる間だけ付与する。マウス操作中に枠が残って紛らわしくならないように）。
+   StatusPanel の FileCard（Chakra の boxShadow プロップ）と HistoryPanel の
+   コミット行・reflog 行の両方で使う共通クラス。ライト/ダークは
+   --focus-ring に自動追従する。 */
+.list-row-active {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
 /* ---- HistoryPanel コミット行リデザイン (#109) ---- */
 .commit-row {
   display: flex;
@@ -1517,7 +1724,10 @@ textarea {
   padding: 8px 0;
   border-bottom: 1px solid var(--border-muted);
 }
-.commit-row:last-child {
+/* #271: 絶対配置の行は DOM 上の最後の要素が必ずしも最終コミットとは限らない
+   （仮想化で表示範囲だけが描画されるため）。:last-child の代わりに、実際の
+   最終行かどうかを HistoryPanel.tsx 側で判定して付与するクラスを使う。 */
+.commit-row.commit-row-last {
   border-bottom: none;
 }
 .commit-avatar {
@@ -1608,6 +1818,36 @@ textarea {
 .compare-hint {
   font-size: 12px;
   color: var(--accent);
+}
+
+/* ---- コミットグラフ列 (#168) ----
+   .commit-row の左端に置く固定幅の列。行ごとに小さな SVG（接続線）と
+   1 つのノード（円）を重ねる。行の実際の高さ（折り返し等で変動しうる）に
+   常に追従させるため、SVG は align-self: stretch で行の高さいっぱいに
+   伸ばし、内部座標は 0（上端）〜100（下端）のパーセンテージで表す。 */
+.commit-graph-cell {
+  position: relative;
+  flex-shrink: 0;
+  align-self: stretch;
+  /* .commit-row の上下 padding（8px）と border-bottom（1px）の分まで食い込ませ、
+     隣り合う行のグラフ線が途切れずにつながるようにする。stretch は content box
+     の高さにしか伸びないため、負のマージンで行の外枠いっぱいに広げる。 */
+  margin: -8px 0 -9px;
+}
+.commit-graph-cell-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.commit-graph-node {
+  position: absolute;
+  top: 50%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid var(--panel);
+  box-sizing: border-box;
 }
 
 /* ---- commit-diff viewer ---- */
