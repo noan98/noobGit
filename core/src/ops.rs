@@ -953,7 +953,8 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
 /// `target` が `None` なら HEAD のコミットに付ける。`Some` なら revparse で解決した対象に
 /// 付ける（コミットの短縮 oid やブランチ名など）。`message` が空でなければ注釈付きタグ
 /// （作成者・メッセージを持つ）、空または `None` なら軽量タグ（参照だけ）を作る。
-/// 同名タグが既にあれば日本語エラーで案内する。タグ作成は undo を記録しない（安全操作）。
+/// 同名タグが既にあれば日本語エラーで案内する。作成したタグは `DeleteTag` の undo を記録する
+/// （`create_branch` / `DeleteBranch` と同じパターン）。
 pub fn create_tag(
     repo: &Repository,
     name: &str,
@@ -1006,6 +1007,17 @@ pub fn create_tag(
             repo.tag_lightweight(name, &obj, false)?;
         }
     }
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::CreateTag,
+            description: format!("タグ「{name}」の作成を取り消す"),
+            action: UndoAction::DeleteTag {
+                name: name.to_string(),
+            },
+        },
+    );
 
     Ok(())
 }
@@ -1922,6 +1934,93 @@ mod tests {
         // soft reset なので変更はステージに残る。
         let st = status(&repo).unwrap();
         assert_eq!(st.staged.len(), 1);
+    }
+
+    /// undo ジャーナルの tmp 書き込み先（`noobgit_undo.json.tmp`）にディレクトリを
+    /// 作っておくと、`fs::write` が「ディレクトリには書き込めない」で必ず失敗する。
+    /// これはパーミッションではなくファイルシステムの制約なので、root で実行される
+    /// このコンテナでも、Windows でも確実に失敗する（chmod と違って環境に左右されない）。
+    fn make_undo_journal_write_fail(repo: &Repository) {
+        let tmp = repo.path().join("noobgit_undo.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+    }
+
+    // CLAUDE.md: 「undo の記録（record_undo）は、根底の Git 操作を絶対に失敗させては
+    // ならない」。ジャーナル書き込みが実際に失敗する状況を作ったうえで、それでも
+    // commit が成功しリポジトリ状態が変わることを検証する（常に通るだけの
+    // テストにしないため、undo::push を直接呼んで失敗パスに到達することも確認する）。
+    #[test]
+    fn commit_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "2");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+
+        make_undo_journal_write_fail(&repo);
+
+        // 前提の確認: この状態で undo::push を直接呼ぶと本当に失敗する
+        // （＝以降の commit で失敗パスに実際に到達することの裏付け）。
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::Commit,
+                description: "probe".into(),
+                action: UndoAction::SoftResetTo {
+                    previous: fx.head_oid().to_string(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        // ジャーナル本体（rename 先）はまだ作られていない。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        // ジャーナルへの記録が失敗しても、コミット自体は成功しリポジトリ状態は変わる。
+        let info = commit(&repo, "c2").unwrap();
+        assert_eq!(info.summary, "c2");
+        assert_eq!(log(&repo, 10).unwrap().len(), 2);
+
+        // 記録は失敗し続けているので、ジャーナルは依然として作られていない
+        // （＝ record_undo が失敗を握りつぶしていることの確認）。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+    }
+
+    // create_branch でも同様に、undo 記録の失敗が操作の成功を妨げないこと。
+    #[test]
+    fn create_branch_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        make_undo_journal_write_fail(&repo);
+
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateBranch,
+                description: "probe".into(),
+                action: UndoAction::DeleteBranch {
+                    name: "probe-branch".into(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        create_branch(&repo, "feature").unwrap();
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+        assert!(!repo.path().join("noobgit_undo.json").exists());
     }
 
     #[test]
@@ -3193,8 +3292,91 @@ mod tests {
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "v1.0.0");
         assert!(tags[0].message.is_none());
-        // 軽量タグの作成は undo を記録しない（安全操作）。
+        // タグ作成も undo を記録する（create_branch / DeleteBranch と同じパターン）。
+        assert!(crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（軽量）は DeleteTag の undo を記録し、Undo でそのタグが削除されること。
+    #[test]
+    fn create_lightweight_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        let desc = undo_last(&repo).unwrap();
+        assert!(desc.contains("v1.0.0"));
+        assert!(list_tags(&repo).unwrap().is_empty());
         assert!(!crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（注釈付き）も同様に Undo でタグが削除されること。
+    #[test]
+    fn create_annotated_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v2.0.0", None, Some("メジャーリリース")).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+    }
+
+    // DeleteTag の apply は冪等: 2回適用してもエラーにならず、タグが消えたままであること。
+    #[test]
+    fn undo_delete_tag_apply_is_idempotent() {
+        use crate::repo::list_tags;
+        use crate::undo::{self, UndoAction, UndoEntry};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+
+        // 直接 DeleteTag アクションを2回積んで適用しても壊れない（1回目は削除、2回目はno-op）。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // 既に削除済みのタグに対してもう一度同じアクションを適用してもエラーにならない。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
     }
 
     #[test]

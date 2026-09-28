@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
-import { CommitGraph } from "./CommitGraph";
+import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
+import { computeCommitGraphLayout } from "../lib/commitGraph";
 
 interface Props {
   commits: CommitInfo[];
@@ -112,6 +114,14 @@ function CopyHashButton({ shortId }: { shortId: string }) {
 // reflog の最大表示件数。最近の操作を一覧できる程度の件数にする。
 const REFLOG_MAX = 100;
 
+// #271: 仮想スクロール — 行の推定高さ（実測前の仮の値。measureElement で実測後に補正される）。
+// アバター・要約・メタ情報の 2 行分に、行の上下パディングを足したおおよその値。
+const COMMIT_ROW_ESTIMATE_PX = 64;
+// reflog 行は要約が短くコミット行よりやや低め。
+const REFLOG_ROW_ESTIMATE_PX = 56;
+// 表示範囲の前後にあらかじめ描画しておく行数（スクロール中の白い隙間を防ぐ）。
+const VIRTUAL_OVERSCAN = 8;
+
 export function HistoryPanel({
   commits,
   currentBranch,
@@ -131,7 +141,8 @@ export function HistoryPanel({
   repoPath,
   onResetTo,
 }: Props) {
-  // #51 DAG グラフ — ON/OFF トグル状態。
+  // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
+  // グラフ列（レーン線・ノード）を表示する。
   const [showGraph, setShowGraph] = useState(false);
 
   // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
@@ -141,6 +152,32 @@ export function HistoryPanel({
   const [reflogEntries, setReflogEntries] = useState<ReflogEntry[]>([]);
   const [reflogLoading, setReflogLoading] = useState(false);
   const [reflogError, setReflogError] = useState<string | null>(null);
+
+  // #271: 仮想スクロール — コミット一覧・reflog 一覧はそれぞれ専用のスクロール
+  // 領域を持ち、表示範囲＋オーバースキャン分だけを DOM に描画する。行の高さは
+  // アバターやブランチバッジで変動するため、estimateSize は仮の値に過ぎず、
+  // 実際のマウント後に measureElement（rowVirtualizer.measureElement を各行の
+  // ref に渡す）で実測して補正する。#272（矢印キーでの行ナビゲーション）は
+  // このインスタンスの scrollToIndex をそのまま使える想定。
+  const commitsScrollRef = useRef<HTMLDivElement>(null);
+  const commitsVirtualizer = useVirtualizer({
+    count: commits.length,
+    getScrollElement: () => commitsScrollRef.current,
+    estimateSize: () => COMMIT_ROW_ESTIMATE_PX,
+    overscan: VIRTUAL_OVERSCAN,
+    getItemKey: (index) => commits[index].id,
+  });
+
+  const reflogScrollRef = useRef<HTMLDivElement>(null);
+  const reflogVirtualizer = useVirtualizer({
+    count: reflogEntries.length,
+    getScrollElement: () => reflogScrollRef.current,
+    estimateSize: () => REFLOG_ROW_ESTIMATE_PX,
+    overscan: VIRTUAL_OVERSCAN,
+    // reflog エントリには安定した id が無いため、取得時点でのインデックスをキーにする
+    // （reflog は並び替えが起きない一覧なので、再取得のたびに全件入れ替わる想定）。
+    getItemKey: (index) => index,
+  });
 
   // reflog タブを開いたとき（または repoPath が変わったとき）にデータを取得する。
   useEffect(() => {
@@ -169,6 +206,18 @@ export function HistoryPanel({
   const [authorQuery, setAuthorQuery] = useState("");
   // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
   const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+
+  // #168: グラフ列を実際に描くか。検索中は一覧が飛び飛びのコミットになり、親が
+  // 一覧に無いためレーンが閉じずに増え続けて意味のないグラフになる（計算量も
+  // レーン数に比例して膨らむ）ので、検索中はグラフを出さない。
+  const graphVisible = showGraph && !isSearching;
+  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
+  // 表示するときだけ、commits 配列の参照が変わったとき（ページ追加など）に再計算する。
+  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
+  const graphLayout = useMemo(
+    () => computeCommitGraphLayout(graphVisible ? commits : []),
+    [graphVisible, commits],
+  );
   const selectedCount = selectedIds.size;
 
   // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
@@ -218,11 +267,17 @@ export function HistoryPanel({
         {/* コミットタブ専用のコントロール */}
         {activeTab === "commits" && (
           <>
-            {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+            {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル */}
             <button
               className={`btn btn-small${showGraph ? " active" : ""}`}
               onClick={() => setShowGraph((v) => !v)}
-              title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+              title={
+                showGraph && isSearching
+                  ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
+                  : showGraph
+                    ? "グラフ列を非表示にする"
+                    : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+              }
               aria-pressed={showGraph}
             >
               {showGraph ? "グラフ 非表示" : "グラフ 表示"}
@@ -276,11 +331,6 @@ export function HistoryPanel({
             />
           </div>
 
-          {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
-          {showGraph && commits.length > 0 && (
-            <CommitGraph commits={commits} />
-          )}
-
           {commits.length === 0 ? (
             isSearching ? (
               <EmptyState
@@ -298,17 +348,43 @@ export function HistoryPanel({
             )
           ) : (
             <>
-              <ul className="commits">
-                {commits.map((c, idx) => {
+              {/* #271: 仮想スクロール — このラッパーが実際のスクロール領域。
+                  中の <ul> は全行分の高さを確保するダミーの箱で、行は絶対配置で
+                  必要な分だけ描画する。 */}
+              <div className="commits-scroll" ref={commitsScrollRef}>
+                <ul
+                  className="commits"
+                  style={{ height: commitsVirtualizer.getTotalSize(), position: "relative" }}
+                >
+                {commitsVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const idx = virtualRow.index;
+                  const c = commits[idx];
                   const isHead = idx === 0;
+                  const isLast = idx === commits.length - 1;
                   const palette = authorPalette(c.author_name);
                   const initials = authorInitials(c.author_name);
                   const isCompareBase = compareBaseId === c.id;
+                  const graphRow = graphLayout.rows[idx];
                   return (
                     <li
-                      key={c.id}
-                      className={`commit-row${isCompareBase ? " compare-base" : ""}`}
+                      key={virtualRow.key}
+                      ref={commitsVirtualizer.measureElement}
+                      data-index={idx}
+                      className={`commit-row${isCompareBase ? " compare-base" : ""}${isLast ? " commit-row-last" : ""}`}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
                     >
+                      {/* #168 DAG グラフ列 — ON のとき、このコミットが属するレーンと
+                          親コミットへの接続線を行の左端に表示する。 */}
+                      {graphVisible && graphRow && (
+                        <CommitGraphCell row={graphRow} laneCount={graphLayout.laneCount} />
+                      )}
+
                       {/* リベース対象の選択チェックボックス */}
                       <input
                         type="checkbox"
@@ -385,7 +461,8 @@ export function HistoryPanel({
                     </li>
                   );
                 })}
-              </ul>
+                </ul>
+              </div>
               {hasMore && (
                 <div className="load-more">
                   <button
@@ -429,44 +506,66 @@ export function HistoryPanel({
             />
           )}
           {!reflogLoading && !reflogError && reflogEntries.length > 0 && (
-            <ul className="reflog-list">
-              {reflogEntries.map((entry, idx) => (
-                <li key={idx} className="reflog-row">
-                  {/* 操作種別バッジ */}
-                  <div className="reflog-kind">{entry.short_message}</div>
-                  {/* 詳細情報 */}
-                  <div className="reflog-body">
-                    <div className="reflog-top">
-                      <code className="reflog-hash">{entry.short_id}</code>
-                      <span
-                        className="reflog-raw-message"
-                        title={entry.message}
+            // #271: 仮想スクロール — commits と同じ方式（絶対配置 + measureElement）。
+            <div className="reflog-scroll" ref={reflogScrollRef}>
+              <ul
+                className="reflog-list"
+                style={{ height: reflogVirtualizer.getTotalSize(), position: "relative" }}
+              >
+                {reflogVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const idx = virtualRow.index;
+                  const entry = reflogEntries[idx];
+                  return (
+                    <li
+                      key={virtualRow.key}
+                      ref={reflogVirtualizer.measureElement}
+                      data-index={idx}
+                      className="reflog-row"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      {/* 操作種別バッジ */}
+                      <div className="reflog-kind">{entry.short_message}</div>
+                      {/* 詳細情報 */}
+                      <div className="reflog-body">
+                        <div className="reflog-top">
+                          <code className="reflog-hash">{entry.short_id}</code>
+                          <span
+                            className="reflog-raw-message"
+                            title={entry.message}
+                          >
+                            {entry.message.length > 60
+                              ? `${entry.message.slice(0, 60)}…`
+                              : entry.message}
+                          </span>
+                        </div>
+                        <div className="reflog-bottom">
+                          <span
+                            className="meta"
+                            title={new Date(entry.timestamp * 1000).toLocaleString("ja-JP")}
+                          >
+                            {formatRelativeTime(entry.timestamp)}
+                          </span>
+                        </div>
+                      </div>
+                      {/* 「この時点に戻す」ボタン */}
+                      <button
+                        className="link danger reflog-reset-btn"
+                        title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
+                        onClick={() => onResetTo(entry.new_oid)}
                       >
-                        {entry.message.length > 60
-                          ? `${entry.message.slice(0, 60)}…`
-                          : entry.message}
-                      </span>
-                    </div>
-                    <div className="reflog-bottom">
-                      <span
-                        className="meta"
-                        title={new Date(entry.timestamp * 1000).toLocaleString("ja-JP")}
-                      >
-                        {formatRelativeTime(entry.timestamp)}
-                      </span>
-                    </div>
-                  </div>
-                  {/* 「この時点に戻す」ボタン */}
-                  <button
-                    className="link danger reflog-reset-btn"
-                    title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
-                    onClick={() => onResetTo(entry.new_oid)}
-                  >
-                    戻す
-                  </button>
-                </li>
-              ))}
-            </ul>
+                        戻す
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
         </div>
       )}

@@ -15,6 +15,8 @@ const SHORTCUTS: { key: string; desc: string }[] = [
   { key: "Ctrl + Z", desc: "Undo（取り消し可能なときのみ）" },
   { key: "Ctrl + R", desc: "ステータス再取得" },
   { key: "Ctrl + P", desc: "現在ブランチをプッシュ" },
+  { key: "Ctrl + Tab", desc: "次のリポジトリタブへ切り替え" },
+  { key: "Ctrl + Shift + Tab", desc: "前のリポジトリタブへ切り替え" },
   { key: "? / F1", desc: "このヘルプを表示" },
 ];
 
@@ -73,7 +75,8 @@ export function ShortcutHelpDialog({ onClose }: Props) {
         <p className="shortcut-note">
           Mac では Ctrl の代わりに Cmd（⌘）が使えます。
           <br />
-          テキスト入力欄にフォーカスがある場合、Ctrl+K と Ctrl+Enter 以外のショートカットは無効です。
+          テキスト入力欄にフォーカスがある場合、Ctrl+K・Ctrl+Enter・Ctrl+Tab・
+          Ctrl+Shift+Tab 以外のショートカットは無効です。
         </p>
 
         <div className="dialog-actions">
