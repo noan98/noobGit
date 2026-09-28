@@ -32,6 +32,8 @@ pub enum OperationKind {
     Merge,
     RemoveRemote,
     RestoreFile,
+    BisectStart,
+    BisectReset,
     Clone,
 }
 
@@ -444,6 +446,46 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             ),
         },
 
+        OperationKind::BisectStart => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: {
+                let mut r = vec![
+                    "「壊れている」「動いていた」2つのコミットの間を、二分探索でチェックアウトしながら調べます（Bisect）。".to_string(),
+                    "調査中は HEAD がどのブランチも指さない「detached HEAD」状態になり、作業ツリーの中身が候補コミットに合わせて入れ替わります。".to_string(),
+                ];
+                if ctx.working_dir_dirty {
+                    r.push(
+                        "未コミットの変更があります。このままでは開始できません。先にコミットするか退避(stash)してください。"
+                            .to_string(),
+                    );
+                }
+                r
+            },
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "いつでも「Bisect を終了」すれば、元のブランチへすぐ戻れます。".to_string(),
+            ),
+        },
+
+        OperationKind::BisectReset => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: {
+                let mut r = vec![
+                    "Bisect の調査を終了し、開始前のブランチ（または元のコミット）へ戻します。".to_string(),
+                ];
+                if ctx.working_dir_dirty {
+                    r.push(
+                        "未コミットの変更があります。このままでは終了できません。先にコミットするか退避(stash)してください。"
+                            .to_string(),
+                    );
+                }
+                r
+            },
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
         OperationKind::Clone => RiskAssessment::safe(
             "指定したフォルダへリモートリポジトリを新しく取得するだけで、既存のファイルには一切触れません。",
         ),
@@ -968,6 +1010,8 @@ mod tests {
             OperationKind::Merge,
             OperationKind::RemoveRemote,
             OperationKind::RestoreFile,
+            OperationKind::BisectStart,
+            OperationKind::BisectReset,
             OperationKind::Clone,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
@@ -993,6 +1037,31 @@ mod tests {
             assess(OperationKind::DeleteBranch, &ctx).level,
             RiskLevel::Destructive
         );
+    }
+
+    #[test]
+    fn bisect_start_mentions_dirty_when_working_dir_dirty() {
+        let clean = SafetyContext::default();
+        let a = assess(OperationKind::BisectStart, &clean);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(!a.reasons.iter().any(|r| r.contains("未コミットの変更")));
+
+        let dirty = SafetyContext {
+            working_dir_dirty: true,
+            ..Default::default()
+        };
+        let b = assess(OperationKind::BisectStart, &dirty);
+        assert_eq!(b.level, RiskLevel::Caution);
+        assert!(b.reasons.iter().any(|r| r.contains("未コミットの変更")));
+    }
+
+    #[test]
+    fn bisect_reset_is_caution_and_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::BisectReset, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(a.reversible);
+        assert!(!a.permanent_data_loss);
     }
 
     // --- check_sensitive_files のテスト ---

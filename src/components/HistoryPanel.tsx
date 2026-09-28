@@ -38,6 +38,8 @@ interface Props {
   // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
   // 親（App）が guarded("reset_hard") に配線する。
   onResetTo: (newOid: string) => void;
+  // #184 Bisect: バグ混入コミットを探すウィザードを開く。
+  onStartBisect: () => void;
   // #274 危険度カラー: 各トリガーボタンに付与する強調クラス。
   // 未取得の間は空文字（Safe相当の通常スタイル）。
   resetRiskClass?: string;
@@ -146,6 +148,7 @@ export function HistoryPanel({
   onStartRebase,
   repoPath,
   onResetTo,
+  onStartBisect,
   // #274 危険度カラー
   resetRiskClass = "",
   cherryPickRiskClass = "",
@@ -368,6 +371,14 @@ export function HistoryPanel({
                 <Icon name="squash" /> 整理する… ({selectedCount})
               </button>
             )}
+            {/* #184 Bisect: バグ混入コミットを二分探索で探すウィザードを開く。 */}
+            <button
+              className="btn btn-small"
+              onClick={onStartBisect}
+              title="「壊れている」コミットと「動いていた」コミットを指定して、バグ混入コミットを二分探索で見つけます"
+            >
+              <Icon name="bisect" /> バグ混入コミットを探す
+            </button>
           </>
         )}
       </div>

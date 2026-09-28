@@ -103,6 +103,7 @@ function renderHistoryPanel(overrides: Partial<PanelProps> = {}) {
     onStartRebase: vi.fn(),
     repoPath: "/tmp/repo",
     onResetTo: vi.fn(),
+    onStartBisect: vi.fn(),
     ...overrides,
   };
   return {

@@ -37,6 +37,8 @@ const OP_LABEL: Record<OperationKind, string> = {
   merge: "ブランチの統合",
   remove_remote: "リモートを削除",
   restore_file: "ファイルを復元",
+  bisect_start: "Bisect の開始",
+  bisect_reset: "Bisect の終了",
   // クローンはネットワーク操作で undo journal には記録されないが、Record<OperationKind, ...>
   // を満たすためのラベルは用意しておく。
   clone: "クローン",
@@ -68,6 +70,8 @@ const OP_ICON: Record<OperationKind, IconName> = {
   merge: "merge",
   remove_remote: "remoteRemove",
   restore_file: "restore",
+  bisect_start: "bisect",
+  bisect_reset: "bisect",
   clone: "clone",
 };
 

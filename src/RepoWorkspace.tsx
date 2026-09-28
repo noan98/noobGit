@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  type BisectStatus,
   type BlameHunk,
   type BranchGraph,
   type BranchInfo,
@@ -60,6 +61,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConflictWizard } from "./components/ConflictWizard";
 import { StashPopFollowUp } from "./components/StashPopFollowUp";
 import { RebaseWizard } from "./components/RebaseWizard";
+import { BisectWizard } from "./components/BisectWizard"; // #184 Bisect
 import {
   DiffPanel,
   type DiffSelection,
@@ -222,6 +224,11 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   remove_remote: {},
   // ファイル復元はステージ済みの状態と undo 履歴が変わる。
   restore_file: { status: true, undo: true },
+  // #184 Bisect: 開始・終了のどちらも HEAD が detached ⇔ ブランチの間で動き、
+  // 作業ツリーの中身も入れ替わる。status・log・ブランチ関係すべてを取り直す。
+  // undo も bisect_start では積まれる（bisect_reset 自体は記録しない）。
+  bisect_start: FULL_REFRESH,
+  bisect_reset: FULL_REFRESH,
   // クローンはタブの外（WelcomeScreen）で完結する操作で、このタブの状態には影響しない。
   clone: {},
 };
@@ -574,6 +581,11 @@ export function RepoWorkspace({
   );
   const [showRebase, setShowRebase] = useState(false);
 
+  // #184 Bisect: 現在のセッション状態（null = 未開始）と、ウィザードの表示状態。
+  // ウィザードを閉じても bisectStatus は保持し、バナーから再度開けるようにする。
+  const [bisectStatus, setBisectStatus] = useState<BisectStatus | null>(null);
+  const [showBisectWizard, setShowBisectWizard] = useState(false);
+
   // 差分プレビュー: 選択中ファイルと、その差分。
   const [selectedFile, setSelectedFile] = useState<DiffSelection | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
@@ -698,13 +710,25 @@ export function RepoWorkspace({
     }
   }, [repoPath]);
 
+  // #184 Bisect: 進行中のセッションがあれば復元する（アプリ再起動・タブ再表示対応）。
+  // 失敗してもバナーが出ないだけなので、画面表示は止めない。
+  const loadBisectStatus = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      setBisectStatus(await api.bisectStatus(repoPath));
+    } catch {
+      setBisectStatus(null);
+    }
+  }, [repoPath]);
+
   useEffect(() => {
     if (opened) {
       void refresh();
       void loadIdentity();
       void loadRemotes(); // #71 リモート一覧
+      void loadBisectStatus(); // #184 Bisect セッションの復元
     }
-  }, [opened, refresh, loadIdentity, loadRemotes]);
+  }, [opened, refresh, loadIdentity, loadRemotes, loadBisectStatus]);
 
   // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
   // コンフリクト）で呼ぶコマンドが変わる。
@@ -883,6 +907,10 @@ export function RepoWorkspace({
     setNotice(null);
     // #203 サブモジュール検出: 新しいリポジトリでは改めてバナーを案内する。
     setSubmoduleBannerDismissed(false);
+    // #184 Bisect: 前のリポジトリのセッション表示を引きずらない
+    // （実際の状態は下の loadBisectStatus が改めて取得する）。
+    setBisectStatus(null);
+    setShowBisectWizard(false);
     // 先に開いた状態にしてスケルトンを表示し、その裏で初期読み込みを行う。
     setRepoLoading(true);
     setOpened(true);
@@ -1363,6 +1391,41 @@ export function RepoWorkspace({
       },
       undefined,
     );
+  }
+
+  // #184 Bisect: 開始。detached HEAD になり作業ツリーが入れ替わるので guarded を通す。
+  // 成功したら返ってきた状態をそのまま保持し、ウィザードは「進行中」画面に自動で切り替わる。
+  function doBisectStart(bad: string, good: string) {
+    void guarded("Bisect を開始", "bisect_start", async () => {
+      const s = await api.bisectStart(repoPath, bad, good);
+      setBisectStatus(s);
+      showToast("Bisect を開始しました。", "success");
+    });
+  }
+
+  // #184 Bisect: 判定（はい/いいえ）。ステージ相当の軽い操作として確認ダイアログは
+  // 挟まず（ConflictWizard の doMarkResolved と同じ方針）、exec で直接実行する。
+  function doBisectMark(commitId: string, isGood: boolean) {
+    void exec(
+      async () => {
+        const s = await api.bisectMark(repoPath, commitId, isGood);
+        setBisectStatus(s);
+        if (s.is_done) {
+          showToast("原因コミットが見つかりました。", "success");
+        }
+      },
+      { refresh: REFRESH_BY_OP.bisect_start },
+    );
+  }
+
+  // #184 Bisect: 終了。開始前のブランチへ戻すので guarded を通す。
+  function doBisectReset() {
+    void guarded("Bisect を終了", "bisect_reset", async () => {
+      await api.bisectReset(repoPath);
+      setBisectStatus(null);
+      setShowBisectWizard(false);
+      showToast("Bisect を終了し、元のブランチへ戻りました。", "success");
+    });
   }
 
   // 変更の破棄。元に戻せない破壊的操作なので必ず guarded を通す。
@@ -1977,6 +2040,25 @@ export function RepoWorkspace({
         </div>
       )}
 
+      {/* #184 Bisect: セッション進行中であることをタブ上で常に分かるようにするバナー。
+          ウィザードを閉じていてもここから再度開ける。 */}
+      {bisectStatus && !showBisectWizard && (
+        <div className="banner setup bisect-banner">
+          <span>
+            <Icon name="bisect" />{" "}
+            {bisectStatus.is_done
+              ? "Bisect: 原因コミットが見つかっています。"
+              : `Bisect 進行中（detached HEAD） ・ 残り約 ${bisectStatus.remaining_steps} 回`}
+          </span>
+          <button
+            className="btn btn-small"
+            onClick={() => setShowBisectWizard(true)}
+          >
+            続ける
+          </button>
+        </div>
+      )}
+
       {/* SourceTree 風レイアウト: 左サイドバー + メインビュー */}
       <div className="workspace">
         <Sidebar
@@ -2361,6 +2443,7 @@ export function RepoWorkspace({
                       () => api.resetHard(repoPath, newOid),
                     )
                   }
+                  onStartBisect={() => setShowBisectWizard(true)}
                   // #274 危険度カラー
                   resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
                   cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
@@ -2612,6 +2695,20 @@ export function RepoWorkspace({
           onSquash={doSquash}
           onReword={doReword}
           onCancel={() => setShowRebase(false)}
+        />
+      )}
+
+      {/* #184 Bisect: バグ混入コミットの二分探索ウィザード。バナーからも開閉できる
+          ので、bisectStatus の有無とは無関係に showBisectWizard だけで表示を決める。 */}
+      {showBisectWizard && (
+        <BisectWizard
+          repoPath={repoPath}
+          status={bisectStatus}
+          commits={commits}
+          onStart={doBisectStart}
+          onMark={doBisectMark}
+          onReset={doBisectReset}
+          onClose={() => setShowBisectWizard(false)}
         />
       )}
 

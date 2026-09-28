@@ -472,6 +472,25 @@ pub struct ReflogEntry {
     pub timestamp: i64,
 }
 
+/// Bisect（バグ混入コミットの二分探索）セッションの状態。
+///
+/// `bisect_start` / `bisect_mark` の結果として返り、`bisect_status` でも同じ形で
+/// 復元できる（アプリ再起動やタブの再表示のあいだも進行状況を追えるようにするため）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BisectStatus {
+    /// いま HEAD がチェックアウトしている、次に good/bad を判定すべきコミット。
+    /// 絞り込みが完了している（`is_done`）ときは None。
+    pub current_commit: Option<CommitInfo>,
+    /// 残りの絞り込み回数の概算（log2 ベース）。目安であり厳密な保証はない。
+    pub remaining_steps: usize,
+    /// 絞り込みが完了し、原因コミットを特定できたか。
+    pub is_done: bool,
+    /// 特定できた原因コミット（`is_done` のときだけ Some）。
+    pub found_commit: Option<CommitInfo>,
+    /// これまでに good/bad と判定した回数（進捗表示用）。
+    pub tested_count: usize,
+}
+
 /// `.gitignore` の 1 パターンを検証した結果（#173 バリデーション・重複検知）。
 ///
 /// `valid` が false のときは `error` に初心者向けの平易な日本語の理由が入る。
