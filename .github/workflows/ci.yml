@@ -230,6 +230,9 @@ jobs:
       - name: cargo llvm-cov nextest（テスト実行 + カバレッジ計測）
         env:
           RUSTC_WRAPPER: ""
+          # insta は CI 環境変数を検知して自動的に更新なし(no)になるが、
+          # スナップショット不一致を確実に失敗させるため明示しておく（#175）。
+          INSTA_UPDATE: "no"
         run: cargo llvm-cov nextest --workspace --locked --all-targets --profile ci --lcov --output-path lcov.info
 
       # sccache のキャッシュヒット率などの統計をジョブログに出力してモニタリングする。
