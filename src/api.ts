@@ -144,6 +144,7 @@ export type OperationKind =
   | "stash_save"
   | "stash_apply"
   | "stash_pop"
+  | "stash_drop"
   | "create_branch"
   | "switch_branch"
   | "delete_branch"
@@ -190,6 +191,14 @@ export interface StashInfo {
   id: string;
   // この退避に含まれる変更ファイル数（一覧表示用の概要）。
   file_count: number;
+}
+
+// 退避の取り出し（stash_apply / stash_pop）の結果。
+// conflicted が true のときは作業ツリー・インデックスがコンフリクト状態のまま
+// 返る（status.conflicted にも反映される）。stash_pop の場合、conflicted が
+// true の間は退避を一覧から取り除かない。
+export interface StashRestoreOutcome {
+  conflicted: boolean;
 }
 
 // リモートリポジトリ1件の情報。push_url は fetch と異なる場合のみ文字列、同じか未設定なら null。
@@ -451,9 +460,13 @@ export const api = {
   stashSave: (repoPath: string, message: string) =>
     invoke<void>("stash_save", { repoPath, message }),
   stashApply: (repoPath: string, index: number) =>
-    invoke<void>("stash_apply", { repoPath, index }),
+    invoke<StashRestoreOutcome>("stash_apply", { repoPath, index }),
   stashPop: (repoPath: string, index: number) =>
-    invoke<void>("stash_pop", { repoPath, index }),
+    invoke<StashRestoreOutcome>("stash_pop", { repoPath, index }),
+  // 退避を一覧から取り除く（中身は復元できない。undo は記録されない）。
+  // 番号は新しい退避でずれるため、StashInfo.id で指定する。
+  stashDrop: (repoPath: string, stashId: string) =>
+    invoke<void>("stash_drop", { repoPath, stashId }),
   // 指定退避の変更ファイル一覧を返す（退避は適用しない安全な操作）。
   stashDiff: (repoPath: string, index: number) =>
     invoke<FileChange[]>("stash_diff", { repoPath, index }),

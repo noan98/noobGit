@@ -64,13 +64,19 @@ pub fn explain(op: OperationKind) -> Explanation {
             title: "退避を適用（取り出し・一覧に残す）".into(),
             what: "退避していた変更を、いまの作業ツリーに取り出して戻します。退避はそのまま一覧に残ります。".into(),
             why: "いまの内容と重なる部分があるとコンフリクト（競合）が起きることがあります。退避が残るので、失敗してもやり直せます。".into(),
-            on_trouble: "コンフリクトが出たら、ファイルを直して保存し、ステージしてください。".into(),
+            on_trouble: "コンフリクト（競合）が起きた場合は自動でコンフリクト解消ウィザードが開きます。案内に従ってファイルを直し、「解消済みとしてマーク」を押してください。すべて解消したらいつものようにコミットできます。退避は適用してもそのまま一覧に残るので、うまくいかなくてもやり直せます。".into(),
         },
         OperationKind::StashPop => Explanation {
             title: "退避を取り出す（pop・一覧から削除）".into(),
             what: "退避していた変更を取り出して戻し、その退避を一覧から取り除きます。".into(),
             why: "いまの内容と重なる部分があるとコンフリクト（競合）が起きることがあります。心配なときは先に「適用」で試すと安全です。".into(),
-            on_trouble: "コンフリクトが出たら、ファイルを直して保存し、ステージしてください。".into(),
+            on_trouble: "コンフリクト（競合）が起きた場合は自動でコンフリクト解消ウィザードが開きます。案内に従ってファイルを直し、「解消済みとしてマーク」を押してください。この場合、退避は（万一のため）一覧から取り除かずに残ります。解消し終えたら、もう不要なら「退避を削除する」で片付けられます。".into(),
+        },
+        OperationKind::StashDrop => Explanation {
+            title: "退避を削除".into(),
+            what: "退避（stash）を一覧から取り除きます。しまってあった変更の中身も一緒に消えます。".into(),
+            why: "多くの場合、コンフリクトを解消し終えて「もう要らない」退避を片付けるために使います。".into(),
+            on_trouble: "この削除は取り消せません（Undo できません）。不安なときは削除せず一覧に残しておいても困りません。".into(),
         },
         OperationKind::CreateBranch => Explanation {
             title: "ブランチ作成".into(),
@@ -210,6 +216,7 @@ mod tests {
             OperationKind::StashSave,
             OperationKind::StashApply,
             OperationKind::StashPop,
+            OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
             OperationKind::DeleteBranch,
@@ -233,6 +240,23 @@ mod tests {
             assert!(!e.why.is_empty(), "{:?}: why が空", op);
             assert!(!e.on_trouble.is_empty(), "{:?}: on_trouble が空", op);
         }
+    }
+
+    // #156: stash_apply / stash_pop の on_trouble は、コンフリクト時に自動で
+    // コンフリクト解消ウィザードへつながることを案内する。
+    #[test]
+    fn stash_restore_on_trouble_mentions_conflict_wizard() {
+        for op in [OperationKind::StashApply, OperationKind::StashPop] {
+            let e = explain(op);
+            assert!(
+                e.on_trouble.contains("コンフリクト解消ウィザード"),
+                "{:?}: on_trouble にコンフリクト解消ウィザードの案内が含まれていません: {}",
+                op,
+                e.on_trouble
+            );
+        }
+        // stash_pop はコンフリクト時に退避を一覧に残すので、その旨も案内する。
+        assert!(explain(OperationKind::StashPop).on_trouble.contains("退避"));
     }
 
     // #157: fetch/pull/push/clone の on_trouble は、SSH鍵未設定エラー時に

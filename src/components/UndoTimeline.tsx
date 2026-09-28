@@ -19,6 +19,9 @@ const OP_LABEL: Record<OperationKind, string> = {
   stash_save: "変更の退避",
   stash_apply: "退避の適用",
   stash_pop: "退避の取り出し",
+  // stash_drop は undo を記録しない操作だが、OperationKind は網羅的に扱う必要があるため
+  // ラベル・アイコンだけは用意しておく（実際にタイムラインへ現れることは無い）。
+  stash_drop: "退避の削除",
   create_branch: "ブランチ作成",
   switch_branch: "ブランチ切り替え",
   delete_branch: "ブランチ削除",
@@ -49,6 +52,7 @@ const OP_ICON: Record<OperationKind, IconName> = {
   stash_save: "stash",
   stash_apply: "stashApply",
   stash_pop: "stashPop",
+  stash_drop: "discard",
   create_branch: "branch",
   switch_branch: "branchSwitch",
   delete_branch: "branchDelete",
