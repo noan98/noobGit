@@ -100,6 +100,14 @@ export function BranchPanel({
                       未取り込み
                     </span>
                   )}
+                  {b.upstream_gone && (
+                    <span
+                      className="badge upstream-gone"
+                      title="上流（リモート）のブランチはすでに削除されています。ローカルのブランチは残っています。不要なら削除できます。"
+                    >
+                      <Icon name="remoteGone" /> リモート削除済み
+                    </span>
+                  )}
                 </span>
                 <span className="branch-actions">
                   <button

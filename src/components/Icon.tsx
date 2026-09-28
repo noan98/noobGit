@@ -144,6 +144,8 @@ const ICONS = {
   undo: IconArrowBackUp,
   branch: IconGitBranch,
   branchDelete: IconGitBranchDeleted,
+  /** upstream（リモート）のブランチが削除済みの目印バッジ（#268）。 */
+  remoteGone: IconGitBranchDeleted,
   branchSwitch: IconSwitchHorizontal,
   merge: IconGitMerge,
   /** 履歴が分岐した状態（non-fast-forward の説明など）。 */
