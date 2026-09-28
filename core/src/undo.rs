@@ -29,6 +29,16 @@ pub enum UndoAction {
     /// 指定パスのステージを解除する（変更内容は保持）。hunk 単位のステージの取り消しに使う。
     /// HEAD があれば HEAD からそのパスを index に戻し、無ければ index から取り除く（冪等）。
     UnstagePath { path: String },
+    /// 指定パスのインデックスエントリを、記録した blob（と実行モード）に置き換える。
+    /// hunk 単位のアンステージ（`unstage_hunk`）の取り消し（再ステージ）に使う。
+    /// `blob` が `None` なら操作前にそのパスがインデックスに無かったことを表し、
+    /// 取り消しは index からそのパスを取り除く。同じ内容を何度適用しても結果は
+    /// 変わらない（冪等）。
+    RestoreIndexEntry {
+        path: String,
+        blob: Option<String>,
+        mode: u32,
+    },
     /// 削除したタグを再作成する。`message` が Some なら注釈付き、None なら軽量タグ。
     /// 既に同名タグがあれば何もしない（冪等）。
     RecreateTag {
@@ -275,6 +285,40 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                     }
                 }
             }
+        }
+        UndoAction::RestoreIndexEntry { path, blob, mode } => {
+            let mut index = repo.index()?;
+            let p = std::path::Path::new(path);
+            match blob {
+                Some(blob_str) => {
+                    let oid = git2::Oid::from_str(blob_str)?;
+                    // ctime/mtime 等は 0 のままでよい（libgit2 は次回のステータス走査時に
+                    // 実ファイルと比較して自動的に再計算する）。mode と id と path だけが
+                    // 復元に必要な情報。
+                    let entry = git2::IndexEntry {
+                        ctime: git2::IndexTime::new(0, 0),
+                        mtime: git2::IndexTime::new(0, 0),
+                        dev: 0,
+                        ino: 0,
+                        mode: *mode,
+                        uid: 0,
+                        gid: 0,
+                        file_size: 0,
+                        id: oid,
+                        flags: 0,
+                        flags_extended: 0,
+                        path: path.as_bytes().to_vec(),
+                    };
+                    index.add(&entry)?;
+                }
+                None => {
+                    // 操作前はこのパスがインデックスに無かった。すでに無ければ何もしない（冪等）。
+                    if index.get_path(p, 0).is_some() {
+                        index.remove_path(p)?;
+                    }
+                }
+            }
+            index.write()?;
         }
         UndoAction::RecreateTag {
             name,
@@ -894,5 +938,54 @@ mod tests {
         assert!(repo
             .find_branch("feature", git2::BranchType::Local)
             .is_err());
+    }
+
+    // RestoreIndexEntry: 同じ内容を2回適用してもインデックスの状態は変わらない（冪等）。
+    // blob が Some（既存パスの復元）と None（操作前は未追跡だったパスの復元）の両方を確認する。
+    #[test]
+    fn restore_index_entry_apply_is_idempotent_for_both_some_and_none_blob() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        let blob_id = repo
+            .index()
+            .unwrap()
+            .get_path(std::path::Path::new("a.txt"), 0)
+            .unwrap()
+            .id
+            .to_string();
+
+        // Some(blob): インデックスから外してから、記録した blob へ戻す。2回適用しても同じ。
+        {
+            let mut index = repo.index().unwrap();
+            index.remove_path(std::path::Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+        }
+        let restore = UndoAction::RestoreIndexEntry {
+            path: "a.txt".into(),
+            blob: Some(blob_id.clone()),
+            mode: 0o100644,
+        };
+        apply(&repo, &restore).unwrap();
+        apply(&repo, &restore).unwrap();
+        let index = repo.index().unwrap();
+        let entry = index
+            .get_path(std::path::Path::new("a.txt"), 0)
+            .expect("a.txt がインデックスに復元されていること");
+        assert_eq!(entry.id.to_string(), blob_id);
+
+        // None: 操作前はパスがインデックスに無かったケース。2回適用してもエラーにならず、
+        // インデックスに存在しないまま（冪等）。
+        let remove = UndoAction::RestoreIndexEntry {
+            path: "a.txt".into(),
+            blob: None,
+            mode: 0,
+        };
+        apply(&repo, &remove).unwrap();
+        apply(&repo, &remove).unwrap();
+        let index = repo.index().unwrap();
+        assert!(index.get_path(std::path::Path::new("a.txt"), 0).is_none());
     }
 }

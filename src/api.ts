@@ -392,6 +392,8 @@ export const api = {
     invoke<void>("stage_hunk", { repoPath, filePath, hunkHeader }),
   unstage: (repoPath: string, path: string) =>
     invoke<void>("unstage", { repoPath, path }),
+  unstageHunk: (repoPath: string, filePath: string, hunkHeader: string) =>
+    invoke<void>("unstage_hunk", { repoPath, filePath, hunkHeader }),
   commit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("commit", { repoPath, message }),
   amendCommit: (repoPath: string, message: string) =>

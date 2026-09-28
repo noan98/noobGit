@@ -1900,6 +1900,12 @@ export function RepoWorkspace({
                         refresh: REFRESH_BY_OP.stage,
                       })
                     }
+                    // #158 hunk アンステージ
+                    onUnstageHunk={(p, h) =>
+                      void exec(() => api.unstageHunk(repoPath, p, h), {
+                        refresh: REFRESH_BY_OP.unstage,
+                      })
+                    }
                     // #70 .gitignore 管理
                     onIgnore={doIgnore}
                     onShowGitignore={() => void doShowGitignore()}
@@ -1930,6 +1936,13 @@ export function RepoWorkspace({
               void exec(
                 () => api.stageHunk(repoPath, selectedFile!.path, hunkHeader),
                 { refresh: REFRESH_BY_OP.stage },
+              )
+            }
+            onUnstageHunk={(hunkHeader) =>
+              void exec(
+                () =>
+                  api.unstageHunk(repoPath, selectedFile!.path, hunkHeader),
+                { refresh: REFRESH_BY_OP.unstage },
               )
             }
           />

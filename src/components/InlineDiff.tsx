@@ -7,6 +7,8 @@
  *   source: "staged" | "unstaged"
  *   onStageHunk?: hunk ヘッダー文字列を受け取り、その hunk をステージする（#125）。
  *     source === "unstaged" のときのみ hunk ボタンを表示する。
+ *   onUnstageHunk?: hunk ヘッダー文字列を受け取り、その hunk をアンステージする（#158）。
+ *     source === "staged" のときのみ hunk ボタンを表示する。
  *
  * マウント時に source に応じて getDiffStaged / getDiffUnstaged を呼び、
  * 行ごとに追加(緑)/削除(赤)/hunk 見出し/コンテキストを表示する。
@@ -19,6 +21,7 @@ import { api, type FileDiff } from "../api";
 import { durations } from "../theme/motion";
 import { langFromPath } from "../lib/highlight";
 import { HighlightedCode } from "./HighlightedCode";
+import { ExplainTooltip } from "./ExplainTooltip"; // #158 hunk = 変更のまとまり、の説明
 
 // #49 インライン差分プレビュー
 export type InlineDiffSource = "staged" | "unstaged";
@@ -30,6 +33,9 @@ interface Props {
   // #125 hunk 単位ステージ: 呼び出し元が渡すコールバック。
   // source === "unstaged" のときのみ使用する。
   onStageHunk?: (hunkHeader: string) => void;
+  // #158 hunk 単位アンステージ: 呼び出し元が渡すコールバック。
+  // source === "staged" のときのみ使用する。
+  onUnstageHunk?: (hunkHeader: string) => void;
 }
 
 // #125 hunk フラッシュアニメーション用コンポーネント。
@@ -61,7 +67,13 @@ function HunkFlashWrapper({
 }
 
 // #49 インライン差分プレビュー
-export function InlineDiff({ repoPath, path, source, onStageHunk }: Props) {
+export function InlineDiff({
+  repoPath,
+  path,
+  source,
+  onStageHunk,
+  onUnstageHunk,
+}: Props) {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,8 +123,19 @@ export function InlineDiff({ repoPath, path, source, onStageHunk }: Props) {
     onStageHunk?.(hunkHeader);
   }
 
-  // source === "unstaged" かつ onStageHunk が渡されているときだけ hunk ボタンを出す。
+  // #158 hunk アンステージボタンが押されたとき: フラッシュ → 親コールバック呼び出し。
+  function handleUnstageHunk(hunkHeader: string) {
+    setFlashCounters((prev) => ({
+      ...prev,
+      [hunkHeader]: (prev[hunkHeader] ?? 0) + 1,
+    }));
+    onUnstageHunk?.(hunkHeader);
+  }
+
+  // source === "unstaged" かつ onStageHunk が渡されているときだけ hunk ステージボタンを出す。
   const showHunkStage = source === "unstaged" && !!onStageHunk;
+  // #158 source === "staged" かつ onUnstageHunk が渡されているときだけ hunk アンステージボタンを出す。
+  const showHunkUnstage = source === "staged" && !!onUnstageHunk;
 
   // hunk 行のループを追跡して各ブロックをグループ化するための変数。
   // 現在処理中の hunk ヘッダー（null = hunk 外）。
@@ -297,38 +320,72 @@ export function InlineDiff({ repoPath, path, source, onStageHunk }: Props) {
 
                 {/* #125 hunk ステージボタン: hunk 見出し行 + unstaged のみ表示 */}
                 {isHunk && showHunkStage && (
-                  <motion.button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleStageHunk(line.content);
-                    }}
-                    title="この塊だけステージ（hunk 単位でコミット対象に加えます）"
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    style={{
-                      flexShrink: 0,
-                      marginLeft: "6px",
-                      fontSize: "10px",
-                      padding: "1px 6px",
-                      borderRadius: "var(--radius-sm)",
-                      border: "1px solid var(--accent-border)",
-                      background: "var(--accent-bg)",
-                      color: "var(--accent)",
-                      cursor: "pointer",
-                      fontFamily: "var(--font-sans)",
-                      lineHeight: "1.6",
-                      userSelect: "none",
-                    }}
-                  >
-                    この塊だけステージ
-                  </motion.button>
+                  <ExplainTooltip op="stage">
+                    <motion.button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleStageHunk(line.content);
+                      }}
+                      title="この塊だけステージ（hunk 単位でコミット対象に加えます）"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      style={{
+                        flexShrink: 0,
+                        marginLeft: "6px",
+                        fontSize: "10px",
+                        padding: "1px 6px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--accent-border)",
+                        background: "var(--accent-bg)",
+                        color: "var(--accent)",
+                        cursor: "pointer",
+                        fontFamily: "var(--font-sans)",
+                        lineHeight: "1.6",
+                        userSelect: "none",
+                      }}
+                    >
+                      この塊だけステージ
+                    </motion.button>
+                  </ExplainTooltip>
+                )}
+
+                {/* #158 hunk アンステージボタン: hunk 見出し行 + staged のみ表示 */}
+                {isHunk && showHunkUnstage && (
+                  <ExplainTooltip op="unstage">
+                    <motion.button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleUnstageHunk(line.content);
+                      }}
+                      title="この塊だけアンステージ（hunk 単位でコミット対象から外します）"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      style={{
+                        flexShrink: 0,
+                        marginLeft: "6px",
+                        fontSize: "10px",
+                        padding: "1px 6px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border)",
+                        background: "var(--surface)",
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        fontFamily: "var(--font-sans)",
+                        lineHeight: "1.6",
+                        userSelect: "none",
+                      }}
+                    >
+                      この塊だけアンステージ
+                    </motion.button>
+                  </ExplainTooltip>
                 )}
               </Box>
             );
 
-            // #125 hunk 行はフラッシュラッパーで包む（ステージ時に光らせる）。
-            if (isHunk && showHunkStage) {
+            // #125 / #158 hunk 行はフラッシュラッパーで包む（ステージ/アンステージ時に光らせる）。
+            if (isHunk && (showHunkStage || showHunkUnstage)) {
               return (
                 <HunkFlashWrapper key={i} flashKey={flashKey}>
                   {rowContent}
