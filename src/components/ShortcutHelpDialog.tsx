@@ -17,6 +17,9 @@ const SHORTCUTS: { key: string; desc: string }[] = [
   { key: "Ctrl + P", desc: "現在ブランチをプッシュ" },
   { key: "Ctrl + Tab", desc: "次のリポジトリタブへ切り替え" },
   { key: "Ctrl + Shift + Tab", desc: "前のリポジトリタブへ切り替え" },
+  // #272: ファイル一覧・コミット一覧にフォーカスがあるときの行ナビゲーション。
+  { key: "↑ / ↓", desc: "一覧の行を移動（ファイル一覧・コミット一覧・reflog）" },
+  { key: "Enter / Space", desc: "フォーカス中の行を選択（ファイルは差分表示、コミットはリベース対象の選択）" },
   { key: "? / F1", desc: "このヘルプを表示" },
 ];
 

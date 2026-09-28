@@ -5,6 +5,8 @@ import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
 import { computeCommitGraphLayout } from "../lib/commitGraph";
+// #272: 一覧の矢印キー行ナビゲーション（コミット一覧・reflog 一覧で使う）。
+import { useListNav } from "../hooks/useListNav";
 
 interface Props {
   commits: CommitInfo[];
@@ -186,6 +188,61 @@ export function HistoryPanel({
     getItemKey: (index) => index,
   });
 
+  // #272: 矢印キーでの行ナビゲーション。仮想スクロールと両立させるため、
+  // roving tabindex ではなく aria-activedescendant パターンを使う
+  // （フォーカスは一覧コンテナ自体に置き、「現在の行」は属性で示す）。
+  // 実際のインデックス計算は useListNav（内部で lib/listNav.ts の純粋関数を使う）
+  // に委譲する。
+  //
+  // コミット一覧の主操作＝クリック選択に相当するのは、リベース対象チェックボックス
+  // のトグル（onToggleSelect）。reflog 一覧の「戻す」は reset --hard で破壊的
+  // なので、Enter/Space には割り当てない（onActivate を渡さない＝キー入力は
+  // 消費するが何も実行しない）。
+  const {
+    activeIndex: commitsActiveIndex,
+    setActiveIndex: setCommitsActiveIndex,
+    onKeyDown: onCommitsKeyDown,
+  } = useListNav({
+    itemCount: commits.length,
+    onActivate: (index) => onToggleSelect(commits[index].id),
+  });
+  const {
+    activeIndex: reflogActiveIndex,
+    setActiveIndex: setReflogActiveIndex,
+    onKeyDown: onReflogKeyDown,
+  } = useListNav({ itemCount: reflogEntries.length });
+
+  // 一覧コンテナが実際にフォーカスされている間だけ現在行を視覚的に示す
+  // （フォーカスが外れた後まで枠が残ると、マウス操作中に紛らわしいため）。
+  const [commitsListFocused, setCommitsListFocused] = useState(false);
+  const [reflogListFocused, setReflogListFocused] = useState(false);
+
+  // activeIndex が変わったら、仮想化された一覧でもその行が実際に描画される
+  // よう scrollToIndex で表示範囲に入れる（画面外の行は DOM に存在しないため、
+  // aria-activedescendant が指す id を持つ要素が無いと意味がなくなる）。
+  useEffect(() => {
+    if (commitsActiveIndex < 0) return;
+    commitsVirtualizer.scrollToIndex(commitsActiveIndex, { align: "auto" });
+    // commitsVirtualizer は毎レンダー新しいインスタンスになりうるため依存に含めない。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitsActiveIndex]);
+
+  useEffect(() => {
+    if (reflogActiveIndex < 0) return;
+    reflogVirtualizer.scrollToIndex(reflogActiveIndex, { align: "auto" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reflogActiveIndex]);
+
+  // コミット行の id（aria-activedescendant の参照先）。安定した commit id を使う。
+  function commitRowId(id: string): string {
+    return `history-commit-row-${id}`;
+  }
+  // reflog 行の id。安定した id が無いため、取得時点でのインデックスを使う
+  // （getItemKey と同じ考え方）。
+  function reflogRowId(index: number): string {
+    return `history-reflog-row-${index}`;
+  }
+
   // reflog タブを開いたとき（または repoPath が変わったとき）にデータを取得する。
   useEffect(() => {
     if (activeTab !== "reflog" || !repoPath) return;
@@ -357,8 +414,24 @@ export function HistoryPanel({
             <>
               {/* #271: 仮想スクロール — このラッパーが実際のスクロール領域。
                   中の <ul> は全行分の高さを確保するダミーの箱で、行は絶対配置で
-                  必要な分だけ描画する。 */}
-              <div className="commits-scroll" ref={commitsScrollRef}>
+                  必要な分だけ描画する。
+                  #272: 矢印キーの行ナビゲーション — aria-activedescendant
+                  パターン。フォーカスはこのコンテナ自体に置き、現在行は
+                  aria-activedescendant で示す（仮想化下でも画面外の行に
+                  直接フォーカスを移す必要が無い）。 */}
+              <div
+                className="commits-scroll"
+                ref={commitsScrollRef}
+                role="listbox"
+                aria-label="コミット一覧"
+                tabIndex={commits.length > 0 ? 0 : -1}
+                aria-activedescendant={
+                  commitsActiveIndex >= 0 ? commitRowId(commits[commitsActiveIndex].id) : undefined
+                }
+                onKeyDown={onCommitsKeyDown}
+                onFocus={() => setCommitsListFocused(true)}
+                onBlur={() => setCommitsListFocused(false)}
+              >
                 <ul
                   className="commits"
                   style={{ height: commitsVirtualizer.getTotalSize(), position: "relative" }}
@@ -372,12 +445,19 @@ export function HistoryPanel({
                   const initials = authorInitials(c.author_name);
                   const isCompareBase = compareBaseId === c.id;
                   const graphRow = graphLayout.rows[idx];
+                  const isActive = idx === commitsActiveIndex;
                   return (
                     <li
                       key={virtualRow.key}
                       ref={commitsVirtualizer.measureElement}
                       data-index={idx}
-                      className={`commit-row${isCompareBase ? " compare-base" : ""}${isLast ? " commit-row-last" : ""}`}
+                      id={commitRowId(c.id)}
+                      role="option"
+                      aria-selected={selectedIds.has(c.id)}
+                      className={`commit-row${isCompareBase ? " compare-base" : ""}${isLast ? " commit-row-last" : ""}${isActive && commitsListFocused ? " list-row-active" : ""}`}
+                      // #272: マウスでこの行を操作したときも、以後の矢印キー
+                      // ナビゲーションがこの行から続くようにする。
+                      onMouseDown={() => setCommitsActiveIndex(idx)}
                       style={{
                         position: "absolute",
                         top: 0,
@@ -514,7 +594,23 @@ export function HistoryPanel({
           )}
           {!reflogLoading && !reflogError && reflogEntries.length > 0 && (
             // #271: 仮想スクロール — commits と同じ方式（絶対配置 + measureElement）。
-            <div className="reflog-scroll" ref={reflogScrollRef}>
+            // #272: 矢印キーの行ナビゲーション（aria-activedescendant）。
+            // reflog の「戻す」は reset --hard で破壊的なので、この一覧では
+            // Enter/Space に主操作を割り当てない（useListNav に onActivate を
+            // 渡していない）。↑/↓/Home/End での閲覧のみできる。
+            <div
+              className="reflog-scroll"
+              ref={reflogScrollRef}
+              role="listbox"
+              aria-label="reflog 一覧"
+              tabIndex={reflogEntries.length > 0 ? 0 : -1}
+              aria-activedescendant={
+                reflogActiveIndex >= 0 ? reflogRowId(reflogActiveIndex) : undefined
+              }
+              onKeyDown={onReflogKeyDown}
+              onFocus={() => setReflogListFocused(true)}
+              onBlur={() => setReflogListFocused(false)}
+            >
               <ul
                 className="reflog-list"
                 style={{ height: reflogVirtualizer.getTotalSize(), position: "relative" }}
@@ -522,12 +618,17 @@ export function HistoryPanel({
                 {reflogVirtualizer.getVirtualItems().map((virtualRow) => {
                   const idx = virtualRow.index;
                   const entry = reflogEntries[idx];
+                  const isActive = idx === reflogActiveIndex;
                   return (
                     <li
                       key={virtualRow.key}
                       ref={reflogVirtualizer.measureElement}
                       data-index={idx}
-                      className="reflog-row"
+                      id={reflogRowId(idx)}
+                      role="option"
+                      aria-selected={false}
+                      className={`reflog-row${isActive && reflogListFocused ? " list-row-active" : ""}`}
+                      onMouseDown={() => setReflogActiveIndex(idx)}
                       style={{
                         position: "absolute",
                         top: 0,
