@@ -1,0 +1,111 @@
+# E2E: tauri-driver + WebdriverIO で主要操作フローを実データのデスクトップアプリ
+# 上で検証する (#177)。ci.yml（PR ゲート）とは別ワークフローにして、main への
+# push 時のみ走らせる — デバッグビルドのコンパイル + 実ウィンドウ操作を伴うため
+# PR ごとに走らせるには重く、ci.yml 側の自動マージフローを遅くしたくない。
+# アクションは ci.yml と同じ方針でコミット SHA に固定する（末尾の # vX.Y.Z が
+# 人間可読のタグ）。Cargo ワークスペースはリポジトリ直下にあるため、cargo は
+# root から --workspace 相当で回す。
+name: e2e
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
+      - '.gitignore'
+  workflow_dispatch:
+
+# 同一ブランチで新しい push があれば、進行中の e2e はキャンセルする。
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (tauri-driver + WebdriverIO)
+    runs-on: ubuntu-latest
+    env:
+      # sccache をコンパイララッパーとして使い、コンパイル済みオブジェクトを
+      # キャッシュする（ci.yml の rust ジョブと同じ狙い）。
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # Tauri 2 の Linux ビルドに必要な apt パッケージ（ci.yml と同じ一覧）。
+      TAURI_APT_PACKAGES: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libayatana-appindicator3-dev build-essential curl wget file libssl-dev
+      # tauri-driver を動かすための追加パッケージ:
+      #   webkit2gtk-driver — Linux 版 tauri-driver が使う WebKitWebDriver 本体。
+      #   xvfb              — ヘッドレス CI でも実ウィンドウを開けるようにする
+      #                        仮想ディスプレイ（`xvfb-run` 経由で使う）。
+      E2E_APT_PACKAGES: webkit2gtk-driver xvfb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Tauri 2 のビルド依存 + tauri-driver 用の追加パッケージ（キャッシュする）。
+      - name: System deps (Tauri 2 + tauri-driver prerequisites)
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: ${{ env.TAURI_APT_PACKAGES }} ${{ env.E2E_APT_PACKAGES }}
+          version: noobgit-tauri-2-e2e
+
+      # ci.yml と同じ理由（apt キャッシュの復元漏れ対策）の健全性チェック。
+      - name: システム依存の健全性チェック（復元漏れなら入れ直す）
+        run: |
+          if pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1; then
+            echo "システム依存はそろっている（aptキャッシュの復元に成功）"
+          else
+            echo "::warning::aptキャッシュの復元が不完全なため、通常の apt で入れ直す"
+            sudo apt-get update
+            sudo apt-get install -y $TAURI_APT_PACKAGES $E2E_APT_PACKAGES
+            pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      # tauri-driver のバージョンは他の Tauri 関連クレートと独立している。
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Install frontend deps
+        run: npm ci
+
+      # onPrepare（e2e/wdio.conf.ts）がデバッグビルド（--debug --no-bundle）を
+      # 用意し、`tauri:options` に指定したバイナリをそのまま起動する。
+      # WebKitWebDriver は実ウィンドウを要求するため xvfb-run 経由で実行する。
+      - name: WebdriverIO E2E テスト
+        run: xvfb-run --auto-servernum npm run test:e2e
+
+      - name: sccache 統計（キャッシュヒット率）
+        if: always()
+        run: sccache --show-stats
+
+      # 失敗時のスクリーンショット（e2e/wdio.conf.ts の afterTest フックが保存）
+      # を成果物として残す。無ければ何もアップロードしない。
+      - name: 失敗時のスクリーンショットを保存
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-failure-screenshots
+          path: e2e/screenshots
+          if-no-files-found: ignore
+          retention-days: 14
