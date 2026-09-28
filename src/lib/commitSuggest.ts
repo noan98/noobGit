@@ -66,13 +66,19 @@ export function buildCommitSuggestions(
   prefix: string,
   max: number,
 ): CommitSuggestion[] {
-  if (historyMatches.length > 0) {
-    return historyMatches.slice(0, max).map((text) => ({ text }));
+  // いま入力されている件名そのものは候補に出さない（確定直後に同じ候補が再び開き、
+  // Enter で本文へ進めなくなるのを防ぐ）。
+  const current = prefix.trim();
+  const history = historyMatches.filter((text) => text.trim() !== current);
+  if (history.length > 0) {
+    return history.slice(0, max).map((text) => ({ text }));
   }
-  return filterConventionalPrefixes(prefix, max).map((p) => ({
-    text: p.label,
-    desc: p.desc,
-  }));
+  return filterConventionalPrefixes(prefix, max)
+    .filter((p) => p.label !== current)
+    .map((p) => ({
+      text: p.label,
+      desc: p.desc,
+    }));
 }
 
 /** Conventional Commits プレフィックス単体（例: "feat:"）かどうかの判定。 */

@@ -406,6 +406,9 @@ export function RepoWorkspace({
           // Conventional Commits のフォールバックだけで表示を続ける。
         }
         if (requestId !== suggestRequestId.current) return; // 古いリクエストは無視
+        // 入力欄にフォーカスが無いとき（amend でメッセージを読み込んだ直後など、
+        // プログラムから件名が変わったとき）は候補を開かない。
+        if (document.activeElement !== commitInput.current) return;
         const items = buildCommitSuggestions(
           historyMatches,
           commitSubject,

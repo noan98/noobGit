@@ -50,6 +50,14 @@ describe("buildCommitSuggestions", () => {
     );
     expect(got).toHaveLength(5);
   });
+
+  it("入力中の件名と完全に同じ候補は出さない（確定後に再び開かないように）", () => {
+    expect(
+      buildCommitSuggestions(["fix: バグA", "fix: バグA 追加"], "fix: バグA", 5),
+    ).toEqual([{ text: "fix: バグA 追加" }]);
+    // 履歴が自分自身だけなら、完全一致するプレフィックスも出さず空になる。
+    expect(buildCommitSuggestions(["feat:"], "feat:", 5)).toEqual([]);
+  });
 });
 
 describe("applyCommitSuggestion", () => {
