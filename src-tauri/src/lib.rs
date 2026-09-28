@@ -3,6 +3,8 @@
 //! 各コマンドは `Result<T, String>` を返すので、フロントは `invoke().catch()` で
 //! 日本語のエラーメッセージをそのまま表示できる。
 
+use std::sync::Mutex;
+
 use git2::Repository;
 use tauri::ipc::Channel;
 
@@ -11,10 +13,10 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, LfsCandidate, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo,
-    RepoStatus, SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
+    FileDiff, LfsCandidate, LogPage, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry,
+    RemoteInfo, RepoStatus, SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
 };
-use noobgit_core::repo::LogFilter;
+use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{identity, ops, repo, undo};
@@ -49,6 +51,69 @@ fn get_log(
         Some(f) => repo::log_filtered(&r, skip, max, &f).map_err(|e| e.to_string()),
         None => repo::log_paged(&r, skip, max).map_err(|e| e.to_string()),
     }
+}
+
+/// コミット履歴をカーソルベースでページングして返す（Issue #277）。
+///
+/// `cursor` が `null`（未指定）なら先頭ページを新しく開く。`cursor` を渡すと
+/// （直前の呼び出しが返した ID をそのまま渡せば）その続きを取得する —
+/// `noobgit-core` 側で revwalk の走査状態そのものを保持し続けるため、
+/// `skip` を渡す従来の `get_log` と違い、ページ数を重ねても各回のコストが
+/// 「すでに読んだ件数」に依存しない（詳しい設計意図は
+/// `noobgit_core::repo::LogCursorStore` のドキュメントを参照）。
+///
+/// カーソルが失効している場合（プロセス再起動や、閉じ忘れの蓄積によるキャッシュの
+/// 立ち退きなど、通常運用ではまず起きない）は、フロントエンドが渡す
+/// `fallback_skip`（現在表示済みのコミット数）を使って、従来の skip ベース取得
+/// （[`repo::log_filtered`]）に一度だけ自動でフォールバックする。フロントエンドは
+/// カーソル切れを個別に扱う必要はない。
+///
+/// ページの続きを使い切った・検索条件を変えた・タブを閉じたときは
+/// [`close_log_cursor`] でカーソルを手放すこと。
+#[tauri::command]
+fn get_log_page(
+    repo_path: String,
+    max: usize,
+    filter: Option<LogFilter>,
+    cursor: Option<String>,
+    fallback_skip: usize,
+    cursors: tauri::State<'_, Mutex<LogCursorStore>>,
+) -> Result<LogPage, String> {
+    let filter = filter.unwrap_or_default();
+    // ロック中のパニックで以後ずっと使えなくなるのを避け、汚染されていても
+    // 中身（キャッシュの中身）はそのまま使い続ける。
+    let mut store = cursors.lock().unwrap_or_else(|e| e.into_inner());
+
+    let Some(id) = cursor else {
+        return store
+            .first_page(&repo_path, filter, max)
+            .map_err(|e| e.to_string());
+    };
+
+    match store.next_page(&id, max).map_err(|e| e.to_string())? {
+        Some(page) => Ok(page),
+        None => {
+            // カーソルが見つからない（失効済み）。フロントエンドが持っている
+            // 表示済み件数を skip として渡し、従来の方式で一度だけ取り直す。
+            let r = open(&repo_path)?;
+            let commits =
+                repo::log_filtered(&r, fallback_skip, max, &filter).map_err(|e| e.to_string())?;
+            let has_more = commits.len() == max;
+            Ok(LogPage {
+                commits,
+                cursor: None,
+                has_more,
+            })
+        }
+    }
+}
+
+/// 使い終わったログカーソルを手放す（検索条件の変更・リフレッシュ・タブを閉じる等）。
+/// 存在しない ID を渡しても何も起きない。
+#[tauri::command]
+fn close_log_cursor(cursor: String, cursors: tauri::State<'_, Mutex<LogCursorStore>>) {
+    let mut store = cursors.lock().unwrap_or_else(|e| e.into_inner());
+    store.close(&cursor);
 }
 
 /// 指定ファイルを変更したコミットを新しい順に最大 `max` 件返す（ファイル別履歴）。
@@ -541,10 +606,16 @@ pub fn run() {
     tauri::Builder::default()
         // フォルダ選択ダイアログ（参照ボタン）のためにダイアログプラグインを登録する。
         .plugin(tauri_plugin_dialog::init())
+        // コミット履歴のカーソルベースページング（Issue #277）用のキャッシュ。
+        // Git ロジックは `noobgit-core::repo::LogCursorStore` 側に閉じており、
+        // ここでは `Mutex` に包んでプロセス内で保持するだけ。
+        .manage(Mutex::new(LogCursorStore::new()))
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_branches,
             get_log,
+            get_log_page,
+            close_log_cursor,
             get_file_log,
             get_diff_unstaged,
             get_diff_staged,
