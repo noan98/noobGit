@@ -1,0 +1,6 @@
+---
+source: core/src/ops.rs
+expression: "SquashedMessageShape { summary, full_message }"
+---
+summary: c2
+full_message: "c2\n\nc3"

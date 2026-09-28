@@ -67,6 +67,7 @@ import {
   IconListDetails,
   IconLock,
   IconMarkdown,
+  IconMinus,
   IconMoon,
   IconPackageExport,
   IconPackageImport,
@@ -83,6 +84,7 @@ import {
   IconSearch,
   IconSettings,
   IconSparkles,
+  IconSquare,
   IconSun,
   IconSwitchHorizontal,
   IconTag,
@@ -132,6 +134,16 @@ const ICONS = {
   chevronRight: IconChevronRight,
   /** 現在地の点（従来の ●）。 */
   current: IconPointFilled,
+
+  // --- カスタムタイトルバー (#273) --------------------------------------
+  /** 最小化。 */
+  windowMinimize: IconMinus,
+  /** 最大化。 */
+  windowMaximize: IconSquare,
+  /** 元に戻す（最大化解除）。copy と同じ「重なった矩形」の見た目を流用する。 */
+  windowRestore: IconCopy,
+  /** 閉じる。close と同じアイコンを流用する。 */
+  windowClose: IconX,
 
   // --- Git 操作 -------------------------------------------------------
   commit: IconGitCommit,

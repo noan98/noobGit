@@ -20,6 +20,7 @@
     "@shikijs/langs": "^4.4.3",
     "@shikijs/themes": "^4.4.3",
     "@tabler/icons-react": "^3.47.0",
+    "@tanstack/react-virtual": "^3.14.13",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "framer-motion": "^13.4.0",
