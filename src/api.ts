@@ -180,7 +180,8 @@ export type OperationKind =
   | "rebase"
   | "merge"
   | "remove_remote"
-  | "restore_file";
+  | "restore_file"
+  | "clone";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -245,6 +246,11 @@ export interface FetchOutcome {
   // （例: "origin/feature-x"）の一覧。ローカルブランチ本体はここには含まれない
   // （削除されないため）。
   pruned: string[];
+}
+
+// clone（新規取得）の結果。クローンは成功か失敗の二択なので、結果は保存先パスだけ持つ。
+export interface CloneOutcome {
+  path: string;
 }
 
 // pull（取り込み）の結果。fast-forward でのみ取り込む。
@@ -546,6 +552,17 @@ export const api = {
       force,
       progress,
     });
+  },
+  // リモートリポジトリを新規にクローンする。他のコマンドと違い、まだリポジトリが
+  // 存在しないため repoPath は取らない（destPath が保存先）。onProgress は
+  // fetch/pull/push と同じく省略可能。
+  cloneRepo: (
+    url: string,
+    destPath: string,
+    onProgress?: (progress: NetworkProgress) => void,
+  ) => {
+    const progress = new Channel<NetworkProgress>(onProgress ?? (() => {}));
+    return invoke<CloneOutcome>("clone_repo", { url, destPath, progress });
   },
 
   cherryPick: (repoPath: string, oid: string) =>

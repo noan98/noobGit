@@ -374,7 +374,17 @@ pub enum PullOutcome {
     },
 }
 
-/// fetch / pull / push の通信がいまどの段階にいるかを表す。
+/// clone（リモートリポジトリの新規取得）の結果。
+///
+/// クローン自体は成功か失敗の二択（fetch/pull のような「分岐で中断」は無い）なので、
+/// 結果は保存先パスだけを持つ単純な形にしている。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloneOutcome {
+    /// クローン先の絶対パス（呼び出し時に指定した保存先）。
+    pub path: String,
+}
+
+/// fetch / pull / push / clone の通信がいまどの段階にいるかを表す。
 ///
 /// オブジェクト数を取得できない「接続待ち」の間もユーザーに状況を伝えられるよう、
 /// オブジェクト数の増減だけでなく段階そのものを明示する。
@@ -388,15 +398,15 @@ pub enum PullOutcome {
 pub enum NetworkProgressStage {
     /// リモートへ接続している段階。オブジェクト数はまだ分からない。
     Connecting,
-    /// オブジェクトを受信している段階（fetch / pull）。
+    /// オブジェクトを受信している段階（fetch / pull / clone）。
     ReceivingObjects,
-    /// 受信済みオブジェクトのデルタ（差分）を展開している段階（fetch / pull）。
+    /// 受信済みオブジェクトのデルタ（差分）を展開している段階（fetch / pull / clone）。
     ResolvingDeltas,
     /// オブジェクトを送信している段階（push）。
     SendingObjects,
 }
 
-/// fetch / pull / push の途中経過を表す1件のスナップショット。
+/// fetch / pull / push / clone の途中経過を表す1件のスナップショット。
 ///
 /// Tauri の Channel でフロントエンドへストリーミング送信し、進捗バー表示に使う。
 /// `total_objects` が 0 の間はまだ総数が分かっていない（`stage` が `Connecting` の
@@ -405,7 +415,7 @@ pub enum NetworkProgressStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkProgress {
     pub stage: NetworkProgressStage,
-    /// 転送済みオブジェクト数。fetch / pull では受信済み数、push では送信済み数。
+    /// 転送済みオブジェクト数。fetch / pull / clone では受信済み数、push では送信済み数。
     pub received_objects: usize,
     /// 送信/受信すべきオブジェクトの総数。分かるまでは 0。
     pub total_objects: usize,

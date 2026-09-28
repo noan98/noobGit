@@ -33,6 +33,7 @@ import {
   IconCircleCheck,
   IconClock,
   IconCloud,
+  IconCloudDownload,
   IconConfetti,
   IconCopy,
   IconDeviceDesktop,
@@ -194,6 +195,8 @@ const ICONS = {
   workspace: IconFolders,
   remote: IconCloud,
   remoteRemove: IconPlugOff,
+  /** リモートリポジトリの新規クローン (#267)。 */
+  clone: IconCloudDownload,
   /** サブモジュール（リポジトリの中の別リポジトリ）。 */
   submodule: IconPackages,
   identity: IconUser,

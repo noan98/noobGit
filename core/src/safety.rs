@@ -32,6 +32,7 @@ pub enum OperationKind {
     Merge,
     RemoveRemote,
     RestoreFile,
+    Clone,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -442,6 +443,10 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                 "不安なときは先に stash で退避してから実行すると安全です。".to_string(),
             ),
         },
+
+        OperationKind::Clone => RiskAssessment::safe(
+            "指定したフォルダへリモートリポジトリを新しく取得するだけで、既存のファイルには一切触れません。",
+        ),
     }
 }
 
@@ -696,6 +701,12 @@ mod tests {
         ] {
             assert_eq!(assess(op, &ctx).level, RiskLevel::Safe);
         }
+    }
+
+    #[test]
+    fn clone_is_safe() {
+        let ctx = SafetyContext::default();
+        assert_eq!(assess(OperationKind::Clone, &ctx).level, RiskLevel::Safe);
     }
 
     #[test]
@@ -957,6 +968,7 @@ mod tests {
             OperationKind::Merge,
             OperationKind::RemoveRemote,
             OperationKind::RestoreFile,
+            OperationKind::Clone,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }
