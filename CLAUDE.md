@@ -57,8 +57,12 @@ noobGit/
   しなければならない。さもないと呼び出せない。
 - `src/main.rs` — `noobgit_lib::run()` を呼ぶだけの小さなエントリポイント。
 - `capabilities/default.json` — ウィンドウ権限（カスタムコマンドはここに明示的な
-  エントリを必要としない）。
+  エントリを必要としない）。カスタムタイトルバー (#273) が使う
+  `core:window:allow-*`（close/minimize/toggle-maximize/start-dragging/
+  is-maximized）はここで個別に許可している（`core:default` には含まれない）。
 - `tauri.conf.json` — アプリ設定、CSP、バンドルターゲット、ウィンドウ設定。
+  メインウィンドウは `decorations: false`（フレームレス）— OS 標準タイトル
+  バーの代わりに `src/components/TitleBar.tsx` を使う (#273)。
 
 ### `src/`（フロントエンド）
 
@@ -76,8 +80,9 @@ noobGit/
   `window` に登録するショートカット類は `active` プロップでアクティブなタブ
   だけが反応する。
 - `components/` — `StatusPanel`, `HistoryPanel`, `BranchPanel`,
-  `ConfirmDialog`, `TabBar`。表示専用で、`RepoWorkspace.tsx`（タブバーは
-  `App.tsx`）から渡されたコールバックを呼ぶ。
+  `ConfirmDialog`, `TabBar`, `TitleBar`（カスタムタイトルバー, #273）。表示
+  専用で、`RepoWorkspace.tsx`（タブバー・タイトルバーは `App.tsx`）から
+  渡されたコールバックを呼ぶ。
 - `components/Icon.tsx` — アイコンの唯一の出典。[Tabler Icons](https://tabler.io/icons)
   （`@tabler/icons-react`）を用途ベースの名前（`IconName`）で包み、`<Icon
   name="commit" />` のように使う。**絵文字は使わない** — 下記「規約」を参照。

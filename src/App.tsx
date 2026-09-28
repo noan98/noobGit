@@ -20,6 +20,7 @@
 import { useEffect, useState } from "react";
 import { RepoWorkspace } from "./RepoWorkspace";
 import { TabBar, type TabItem } from "./components/TabBar";
+import { TitleBar } from "./components/TitleBar";
 import { loadRecentRepos } from "./components/WelcomeScreen";
 import { cycleActiveTabId, reorderByIds, tabCycleDirection } from "./lib/tabOrder";
 
@@ -209,6 +210,7 @@ export default function App() {
 
   return (
     <div className="tabs-root">
+      <TitleBar />
       <TabBar
         tabs={tabItems}
         activeId={activeId}
