@@ -221,6 +221,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   remove_remote: {},
   // ファイル復元はステージ済みの状態と undo 履歴が変わる。
   restore_file: { status: true, undo: true },
+  // クローンはタブの外（WelcomeScreen）で完結する操作で、このタブの状態には影響しない。
+  clone: {},
 };
 
 interface Guard {
