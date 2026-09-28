@@ -38,6 +38,9 @@ export function BranchPanel({
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
   const [newProtectedName, setNewProtectedName] = useState("");
+  // 保護を外すのは安全性を弱める操作なので、ワンクリックでは外さず確認を挟む。
+  // 確認待ちのブランチ名（null = 確認待ちなし）。
+  const [pendingUnprotect, setPendingUnprotect] = useState<string | null>(null);
 
   function submitAddProtected() {
     const name = newProtectedName.trim();
@@ -239,13 +242,36 @@ export function BranchPanel({
               <li key={name}>
                 <Icon name="protected" />
                 <span>{name}</span>
-                <button
-                  className="link"
-                  onClick={() => onRemoveProtected(name)}
-                  title={`「${name}」を保護対象から外す`}
-                >
-                  <Icon name="close" label={`「${name}」を保護対象から外す`} />
-                </button>
+                {pendingUnprotect === name ? (
+                  <>
+                    <span className="protected-unprotect-confirm">
+                      保護を外すと、削除や強制送信の警告が弱まります。
+                    </span>
+                    <button
+                      className="link"
+                      onClick={() => {
+                        setPendingUnprotect(null);
+                        onRemoveProtected(name);
+                      }}
+                    >
+                      外す
+                    </button>
+                    <button
+                      className="link"
+                      onClick={() => setPendingUnprotect(null)}
+                    >
+                      やめる
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="link"
+                    onClick={() => setPendingUnprotect(name)}
+                    title={`「${name}」を保護対象から外す`}
+                  >
+                    <Icon name="close" label={`「${name}」を保護対象から外す`} />
+                  </button>
+                )}
               </li>
             ))}
           </ul>

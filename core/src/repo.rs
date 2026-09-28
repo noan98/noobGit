@@ -251,7 +251,9 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
 /// キーが未設定、または正規化後に空リストになる場合は既定値
 /// （[`crate::safety::DEFAULT_PROTECTED_BRANCHES`]）を返す。
 pub fn load_protected_branches(repo: &Repository) -> Result<Vec<String>> {
-    let cfg = repo.config()?;
+    // グローバル設定（~/.gitconfig）に同名キーがあっても混ざらないよう、リポジトリ
+    // ローカルの `.git/config` だけを読む。
+    let cfg = repo.config()?.open_level(git2::ConfigLevel::Local)?;
     let list = match cfg.get_string("noobgit.protectedBranches") {
         Ok(raw) => crate::safety::parse_protected_branches(&raw),
         Err(_) => Vec::new(),

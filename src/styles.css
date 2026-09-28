@@ -1435,6 +1435,9 @@ textarea {
   padding: 2px;
   color: inherit;
 }
+.protected-unprotect-confirm {
+  margin-left: 4px;
+}
 .protected-branches-empty {
   font-size: 13px;
   color: var(--muted);
