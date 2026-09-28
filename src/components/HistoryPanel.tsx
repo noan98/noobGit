@@ -136,11 +136,6 @@ export function HistoryPanel({
   // グラフ列（レーン線・ノード）を表示する。
   const [showGraph, setShowGraph] = useState(false);
 
-  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
-  // commits 配列の参照が変わったとき（検索・ページ追加など）だけ再計算する。
-  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
-  const graphLayout = useMemo(() => computeCommitGraphLayout(commits), [commits]);
-
   // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
   const [activeTab, setActiveTab] = useState<"commits" | "reflog">("commits");
 
@@ -176,6 +171,18 @@ export function HistoryPanel({
   const [authorQuery, setAuthorQuery] = useState("");
   // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
   const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+
+  // #168: グラフ列を実際に描くか。検索中は一覧が飛び飛びのコミットになり、親が
+  // 一覧に無いためレーンが閉じずに増え続けて意味のないグラフになる（計算量も
+  // レーン数に比例して膨らむ）ので、検索中はグラフを出さない。
+  const graphVisible = showGraph && !isSearching;
+  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
+  // 表示するときだけ、commits 配列の参照が変わったとき（ページ追加など）に再計算する。
+  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
+  const graphLayout = useMemo(
+    () => computeCommitGraphLayout(graphVisible ? commits : []),
+    [graphVisible, commits],
+  );
   const selectedCount = selectedIds.size;
 
   // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
@@ -230,9 +237,11 @@ export function HistoryPanel({
               className={`btn btn-small${showGraph ? " active" : ""}`}
               onClick={() => setShowGraph((v) => !v)}
               title={
-                showGraph
-                  ? "グラフ列を非表示にする"
-                  : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+                showGraph && isSearching
+                  ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
+                  : showGraph
+                    ? "グラフ列を非表示にする"
+                    : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
               }
               aria-pressed={showGraph}
             >
@@ -318,7 +327,7 @@ export function HistoryPanel({
                     >
                       {/* #168 DAG グラフ列 — ON のとき、このコミットが属するレーンと
                           親コミットへの接続線を行の左端に表示する。 */}
-                      {showGraph && graphRow && (
+                      {graphVisible && graphRow && (
                         <CommitGraphCell row={graphRow} laneCount={graphLayout.laneCount} />
                       )}
 
