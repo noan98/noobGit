@@ -666,12 +666,47 @@ textarea {
 .link:hover {
   color: var(--accent-hover);
 }
-.link.danger {
-  color: var(--destructive);
-}
 .link:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---- 操作トリガーボタンの危険度カラー (#274) ----
+   クリック前から危険度を伝える。安全（safe）な操作は見た目を変えない
+   （色の乱用で視認性を落とさないため、クラス自体を付けない）。
+   注意（caution）はアウトライン強調程度、危険（destructive）は赤系
+   アクセントを常時薄く見せる。色はすべて #107 で定義した
+   --caution* / --destructive* トークン経由（ConfirmDialog と同じ配色）で、
+   ライト/ダーク両方に自動追従する。
+   .btn / .toolbar-btn（枠のあるボタン）と .link（枠なしテキストボタン）の
+   両方に対応する。どのリスクレベルにするかは一切ここで判断しない — 呼び出し
+   側（RepoWorkspace）が core の assess_operation の結果をそのままクラス名に
+   変換しているだけ。 */
+.btn.risk-trigger-caution,
+.toolbar-btn.risk-trigger-caution {
+  border-color: var(--caution-border);
+  background: var(--caution-bg);
+}
+.btn.risk-trigger-caution:hover:not(:disabled),
+.toolbar-btn.risk-trigger-caution:hover:not(:disabled) {
+  background: var(--caution-border);
+}
+.btn.risk-trigger-destructive,
+.toolbar-btn.risk-trigger-destructive {
+  border-color: var(--destructive-border);
+  background: var(--destructive-bg);
+  color: var(--destructive);
+}
+.btn.risk-trigger-destructive:hover:not(:disabled),
+.toolbar-btn.risk-trigger-destructive:hover:not(:disabled) {
+  background: var(--destructive-border);
+}
+/* .link は枠のないテキストボタンなので、文字色だけで伝える。 */
+.link.risk-trigger-caution {
+  color: var(--caution);
+}
+.link.risk-trigger-destructive {
+  color: var(--destructive);
 }
 
 /* ---- カスタムタイトルバー (#273) ---- */

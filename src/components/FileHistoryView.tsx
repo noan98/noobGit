@@ -8,6 +8,8 @@ interface Props {
   onClose: () => void;
   // コミット ID を渡して、その時点の内容に復元する。
   onRestore: (commitId: string) => void;
+  // #274 危険度カラー: 復元ボタンに付与する強調クラス（未取得の間は空文字）。
+  restoreRiskClass?: string;
 }
 
 // ファイル別履歴で読み込むコミットの最大件数。
@@ -26,7 +28,13 @@ function formatRelativeTime(unixSeconds: number): string {
 
 // 1ファイルのコミット履歴を一覧表示するモーダル。
 // 特定ファイルを変更したコミットだけを新しい順に並べる。
-export function FileHistoryView({ repoPath, path, onClose, onRestore }: Props) {
+export function FileHistoryView({
+  repoPath,
+  path,
+  onClose,
+  onRestore,
+  restoreRiskClass = "",
+}: Props) {
   const [commits, setCommits] = useState<CommitInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,7 +100,7 @@ export function FileHistoryView({ repoPath, path, onClose, onRestore }: Props) {
                   </div>
                 </div>
                 <button
-                  className="btn btn-small"
+                  className={`btn btn-small ${restoreRiskClass}`}
                   onClick={() => onRestore(c.id)}
                   title={`このコミット（${c.short_id}）時点の内容に復元してステージします`}
                 >
