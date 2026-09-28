@@ -772,7 +772,7 @@ pub fn validate_gitignore_pattern(pattern: &str) -> GitignorePatternCheck {
     for segment in pattern.split('/') {
         if segment.contains("**") && segment != "**" {
             return invalid(
-                "「**」は他の文字と組み合わせて使えません（例: 「**/foo」「foo/**」「a/**/b」は OK、「foo**」は NG）。",
+                "「**」が特別な意味（何階層でも一致）を持つのは「**/foo」「foo/**」「a/**/b」の形だけです。「foo**」のように他の文字と続けると普通の「*」と同じ扱いになり、意図どおりに無視されない可能性があります。",
             );
         }
     }
@@ -803,6 +803,34 @@ pub fn check_gitignore_pattern(repo: &Repository, pattern: &str) -> Result<Gitig
     })
 }
 
+/// パスの一部を `.gitignore` のパターン中で「文字どおり」に一致させるためにエスケープする。
+///
+/// ファイル名に含まれる `*` `?` `[` `]` `\` は glob の特殊文字として解釈されてしまうため
+/// `\` を前置する。行頭の `!`（否定）/ `#`（コメント）と末尾の空白（無視される）も
+/// エスケープして、そのファイル名そのものに一致するパターンにする。
+fn escape_gitignore_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        match c {
+            '*' | '?' | '[' | ']' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '!' | '#' if i == 0 => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    // 末尾の空白は Git に無視されるので、最後の 1 つをエスケープして残す。
+    if out.ends_with(' ') {
+        out.pop();
+        out.push_str("\\ ");
+    }
+    out
+}
+
 /// ファイルパスから `.gitignore` パターンの候補を生成する（#173）。
 ///
 /// 3 種類の候補を、可能な範囲で生成する:
@@ -822,10 +850,17 @@ pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
         return out;
     }
     let p = Path::new(normalized);
+    // パスの各要素を文字どおりに一致させる（区切りの `/` はそのまま）。
+    let escape_path = |s: &str| {
+        s.split('/')
+            .map(escape_gitignore_literal)
+            .collect::<Vec<_>>()
+            .join("/")
+    };
 
     // 1. このファイルのみ。
     out.push(GitignoreSuggestion {
-        pattern: format!("/{normalized}"),
+        pattern: format!("/{}", escape_path(normalized)),
         label: "このファイルだけを無視".to_string(),
         description: format!(
             "「/{normalized}」を .gitignore に追加します。同じ名前の別の場所にあるファイルには影響しません。"
@@ -834,7 +869,7 @@ pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
 
     // 2. 同じ拡張子のファイルをすべて無視（拡張子が無い・ドットファイルは省く）。
     if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-        let pattern = format!("*.{ext}");
+        let pattern = format!("*.{}", escape_gitignore_literal(ext));
         out.push(GitignoreSuggestion {
             label: "同じ拡張子のファイルをすべて無視".to_string(),
             description: format!(
@@ -848,7 +883,7 @@ pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
             let dir = parent.to_string_lossy().replace('\\', "/");
-            let pattern = format!("{dir}/");
+            let pattern = format!("{}/", escape_path(&dir));
             out.push(GitignoreSuggestion {
                 label: "このディレクトリ全体を無視".to_string(),
                 description: format!(
@@ -3852,6 +3887,23 @@ mod tests {
         let suggestions = suggest_gitignore_patterns(".env");
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].pattern, "/.env");
+    }
+
+    #[test]
+    fn suggest_gitignore_patterns_escapes_glob_special_characters() {
+        // ファイル名の `[` `]` や行頭の `#` が glob / コメントとして解釈されないようにする。
+        let suggestions = suggest_gitignore_patterns("logs[1]/#memo*.txt");
+        assert_eq!(suggestions[0].pattern, "/logs\\[1\\]/\\#memo\\*.txt");
+        assert_eq!(suggestions[1].pattern, "*.txt");
+        assert_eq!(suggestions[2].pattern, "logs\\[1\\]/");
+        // エスケープ済みの候補はそのままバリデーションを通る。
+        for s in &suggestions {
+            assert!(
+                validate_gitignore_pattern(&s.pattern).valid,
+                "{}",
+                s.pattern
+            );
+        }
     }
 
     #[test]
