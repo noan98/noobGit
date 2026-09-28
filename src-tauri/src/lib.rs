@@ -15,7 +15,7 @@ use noobgit_core::model::{
     BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CommitInfo, ConflictFile,
     FetchOutcome, FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion, LfsCandidate,
     LogPage, MergeOutcome, MergedBranchInfo, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo,
-    RepoStatus, SensitiveWarning, StashInfo, TagInfo,
+    RepoStatus, SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -366,18 +366,28 @@ fn stash_save(repo_path: String, message: String) -> Result<(), String> {
     ops::stash_save(&mut r, &message).map_err(|e| e.to_string())
 }
 
-/// 退避を作業ツリーに取り出す（一覧には残す）。
+/// 退避を作業ツリーに取り出す（一覧には残す）。コンフリクトが起きた場合も
+/// エラーにはせず、`StashRestoreOutcome.conflicted` で伝える（フロントの
+/// コンフリクト解消ウィザードへ自然につなげるため）。
 #[tauri::command]
-fn stash_apply(repo_path: String, index: usize) -> Result<(), String> {
+fn stash_apply(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
     let mut r = open(&repo_path)?;
     ops::stash_apply(&mut r, index).map_err(|e| e.to_string())
 }
 
-/// 退避を作業ツリーに取り出し、一覧から取り除く（pop）。
+/// 退避を作業ツリーに取り出し、コンフリクトが無ければ一覧から取り除く（pop）。
+/// コンフリクトが起きた場合は退避を一覧に残す（`StashRestoreOutcome.conflicted` で伝える）。
 #[tauri::command]
-fn stash_pop(repo_path: String, index: usize) -> Result<(), String> {
+fn stash_pop(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
     let mut r = open(&repo_path)?;
     ops::stash_pop(&mut r, index).map_err(|e| e.to_string())
+}
+
+/// 退避を一覧から取り除く（中身は復元できない）。undo は記録しない。
+#[tauri::command]
+fn stash_drop(repo_path: String, stash_id: String) -> Result<(), String> {
+    let mut r = open(&repo_path)?;
+    ops::stash_drop(&mut r, &stash_id).map_err(|e| e.to_string())
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。
@@ -728,6 +738,7 @@ pub fn run() {
             stash_save,
             stash_apply,
             stash_pop,
+            stash_drop,
             get_stashes,
             stash_diff,
             get_identity,

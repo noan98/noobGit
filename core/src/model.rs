@@ -294,6 +294,23 @@ pub struct StashInfo {
     pub file_count: usize,
 }
 
+/// 退避の取り出し（`stash_apply` / `stash_pop`）の結果。
+///
+/// マージと異なり `MERGE_HEAD` のような「取り込み中」を示す特別な状態は作られない
+/// （`repo.state()` は取り出し後も常に `Clean` のまま）ため、`conflicted` は index の
+/// コンフリクトエントリの有無だけで判定する。作業ツリーに未コミットの変更があり
+/// それを上書きしてしまう場合は、取り出し自体を行わず [`crate::error::CoreError::Blocked`]
+/// で中断する（この構造体は返らない）。この構造体が返るのは、実際に取り出しが行われた
+/// （＝作業ツリー・インデックスが変わった）場合のみ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashRestoreOutcome {
+    /// コンフリクト（競合）が発生し、解消が必要か。
+    /// true のときは index にコンフリクトエントリが残り、コンフリクト解消ウィザードで
+    /// 対処できる。`stash_pop` の場合、コンフリクト時は退避を一覧から取り除かない
+    /// （解消後に手動で削除するか、そのまま残すかを選べるようにするため）。
+    pub conflicted: bool,
+}
+
 /// タグ1件の情報。
 ///
 /// 軽量タグ（参照だけ）と注釈付きタグ（メッセージ・作成者を持つ）の両方を表す。
