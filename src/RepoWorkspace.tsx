@@ -1205,6 +1205,17 @@ export function RepoWorkspace({
             ? `リモート「${outcome.remote}」から最新情報を取得しました（追跡ブランチ ${outcome.updated_refs} 件を更新）。`
             : `リモート「${outcome.remote}」を確認しました。新しい変更はありませんでした。`;
         showToast(msg, "info");
+        // #268 fetch のプルーニング対応: リモートで削除済みのブランチに対応する追跡
+        // ブランチを自動で整理したら、それを別トーストで伝える（ローカルブランチ本体は
+        // 削除していないので info 扱い）。
+        if (outcome.pruned.length > 0) {
+          const names = outcome.pruned.slice(0, 3).join("、");
+          const more = outcome.pruned.length > 3 ? " など" : "";
+          showToast(
+            `リモートで削除済みの追跡ブランチ ${outcome.pruned.length} 件（${names}${more}）を整理しました。`,
+            "info",
+          );
+        }
       },
       { refresh: REFRESH_BY_OP.fetch, networkOp: true },
     );
