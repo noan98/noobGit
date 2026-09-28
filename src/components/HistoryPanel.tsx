@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
-import { CommitGraph } from "./CommitGraph";
+import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
+import { computeCommitGraphLayout } from "../lib/commitGraph";
 
 interface Props {
   commits: CommitInfo[];
@@ -131,8 +132,14 @@ export function HistoryPanel({
   repoPath,
   onResetTo,
 }: Props) {
-  // #51 DAG グラフ — ON/OFF トグル状態。
+  // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
+  // グラフ列（レーン線・ノード）を表示する。
   const [showGraph, setShowGraph] = useState(false);
+
+  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
+  // commits 配列の参照が変わったとき（検索・ページ追加など）だけ再計算する。
+  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
+  const graphLayout = useMemo(() => computeCommitGraphLayout(commits), [commits]);
 
   // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
   const [activeTab, setActiveTab] = useState<"commits" | "reflog">("commits");
@@ -218,11 +225,15 @@ export function HistoryPanel({
         {/* コミットタブ専用のコントロール */}
         {activeTab === "commits" && (
           <>
-            {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+            {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル */}
             <button
               className={`btn btn-small${showGraph ? " active" : ""}`}
               onClick={() => setShowGraph((v) => !v)}
-              title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+              title={
+                showGraph
+                  ? "グラフ列を非表示にする"
+                  : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+              }
               aria-pressed={showGraph}
             >
               {showGraph ? "グラフ 非表示" : "グラフ 表示"}
@@ -276,11 +287,6 @@ export function HistoryPanel({
             />
           </div>
 
-          {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
-          {showGraph && commits.length > 0 && (
-            <CommitGraph commits={commits} />
-          )}
-
           {commits.length === 0 ? (
             isSearching ? (
               <EmptyState
@@ -304,11 +310,18 @@ export function HistoryPanel({
                   const palette = authorPalette(c.author_name);
                   const initials = authorInitials(c.author_name);
                   const isCompareBase = compareBaseId === c.id;
+                  const graphRow = graphLayout.rows[idx];
                   return (
                     <li
                       key={c.id}
                       className={`commit-row${isCompareBase ? " compare-base" : ""}`}
                     >
+                      {/* #168 DAG グラフ列 — ON のとき、このコミットが属するレーンと
+                          親コミットへの接続線を行の左端に表示する。 */}
+                      {showGraph && graphRow && (
+                        <CommitGraphCell row={graphRow} laneCount={graphLayout.laneCount} />
+                      )}
+
                       {/* リベース対象の選択チェックボックス */}
                       <input
                         type="checkbox"
