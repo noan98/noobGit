@@ -170,6 +170,35 @@ Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実
 UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
 ので、UI が動くと主張するのではなく、その旨を明示すること。
 
+### スナップショットテスト（insta）
+
+`core/src/ops.rs` の一部の出力（`CommitInfo`, `StashInfo` の自動命名, squash の
+合成メッセージ形式など、serde でフロントに渡る「形式」）は [insta](https://insta.rs/)
+のスナップショットテストで固定している。スナップショットファイルは
+`core/src/snapshots/` に置き、テストコードと一緒にコミットする。コミット id /
+short_id / タイムスタンプなど実行ごとに変わる値は insta の redaction
+（`{ ".id" => "[id]", ... }`）で伏せているが、伏せる前に長さ・16進であることなど
+形式そのものを通常の `assert!` で検証してから伏せている。新しく形式を固定したい
+出力を増やすときも、この二段構え（形式を assert → 変わる値だけ redaction）を
+踏襲すること。
+
+スナップショットを更新する（=挙動を意図的に変えた）ときの手順:
+
+```bash
+cargo install cargo-insta   # 未インストールなら（任意。無くても運用できる）
+
+cargo insta test            # core のスナップショットテストを実行
+cargo insta review          # 差分を1件ずつ確認して採用/却下
+```
+
+`cargo-insta` CLI が無い環境では、`INSTA_UPDATE=always cargo test -p
+noobgit-core` でスナップショットを直接更新できる（レビューは無しでその場で
+上書きされる）。更新後は `.snap` の内容を必ず自分の目で確認し、意図した変更か
+確かめてからコミットすること。作業後に `.snap.new`（未レビューの保留ファイル）
+が残っていないか確認し、残っていれば削除するか `cargo insta review` で解消する
+（`.snap.new` はコミットしない）。CI は `INSTA_UPDATE=no` を明示しているため、
+更新を忘れてコミットするとスナップショット不一致でテストが失敗する。
+
 ## 規約
 
 - **言語:** ユーザー向けの文字列、エラーメッセージ、ドキュメントコメント、コード
@@ -266,7 +295,10 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     このステップの終了コードでこれまで通り判定する（`continue-on-error` は
     付けない）。コード計装は独自の RUSTFLAGS を注入し `RUSTC_WRAPPER=sccache`
     と競合しうるため、このステップに限り `RUSTC_WRAPPER` を空文字で上書きして
-    sccache を無効化する（他のステップは通常どおり sccache を使う）。続く
+    sccache を無効化する（他のステップは通常どおり sccache を使う）。同じ
+    ステップで `INSTA_UPDATE: "no"` も明示し、insta のスナップショット
+    テスト（`core/src/snapshots/`）が不一致のとき確実に失敗させる（insta は
+    CI 環境変数を検知して自動的に no になるが、明示して意図を残している）。続く
     `cargo llvm-cov report --summary-only >> $GITHUB_STEP_SUMMARY` ステップは、
     直前のステップで収集済みのカバレッジデータを整形するだけでテストを
     再実行せず、モジュール別カバレッジ率をジョブサマリーに表示する。テストの
