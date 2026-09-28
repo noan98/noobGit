@@ -1502,6 +1502,19 @@ textarea {
   pointer-events: none;
 }
 
+/* ---- #271 仮想スクロール ----
+   コミット一覧・reflog 一覧は絶対配置された行を持つスクロール領域。表示範囲
+   ＋オーバースキャン分だけが DOM に生成されるため、数千件でも描画コストが
+   一定に保たれる（詳細は HistoryPanel.tsx の commitsVirtualizer 参照）。
+   高さは file-history-commits（ファイル別履歴モーダル）と同じ vh ベースの
+   上限方式に合わせている。 */
+.commits-scroll,
+.reflog-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+  position: relative;
+}
+
 /* ---- HistoryPanel コミット行リデザイン (#109) ---- */
 .commit-row {
   display: flex;
@@ -1510,7 +1523,10 @@ textarea {
   padding: 8px 0;
   border-bottom: 1px solid var(--border-muted);
 }
-.commit-row:last-child {
+/* #271: 絶対配置の行は DOM 上の最後の要素が必ずしも最終コミットとは限らない
+   （仮想化で表示範囲だけが描画されるため）。:last-child の代わりに、実際の
+   最終行かどうかを HistoryPanel.tsx 側で判定して付与するクラスを使う。 */
+.commit-row.commit-row-last {
   border-bottom: none;
 }
 .commit-avatar {
