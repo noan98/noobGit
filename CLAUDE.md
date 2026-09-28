@@ -154,6 +154,7 @@ npm run typecheck        # tsc --noEmit
 
 ```bash
 cargo test -p noobgit-core    # core のテストを実行
+cargo bench -p noobgit-core   # core のベンチマークを実行（下記参照）
 cargo fmt                     # Rust を整形
 cargo clippy                  # Rust を lint
 npm run typecheck             # TS の型チェック（strict, noUnusedLocals/Parameters）
@@ -164,6 +165,29 @@ Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実
 フロントエンドの変更を完了と報告する前に `npm run typecheck` を実行すること。
 UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
 ので、UI が動くと主張するのではなく、その旨を明示すること。
+
+### ベンチマーク（`core/benches/`）
+
+`core::repo` の主要な読み取り関数（`status` / `log_paged` / `diff_unstaged` /
+`blame_file` / `get_conflicts`）に対する criterion ベンチを `core/benches/repo_bench.rs`
+に置き、大規模リポジトリでのパフォーマンスリグレッションを検知する（Issue #160）。
+`core/benches/support/mod.rs` に、10,000 コミットのベンチ用リポジトリを高速に
+生成するヘルパーがある — `test_support::TestRepo` は `#[cfg(test)]` 専用で
+ベンチ（別クレート扱い）からは使えないため、ここに専用に用意している。
+ワーキングツリー／インデックスへ毎コミット書き込むと生成が非常に遅くなるため、
+`TreeUpdateBuilder` で直前のツリーとの差分だけを適用し、コミットを ODB に
+直接書き込む。
+
+```bash
+cargo bench -p noobgit-core                                    # フルの計測（数十秒程度）
+cargo bench -p noobgit-core --bench repo_bench -- \
+  --warm-up-time 1 --measurement-time 3                        # 手元で手早く確認する場合
+```
+
+`cargo bench -p noobgit-core` は通常の `cargo test` には一切影響しない
+（別ターゲットなので `cargo test` はビルドも実行もしない）。通常の PR の CI
+（`ci.yml`）にも含めない — 週次スケジュールの `.github/workflows/bench.yml`
+（後述）でのみ実行し、結果をジョブサマリーに出す。
 
 ## 規約
 
@@ -319,6 +343,22 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
   Issue が open のまま残ってしまうため。そのため `permissions` に `issues:
   write` を加えている。クローズはベストエフォートで、失敗してもマージ済みの
   ワークフローは失敗させない。
+- **`workflows/bench.yml`** — `core` の主要な読み取り関数（`status` /
+  `log_paged` / `diff_unstaged` / `blame_file` / `get_conflicts`）を
+  10,000 コミットの一時リポジトリで計測し、パフォーマンスリグレッションを
+  検知する（Issue #160、`core/benches/`）。**通常の PR の CI（`ci.yml`）には
+  含めない** — `schedule`（`0 3 * * 1`、毎週月曜 03:00 UTC）と
+  `workflow_dispatch` のみでトリガーし、`ci.yml` 自体は変更しない。
+  `cargo bench -p noobgit-core` は noobgit-core とその依存関係だけをビルド
+  し、`src-tauri` はビルド対象に入らないため、Tauri 2 の Linux システム依存
+  （apt）もフロントエンドのビルドも不要（`ci.yml` の rust ジョブと違い、
+  checkout・Rust セットアップ・キャッシュだけで足りる）。`cargo bench` の
+  `--output-format bencher` オプションで
+  `test <名前> ... bench: <ns> ns/iter (+/- <誤差>)` 形式の1行1ベンチの出力に
+  し、後続の Python ステップでそれをパースしてジョブサマリー
+  （`$GITHUB_STEP_SUMMARY`）に表として出す。あわせて Issue #160 の受け入れ
+  条件「10k コミットで `log_paged(100)` が 500ms 以内」を機械的にチェックし、
+  超えていればジョブを失敗させる。
 - **`dependabot.yml`** — 3 つのエコシステムに対する週次の更新 PR: `cargo`
   （ルートワークスペース）、`npm`（フロントエンド）、`github-actions`（ピン留め
   したアクション SHA を最新に保つ）。マイナー/パッチの更新はエコシステムごとに

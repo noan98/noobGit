@@ -1,0 +1,106 @@
+# ベンチ: core の主要な読み取り関数（status / log_paged / diff_unstaged /
+# blame_file / get_conflicts）を大規模リポジトリ相当（10,000コミット）で計測し、
+# パフォーマンスリグレッションを検知する（Issue #160）。
+#
+# 通常のPRのCI（ci.yml）には含めない — ベンチは1回あたり数十秒〜数分かかり、
+# 実行結果もマシンの負荷でぶれるため、毎PRで走らせるものではない。週次スケジュール
+# ＋手動実行のみとし、ci.yml 自体は変更しない。
+#
+# `cargo bench -p noobgit-core` は noobgit-core とその依存関係だけをビルドする
+# （src-tauri はビルド対象に入らない）ため、Tauri 2 のLinuxシステム依存（apt）や
+# フロントエンドのビルドは不要。
+name: bench
+
+on:
+  schedule:
+    # 毎週月曜 03:00 UTC。
+    - cron: '0 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: core ベンチマーク（10kコミット）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ". -> target"
+
+      # --output-format bencher は `test <名前> ... bench: <ns> ns/iter (+/- <誤差>)`
+      # という1行1ベンチのシンプルな形式で出力する（criterion独自形式より後段の
+      # パースが容易なため採用）。warm-up/measurement は既定より短くして、
+      # 週次ジョブの実行時間を抑える（それでも受け入れ条件の検証には十分な精度）。
+      - name: cargo bench -p noobgit-core
+        run: |
+          cargo bench -p noobgit-core --locked -- \
+            --output-format bencher --noplot \
+            --warm-up-time 1 --measurement-time 3 \
+            | tee bench_output.txt
+
+      # ベンチ結果をジョブサマリーに表として出す。あわせて、Issue #160 の受け入れ
+      # 条件「10kコミットで log_paged(100) が 500ms 以内」を機械的にチェックし、
+      # 超えていればこのジョブを失敗させてリグレッションに気づけるようにする。
+      - name: ベンチ結果をジョブサマリーに出力 + しきい値チェック
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          import sys
+
+          LOG_PAGED_NAME = "repo::log_paged(0, 100) (10k commits)"
+          THRESHOLD_NS = 500_000_000  # 500ms（Issue #160 の受け入れ条件）
+
+          pattern = re.compile(
+              r"^test (?P<name>.+?) \.\.\. bench:\s*(?P<ns>[\d,]+) ns/iter \(\+/- (?P<err>[\d,]+)\)$"
+          )
+
+          rows = []
+          log_paged_ns = None
+          with open("bench_output.txt", encoding="utf-8") as f:
+              for line in f:
+                  m = pattern.match(line.strip())
+                  if not m:
+                      continue
+                  name = m.group("name")
+                  ns = int(m.group("ns").replace(",", ""))
+                  err = int(m.group("err").replace(",", ""))
+                  rows.append((name, ns, err))
+                  if name == LOG_PAGED_NAME:
+                      log_paged_ns = ns
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("### ベンチマーク結果（core, 10kコミットの一時リポジトリ）\n\n")
+              if rows:
+                  f.write("| ベンチマーク | 時間 (ms) | 誤差 (+/- ms) |\n|---|---|---|\n")
+                  for name, ns, err in rows:
+                      f.write(f"| {name} | {ns / 1_000_000:.3f} | {err / 1_000_000:.3f} |\n")
+              else:
+                  f.write("ベンチ結果をパースできませんでした。以下の生の出力を確認してください。\n")
+              f.write("\n<details><summary>生の出力（--output-format bencher）</summary>\n\n```\n")
+              with open("bench_output.txt", encoding="utf-8") as raw:
+                  f.write(raw.read())
+              f.write("```\n</details>\n")
+
+          if log_paged_ns is None:
+              print("::warning::log_paged(100) のベンチ結果が出力から見つかりませんでした")
+              sys.exit(0)
+
+          print(f"log_paged(100) (10k commits): {log_paged_ns / 1_000_000:.3f} ms")
+          if log_paged_ns > THRESHOLD_NS:
+              print(
+                  f"::error::log_paged(100) が10kコミットで {log_paged_ns / 1_000_000:.1f}ms "
+                  "かかり、しきい値 500ms を超えました（Issue #160 の受け入れ条件）"
+              )
+              sys.exit(1)
+          EOF
