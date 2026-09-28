@@ -195,6 +195,25 @@ pub struct CommitInfo {
     pub parent_ids: Vec<String>,
 }
 
+/// コミット履歴をカーソルベースでページングしたときの1ページ分の結果。
+///
+/// `repo::LogCursorStore::first_page` / `LogCursorStore::next_page`（Issue #277）が返す。
+/// `cursor` は「続きがあるときに次回呼び出しへそのまま渡すオペークな ID」で、
+/// 中身（どのリポジトリのどこまで読んだか）は一切意味を持たせない。`None` は
+/// 「もう続きが無い」か「カーソルが失効した」のどちらか（`has_more` が false なら
+/// 前者、true なのに `cursor` が無いことは無い）。カーソルが失効していた場合、
+/// Tauri 層（`get_log_page` コマンド）が従来の skip ベース取得へ自動でフォール
+/// バックするので、フロントエンドはカーソル切れを個別に扱わなくてよい。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPage {
+    pub commits: Vec<CommitInfo>,
+    /// 続きがあるときの次回カーソル。末尾まで読み終えたときは `None`。
+    pub cursor: Option<String>,
+    /// `commits.len()` が要求した `max` と一致するか（＝続きがあるとみなす簡易判定。
+    /// 既存の skip ベース API・フロントエンドの `hasMoreCommits` 判定と同じ約束事）。
+    pub has_more: bool,
+}
+
 /// blame（行ごとの最終変更コミット）の1かたまり。
 ///
 /// 連続する行が同じコミットで最後に変更された場合、それらをまとめて1つの hunk として返す。
