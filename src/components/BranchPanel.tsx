@@ -8,6 +8,9 @@ import type {
 import { EmptyState } from "./EmptyState";
 import { AheadBehindBadge } from "./AheadBehindBadge";
 import { Icon } from "./Icon";
+// #274 危険度カラー: push・delete_branch はブランチごとに結果が変わりうる
+// （保護ブランチかどうか）ため、raw な riskLevels マップを受け取ってこの中で引く。
+import { riskTriggerClassFor, type RiskLevels } from "../lib/risk";
 
 interface Props {
   branches: BranchInfo[];
@@ -25,6 +28,12 @@ interface Props {
   onBulkDeleteMerged: (names: string[]) => void;
   // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
   networkBusy?: boolean;
+  // 保護ブランチ名の一覧（#169）。設定は git config に保存され、リポジトリごとに独立する。
+  protectedBranches: string[];
+  onAddProtected: (name: string) => void;
+  onRemoveProtected: (name: string) => void;
+  // #274 危険度カラー。未取得の間は空オブジェクト（Safe相当の通常スタイル）。
+  riskLevels?: RiskLevels;
 }
 
 export function BranchPanel({
@@ -39,9 +48,25 @@ export function BranchPanel({
   onForcePush,
   onBulkDeleteMerged,
   networkBusy = false,
+  protectedBranches,
+  onAddProtected,
+  onRemoveProtected,
+  riskLevels = {},
 }: Props) {
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
+  const [newProtectedName, setNewProtectedName] = useState("");
+  // 保護を外すのは安全性を弱める操作なので、ワンクリックでは外さず確認を挟む。
+  // 確認待ちのブランチ名（null = 確認待ちなし）。
+  const [pendingUnprotect, setPendingUnprotect] = useState<string | null>(null);
+
+  function submitAddProtected() {
+    const name = newProtectedName.trim();
+    if (name) {
+      onAddProtected(name);
+      setNewProtectedName("");
+    }
+  }
   const local = branches.filter((b) => !b.is_remote);
   const remote = branches.filter((b) => b.is_remote);
 
@@ -191,6 +216,7 @@ export function BranchPanel({
                   {b.name}
                   {b.is_protected && (
                     <span className="protected" title="保護ブランチ">
+                      <Icon name="protected" />
                       保護
                     </span>
                   )}
@@ -213,7 +239,8 @@ export function BranchPanel({
                 </span>
                 <span className="branch-actions">
                   <button
-                    className="link"
+                    // #274 危険度カラー: 保護ブランチ（main/master等）への送信だけ注意色。
+                    className={`link ${riskTriggerClassFor(riskLevels, "push", b.name)}`}
                     onClick={() => onPush(b.name)}
                     disabled={networkBusy}
                     title={
@@ -225,13 +252,16 @@ export function BranchPanel({
                     {networkBusy ? "送信中…" : "送信"}
                   </button>
                   {!b.is_head && (
-                    <button className="link" onClick={() => onSwitch(b.name)}>
+                    <button
+                      className={`link ${riskTriggerClassFor(riskLevels, "switch_branch")}`}
+                      onClick={() => onSwitch(b.name)}
+                    >
                       切り替え
                     </button>
                   )}
                   {!b.is_head && (
                     <button
-                      className="link"
+                      className={`link ${riskTriggerClassFor(riskLevels, "merge")}`}
                       onClick={() => onMerge(b.name)}
                       title="このブランチの変更を現在のブランチに取り込みます（マージ）"
                     >
@@ -240,14 +270,15 @@ export function BranchPanel({
                   )}
                   {!b.is_head && (
                     <button
-                      className="link danger"
+                      // #274 危険度カラー: 保護ブランチの削除は destructive、それ以外は caution。
+                      className={`link ${riskTriggerClassFor(riskLevels, "delete_branch", b.name)}`}
                       onClick={() => onDelete(b.name)}
                     >
                       削除
                     </button>
                   )}
                   <button
-                    className="link danger"
+                    className={`link ${riskTriggerClassFor(riskLevels, "force_push")}`}
                     onClick={() => onForcePush(b.name)}
                     disabled={networkBusy}
                     title={
@@ -316,6 +347,71 @@ export function BranchPanel({
           </ul>
         </div>
       )}
+
+      <div className="protected-branches-settings">
+        <h3>
+          <Icon name="protected" /> 保護ブランチの設定
+        </h3>
+        <p className="settings-field-help">
+          保護ブランチへの削除・強制送信（force push）は「破壊的」操作として強く警告されます。
+          一覧を空にすると既定値（main / master）に戻ります。
+        </p>
+
+        {protectedBranches.length > 0 ? (
+          <ul className="protected-branches-list">
+            {protectedBranches.map((name) => (
+              <li key={name}>
+                <Icon name="protected" />
+                <span>{name}</span>
+                {pendingUnprotect === name ? (
+                  <>
+                    <span className="protected-unprotect-confirm">
+                      保護を外すと、削除や強制送信の警告が弱まります。
+                    </span>
+                    <button
+                      className="link"
+                      onClick={() => {
+                        setPendingUnprotect(null);
+                        onRemoveProtected(name);
+                      }}
+                    >
+                      外す
+                    </button>
+                    <button
+                      className="link"
+                      onClick={() => setPendingUnprotect(null)}
+                    >
+                      やめる
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="link"
+                    onClick={() => setPendingUnprotect(name)}
+                    title={`「${name}」を保護対象から外す`}
+                  >
+                    <Icon name="close" label={`「${name}」を保護対象から外す`} />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="protected-branches-empty">読み込み中…</p>
+        )}
+
+        <div className="branch-create">
+          <input
+            value={newProtectedName}
+            placeholder="保護するブランチ名（例: release）"
+            onChange={(e) => setNewProtectedName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitAddProtected()}
+          />
+          <button className="btn btn-small" onClick={submitAddProtected}>
+            追加
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

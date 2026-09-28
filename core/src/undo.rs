@@ -29,6 +29,16 @@ pub enum UndoAction {
     /// 指定パスのステージを解除する（変更内容は保持）。hunk 単位のステージの取り消しに使う。
     /// HEAD があれば HEAD からそのパスを index に戻し、無ければ index から取り除く（冪等）。
     UnstagePath { path: String },
+    /// 指定パスのインデックスエントリを、記録した blob（と実行モード）に置き換える。
+    /// hunk 単位のアンステージ（`unstage_hunk`）の取り消し（再ステージ）に使う。
+    /// `blob` が `None` なら操作前にそのパスがインデックスに無かったことを表し、
+    /// 取り消しは index からそのパスを取り除く。同じ内容を何度適用しても結果は
+    /// 変わらない（冪等）。
+    RestoreIndexEntry {
+        path: String,
+        blob: Option<String>,
+        mode: u32,
+    },
     /// 削除したタグを再作成する。`message` が Some なら注釈付き、None なら軽量タグ。
     /// 既に同名タグがあれば何もしない（冪等）。
     RecreateTag {
@@ -36,6 +46,8 @@ pub enum UndoAction {
         target: String,
         message: Option<String>,
     },
+    /// 作成したタグを削除して取り消す。既に削除済みなら何もしない（冪等）。
+    DeleteTag { name: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -263,6 +275,40 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                 }
             }
         }
+        UndoAction::RestoreIndexEntry { path, blob, mode } => {
+            let mut index = repo.index()?;
+            let p = std::path::Path::new(path);
+            match blob {
+                Some(blob_str) => {
+                    let oid = git2::Oid::from_str(blob_str)?;
+                    // ctime/mtime 等は 0 のままでよい（libgit2 は次回のステータス走査時に
+                    // 実ファイルと比較して自動的に再計算する）。mode と id と path だけが
+                    // 復元に必要な情報。
+                    let entry = git2::IndexEntry {
+                        ctime: git2::IndexTime::new(0, 0),
+                        mtime: git2::IndexTime::new(0, 0),
+                        dev: 0,
+                        ino: 0,
+                        mode: *mode,
+                        uid: 0,
+                        gid: 0,
+                        file_size: 0,
+                        id: oid,
+                        flags: 0,
+                        flags_extended: 0,
+                        path: path.as_bytes().to_vec(),
+                    };
+                    index.add(&entry)?;
+                }
+                None => {
+                    // 操作前はこのパスがインデックスに無かった。すでに無ければ何もしない（冪等）。
+                    if index.get_path(p, 0).is_some() {
+                        index.remove_path(p)?;
+                    }
+                }
+            }
+            index.write()?;
+        }
         UndoAction::RecreateTag {
             name,
             target,
@@ -285,6 +331,12 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                         repo.tag_lightweight(name, &obj, false)?;
                     }
                 }
+            }
+        }
+        UndoAction::DeleteTag { name } => {
+            // 既に削除済みなら何もしない（冪等）。
+            if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+                repo.tag_delete(name)?;
             }
         }
     }
@@ -677,6 +729,150 @@ mod tests {
         assert!(peek(&repo).unwrap().is_none());
     }
 
+    // SoftResetTo: 固定oidへのソフトリセットは2回適用してもエラーにならず、
+    // HEADが同じ位置に留まり、インデックス・作業ツリーは変わらない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_soft_reset_to() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let first = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let repo = fx.open();
+        let action = UndoAction::SoftResetTo {
+            previous: first.clone(),
+        };
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+
+        // 2回目も成功し、HEADは同じ位置のまま。
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+    }
+
+    // HardResetTo: 固定oidへのハードリセットも2回適用してエラーにならず、
+    // 作業ツリーの内容も同じ結果に落ち着く（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_hard_reset_to() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let first = fx.head_oid().to_string();
+
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let repo = fx.open();
+        let action = UndoAction::HardResetTo {
+            previous: first.clone(),
+        };
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "1"
+        );
+
+        apply(&repo, &action).unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap().to_string(), first);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "1"
+        );
+    }
+
+    // UncommitInitial: 最初のコミットを取り消すブランチ参照の削除は、
+    // 2回適用しても（2回目は参照が既に無いので no-op）エラーにならない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_uncommit_initial() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        // 前提: 適用前は main が存在する（存在しないまま「無いこと」を確かめる空振りを防ぐ）。
+        assert!(repo.find_reference("refs/heads/main").is_ok());
+        let action = UndoAction::UncommitInitial {
+            branch: "main".into(),
+        };
+        apply(&repo, &action).unwrap();
+        assert!(repo.find_reference("refs/heads/main").is_err());
+
+        // 2回目: 参照は既に無いので no-op。エラーにならない。
+        apply(&repo, &action).unwrap();
+        assert!(repo.find_reference("refs/heads/main").is_err());
+    }
+
+    // UnstagePath: ステージ済みの変更をHEADの内容に戻す（アンステージ）操作を
+    // 2回適用しても、エラーにならず結果（未ステージ）が変わらない（冪等）。
+    #[test]
+    fn apply_is_idempotent_for_unstage_path() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // HEADと異なる内容をステージする。
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+
+        let repo = fx.open();
+        // 前提: 適用前はステージ済みの変更がある。
+        assert_eq!(crate::repo::status(&repo).unwrap().staged.len(), 1);
+        let action = UndoAction::UnstagePath {
+            path: "a.txt".into(),
+        };
+        apply(&repo, &action).unwrap();
+        assert!(crate::repo::status(&repo).unwrap().staged.is_empty());
+
+        // 2回目も成功し、引き続き未ステージのまま。
+        apply(&repo, &action).unwrap();
+        assert!(crate::repo::status(&repo).unwrap().staged.is_empty());
+    }
+
+    // RecreateTag: 削除したタグの再作成は、2回適用しても（2回目は同名タグが
+    // 既に存在するので no-op）エラーにならない（冪等）。軽量・注釈付きの両方を確認する。
+    #[test]
+    fn apply_is_idempotent_for_recreate_tag() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let target = fx.head_oid().to_string();
+
+        let repo = fx.open();
+
+        // 軽量タグ。
+        let lightweight = UndoAction::RecreateTag {
+            name: "v1".into(),
+            target: target.clone(),
+            message: None,
+        };
+        apply(&repo, &lightweight).unwrap();
+        assert!(repo.find_reference("refs/tags/v1").is_ok());
+        apply(&repo, &lightweight).unwrap();
+        assert!(repo.find_reference("refs/tags/v1").is_ok());
+
+        // 注釈付きタグ。
+        let annotated = UndoAction::RecreateTag {
+            name: "v2".into(),
+            target,
+            message: Some("リリース v2".into()),
+        };
+        apply(&repo, &annotated).unwrap();
+        assert!(repo.find_reference("refs/tags/v2").is_ok());
+        apply(&repo, &annotated).unwrap();
+        assert!(repo.find_reference("refs/tags/v2").is_ok());
+    }
+
     // apply 後に save が失敗して同じUndoが再実行される事態に備え、apply は冪等であること。
     #[test]
     fn apply_is_idempotent_for_branch_actions() {
@@ -706,5 +902,54 @@ mod tests {
         assert!(repo
             .find_branch("feature", git2::BranchType::Local)
             .is_err());
+    }
+
+    // RestoreIndexEntry: 同じ内容を2回適用してもインデックスの状態は変わらない（冪等）。
+    // blob が Some（既存パスの復元）と None（操作前は未追跡だったパスの復元）の両方を確認する。
+    #[test]
+    fn restore_index_entry_apply_is_idempotent_for_both_some_and_none_blob() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "hello");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        let blob_id = repo
+            .index()
+            .unwrap()
+            .get_path(std::path::Path::new("a.txt"), 0)
+            .unwrap()
+            .id
+            .to_string();
+
+        // Some(blob): インデックスから外してから、記録した blob へ戻す。2回適用しても同じ。
+        {
+            let mut index = repo.index().unwrap();
+            index.remove_path(std::path::Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+        }
+        let restore = UndoAction::RestoreIndexEntry {
+            path: "a.txt".into(),
+            blob: Some(blob_id.clone()),
+            mode: 0o100644,
+        };
+        apply(&repo, &restore).unwrap();
+        apply(&repo, &restore).unwrap();
+        let index = repo.index().unwrap();
+        let entry = index
+            .get_path(std::path::Path::new("a.txt"), 0)
+            .expect("a.txt がインデックスに復元されていること");
+        assert_eq!(entry.id.to_string(), blob_id);
+
+        // None: 操作前はパスがインデックスに無かったケース。2回適用してもエラーにならず、
+        // インデックスに存在しないまま（冪等）。
+        let remove = UndoAction::RestoreIndexEntry {
+            path: "a.txt".into(),
+            blob: None,
+            mode: 0,
+        };
+        apply(&repo, &remove).unwrap();
+        apply(&repo, &remove).unwrap();
+        let index = repo.index().unwrap();
+        assert!(index.get_path(std::path::Path::new("a.txt"), 0).is_none());
     }
 }

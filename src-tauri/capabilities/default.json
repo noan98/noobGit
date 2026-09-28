@@ -1,7 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "noobGit メインウィンドウの既定権限。独自コマンドはここで明示せずとも呼び出せる。",
+  "description": "noobGit メインウィンドウの既定権限。独自コマンドはここで明示せずとも呼び出せる。カスタムタイトルバー (#273) のウィンドウ操作は core:default に含まれないため個別に許可する。",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-maximized"
+  ]
 }

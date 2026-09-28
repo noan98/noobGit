@@ -211,6 +211,127 @@ fn normalize_hunk_header(header: &[u8]) -> String {
     String::from_utf8_lossy(header).trim_end().to_string()
 }
 
+/// 指定ファイルのステージ済み差分のうち、`hunk_header` に一致する hunk（変更の塊）だけを
+/// アンステージする（＝ index を HEAD 側へ部分的に戻す）。作業ツリーは一切変更しない。
+///
+/// `file_path` のステージ済み差分（HEAD と index の差分）を取り、`hunk_header`
+/// （例 `@@ -1,3 +1,4 @@`。ステージ済み差分表示で使われているのと同じヘッダー文字列）に
+/// 一致する hunk だけを index から取り除く。ほかの hunk はステージされたまま残る。
+/// 該当 hunk が見つからなければ入力エラーにする。`stage_hunk` と対になる操作。
+///
+/// 取り消し用に、操作前のこのパスのインデックスエントリ（blob と実行モード。無ければ
+/// 「無かった」こと）を記録する（`RestoreIndexEntry`）。取り消すと hunk が再びステージ
+/// された状態に戻る（＝再ステージ）。
+pub fn unstage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Result<()> {
+    let file_path = file_path.trim();
+    let hunk_header = hunk_header.trim();
+    if file_path.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "アンステージするファイルを指定してください。".to_string(),
+        ));
+    }
+    if hunk_header.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "アンステージする変更の塊（hunk）を指定してください。".to_string(),
+        ));
+    }
+    ensure_repo_relative_path(file_path)?;
+    if is_submodule_path(repo, file_path) {
+        return Err(CoreError::Blocked(submodule_blocked_message(file_path)));
+    }
+
+    let index = repo.index()?;
+    let head_tree = match repo.head() {
+        Ok(h) => Some(h.peel_to_tree()?),
+        Err(_) => None,
+    };
+
+    // ステージ済み差分（HEAD → index）の中で、対象 hunk が何番目（0始まり）かを求める。
+    // 対象パスだけに絞っているので、この差分には多くとも1ファイル分の hunk しか出ない。
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.pathspec(file_path).context_lines(3);
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut diff_opts))?;
+
+    let position = Cell::new(None::<usize>);
+    let counter = Cell::new(0usize);
+    diff.foreach(
+        &mut |_delta, _progress| true,
+        None,
+        Some(&mut |_delta, hunk| {
+            let idx = counter.get();
+            counter.set(idx + 1);
+            if position.get().is_none() && normalize_hunk_header(hunk.header()) == hunk_header {
+                position.set(Some(idx));
+            }
+            true
+        }),
+        None,
+    )?;
+    let target_position = position.get().ok_or_else(|| {
+        CoreError::InvalidInput(format!(
+            "指定した変更の塊（hunk）が見つかりませんでした: {hunk_header}"
+        ))
+    })?;
+
+    // 取り消し用に、操作前のインデックスエントリ（blob と実行モード）を記録しておく。
+    // 存在しない（＝新規ファイルがこの hunk しか持たず、この後インデックスから消える）
+    // 場合は None のまま記録し、undo 側でそれに合わせて「無かった」状態へ戻す。
+    let before = index
+        .get_path(Path::new(file_path), 0)
+        .map(|e| (e.id.to_string(), e.mode));
+
+    // 同じ内容を反転させた差分（old側=index、new側=HEAD）を作り、位置が一致する hunk だけを
+    // index に適用する。index は現在この反転差分の old 側と一致しているので、適用すると
+    // その hunk の範囲だけが HEAD の内容に戻る（＝アンステージ）。作業ツリーには触れない。
+    let mut rev_opts = git2::DiffOptions::new();
+    rev_opts.pathspec(file_path).context_lines(3).reverse(true);
+    let reversed_diff =
+        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut rev_opts))?;
+
+    let path_for_delta = file_path.to_string();
+    let mut apply_opts = git2::ApplyOptions::new();
+    // 対象パス以外は触らない。
+    apply_opts.delta_callback(move |delta| {
+        delta
+            .and_then(|d| d.new_file().path())
+            .map(|p| p.to_string_lossy() == path_for_delta)
+            .unwrap_or(false)
+    });
+    // 反転差分の中で、先ほど数えた位置と同じ hunk だけを選択適用する。
+    let apply_counter = Cell::new(0usize);
+    apply_opts.hunk_callback(move |_hunk| {
+        let idx = apply_counter.get();
+        apply_counter.set(idx + 1);
+        idx == target_position
+    });
+
+    repo.apply(
+        &reversed_diff,
+        git2::ApplyLocation::Index,
+        Some(&mut apply_opts),
+    )
+    .map_err(|e| {
+        CoreError::Git(format!(
+            "変更の塊（hunk）のアンステージに失敗しました: {}",
+            e.message()
+        ))
+    })?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Unstage,
+            description: format!("「{file_path}」の一部（hunk）のアンステージを取り消す"),
+            action: UndoAction::RestoreIndexEntry {
+                path: file_path.to_string(),
+                blob: before.as_ref().map(|(id, _)| id.clone()),
+                mode: before.map(|(_, m)| m).unwrap_or(0),
+            },
+        },
+    );
+    Ok(())
+}
+
 /// ステージされた変更をコミットする。直後に Undo で取り消せる。
 ///
 /// マージ中（コンフリクト解消後）にコミットすると、取り込み元（MERGE_HEAD）を第2親に
@@ -948,6 +1069,43 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 保護ブランチ一覧をリポジトリローカルの git config `noobgit.protectedBranches`
+/// に保存する（カンマ区切り文字列。例: `main,master,release`）。
+///
+/// グローバル設定（`~/.gitconfig`）には書き込まない — 必ず
+/// `ConfigLevel::Local`（`.git/config`）を明示的に開くので、この設定はリポジトリ
+/// ごとに独立する（読み込みは [`crate::repo::load_protected_branches`]）。
+///
+/// `names` は前後の空白を取り除き、空文字・重複を除去したうえで、それぞれが
+/// Git のブランチ名として有効かを検証する。不正な名前が1つでもあれば何も
+/// 書き込まず `InvalidInput` を返す。正規化した結果が空リストになる場合は、
+/// キー自体を削除して既定値（`main`/`master`）に戻す。
+pub fn save_protected_branches(repo: &Repository, names: &[String]) -> Result<()> {
+    let normalized =
+        crate::safety::normalize_protected_branch_names(names.iter().map(|s| s.as_str()));
+
+    for name in &normalized {
+        let valid = git2::Branch::name_is_valid(name).unwrap_or(false);
+        if !valid {
+            return Err(CoreError::InvalidInput(format!(
+                "「{name}」は有効なブランチ名ではありません。"
+            )));
+        }
+    }
+
+    let mut local = repo
+        .config()?
+        .open_level(git2::ConfigLevel::Local)
+        .map_err(CoreError::from)?;
+    if normalized.is_empty() {
+        // 空にする = 既定値（main/master）に戻す。キーが元々無い場合のエラーは無視する。
+        let _ = local.remove("noobgit.protectedBranches");
+    } else {
+        local.set_str("noobgit.protectedBranches", &normalized.join(","))?;
+    }
+    Ok(())
+}
+
 /// マージ済みブランチ（Issue #269: ブランチクリーンアップ）を一括で削除する。
 ///
 /// フロントから渡された `names` をそのまま信用せず、削除の直前に
@@ -1003,7 +1161,8 @@ pub fn delete_branches(
 /// `target` が `None` なら HEAD のコミットに付ける。`Some` なら revparse で解決した対象に
 /// 付ける（コミットの短縮 oid やブランチ名など）。`message` が空でなければ注釈付きタグ
 /// （作成者・メッセージを持つ）、空または `None` なら軽量タグ（参照だけ）を作る。
-/// 同名タグが既にあれば日本語エラーで案内する。タグ作成は undo を記録しない（安全操作）。
+/// 同名タグが既にあれば日本語エラーで案内する。作成したタグは `DeleteTag` の undo を記録する
+/// （`create_branch` / `DeleteBranch` と同じパターン）。
 pub fn create_tag(
     repo: &Repository,
     name: &str,
@@ -1056,6 +1215,17 @@ pub fn create_tag(
             repo.tag_lightweight(name, &obj, false)?;
         }
     }
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::CreateTag,
+            description: format!("タグ「{name}」の作成を取り消す"),
+            action: UndoAction::DeleteTag {
+                name: name.to_string(),
+            },
+        },
+    );
 
     Ok(())
 }
@@ -1972,6 +2142,93 @@ mod tests {
         // soft reset なので変更はステージに残る。
         let st = status(&repo).unwrap();
         assert_eq!(st.staged.len(), 1);
+    }
+
+    /// undo ジャーナルの tmp 書き込み先（`noobgit_undo.json.tmp`）にディレクトリを
+    /// 作っておくと、`fs::write` が「ディレクトリには書き込めない」で必ず失敗する。
+    /// これはパーミッションではなくファイルシステムの制約なので、root で実行される
+    /// このコンテナでも、Windows でも確実に失敗する（chmod と違って環境に左右されない）。
+    fn make_undo_journal_write_fail(repo: &Repository) {
+        let tmp = repo.path().join("noobgit_undo.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+    }
+
+    // CLAUDE.md: 「undo の記録（record_undo）は、根底の Git 操作を絶対に失敗させては
+    // ならない」。ジャーナル書き込みが実際に失敗する状況を作ったうえで、それでも
+    // commit が成功しリポジトリ状態が変わることを検証する（常に通るだけの
+    // テストにしないため、undo::push を直接呼んで失敗パスに到達することも確認する）。
+    #[test]
+    fn commit_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "2");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+
+        make_undo_journal_write_fail(&repo);
+
+        // 前提の確認: この状態で undo::push を直接呼ぶと本当に失敗する
+        // （＝以降の commit で失敗パスに実際に到達することの裏付け）。
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::Commit,
+                description: "probe".into(),
+                action: UndoAction::SoftResetTo {
+                    previous: fx.head_oid().to_string(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        // ジャーナル本体（rename 先）はまだ作られていない。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        // ジャーナルへの記録が失敗しても、コミット自体は成功しリポジトリ状態は変わる。
+        let info = commit(&repo, "c2").unwrap();
+        assert_eq!(info.summary, "c2");
+        assert_eq!(log(&repo, 10).unwrap().len(), 2);
+
+        // 記録は失敗し続けているので、ジャーナルは依然として作られていない
+        // （＝ record_undo が失敗を握りつぶしていることの確認）。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+    }
+
+    // create_branch でも同様に、undo 記録の失敗が操作の成功を妨げないこと。
+    #[test]
+    fn create_branch_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        make_undo_journal_write_fail(&repo);
+
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateBranch,
+                description: "probe".into(),
+                action: UndoAction::DeleteBranch {
+                    name: "probe-branch".into(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        create_branch(&repo, "feature").unwrap();
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+        assert!(!repo.path().join("noobgit_undo.json").exists());
     }
 
     #[test]
@@ -3206,6 +3463,127 @@ mod tests {
         );
     }
 
+    // --- save_protected_branches / load_protected_branches のテスト ---
+
+    #[test]
+    fn save_and_load_protected_branches_roundtrip() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(&repo, &["develop".to_string(), "release".to_string()]).unwrap();
+
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["develop".to_string(), "release".to_string()]);
+    }
+
+    #[test]
+    fn load_protected_branches_defaults_when_unset() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["main".to_string(), "master".to_string()]);
+    }
+
+    #[test]
+    fn save_protected_branches_normalizes_and_dedupes() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(
+            &repo,
+            &[
+                " develop ".to_string(),
+                "".to_string(),
+                "develop".to_string(),
+                "  ".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["develop".to_string()]);
+    }
+
+    #[test]
+    fn save_empty_protected_branches_resets_to_default() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(&repo, &["develop".to_string()]).unwrap();
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["develop".to_string()]
+        );
+
+        // 空配列で保存すると既定値（main/master）に戻る。
+        save_protected_branches(&repo, &[]).unwrap();
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn save_protected_branches_rejects_invalid_name() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        let err = save_protected_branches(&repo, &["with spaces".to_string()]).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // 不正な名前があると何も書き込まれない（既定値のまま）。
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn protected_branches_config_is_independent_per_repo() {
+        let fx_a = TestRepo::new();
+        let fx_b = TestRepo::new();
+
+        save_protected_branches(&fx_a.open(), &["develop".to_string()]).unwrap();
+
+        // fx_a にだけ設定したので、fx_b は既定値のまま。
+        assert_eq!(
+            crate::repo::load_protected_branches(&fx_a.open()).unwrap(),
+            vec!["develop".to_string()]
+        );
+        assert_eq!(
+            crate::repo::load_protected_branches(&fx_b.open()).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn custom_protected_branch_makes_delete_and_force_push_destructive() {
+        use crate::safety::{assess, OperationKind, RiskLevel, SafetyContext};
+
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        save_protected_branches(&repo, &["develop".to_string()]).unwrap();
+        let protected = crate::repo::load_protected_branches(&repo).unwrap();
+
+        let ctx = SafetyContext {
+            target_branch: Some("develop".to_string()),
+            protected_branches: protected,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            assess(OperationKind::DeleteBranch, &ctx).level,
+            RiskLevel::Destructive,
+            "カスタム保護ブランチの削除は Destructive のはず"
+        );
+        let fp = assess(OperationKind::ForcePush, &ctx);
+        assert_eq!(fp.level, RiskLevel::Destructive);
+        assert!(
+            fp.reasons.iter().any(|r| r.contains("保護ブランチ")),
+            "カスタム保護ブランチへの force push は保護ブランチである旨の理由を含むはず"
+        );
+    }
+
     /// 指定パスの未ステージ差分から hunk ヘッダー文字列を集める（テスト用ヘルパー）。
     fn collect_hunk_headers(repo: &Repository, path: &str) -> Vec<String> {
         let mut opts = git2::DiffOptions::new();
@@ -3327,6 +3705,164 @@ mod tests {
         ));
     }
 
+    // ステージ済み差分（HEAD ↔ index）の hunk ヘッダー一覧を集める（unstage_hunk のテスト用）。
+    fn collect_staged_hunk_headers(repo: &Repository, path: &str) -> Vec<String> {
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path).context_lines(3);
+        let head_tree = repo.head().ok().map(|h| h.peel_to_tree().unwrap());
+        let diff = repo
+            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+            .unwrap();
+        let headers = RefCell::new(Vec::new());
+        diff.foreach(
+            &mut |_d, _p| true,
+            None,
+            Some(&mut |_d, hunk| {
+                headers.borrow_mut().push(
+                    String::from_utf8_lossy(hunk.header())
+                        .trim_end()
+                        .to_string(),
+                );
+                true
+            }),
+            None,
+        )
+        .unwrap();
+        headers.into_inner()
+    }
+
+    #[test]
+    fn unstage_hunk_unstages_only_matching_hunk_then_undo_restages() {
+        let fx = TestRepo::new();
+        // 10 行のファイルを用意してコミットする。離れた 2 箇所を変えて 2 つの hunk を作る。
+        fx.write_file("f.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("f.txt", "1-changed\n2\n3\n4\n5\n6\n7\n8\n9\n10-changed\n");
+        fx.stage_all();
+
+        let repo = fx.open();
+        let headers = collect_staged_hunk_headers(&repo, "f.txt");
+        assert_eq!(
+            headers.len(),
+            2,
+            "離れた 2 箇所の変更で 2 hunk になること: {headers:?}"
+        );
+
+        // 1 つ目の hunk だけをアンステージする。
+        unstage_hunk(&repo, "f.txt", &headers[0]).unwrap();
+
+        // ステージ済み差分にはもう片方の hunk だけが残る。
+        let remaining = collect_staged_hunk_headers(&repo, "f.txt");
+        assert_eq!(
+            remaining,
+            vec![headers[1].clone()],
+            "アンステージした hunk 以外はステージされたまま残ること"
+        );
+
+        // f.txt はステージ済み・未ステージの両方に現れる（もう片方の hunk が未ステージ化された）。
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.iter().any(|c| c.path == "f.txt"),
+            "もう片方の hunk はステージされたまま: {st:?}"
+        );
+        assert!(
+            st.unstaged.iter().any(|c| c.path == "f.txt"),
+            "アンステージした hunk が未ステージとして戻ること: {st:?}"
+        );
+
+        // 作業ツリーは一切変更されない（両方の変更が残っている）。
+        let contents = std::fs::read_to_string(fx.path().join("f.txt")).unwrap();
+        assert_eq!(contents, "1-changed\n2\n3\n4\n5\n6\n7\n8\n9\n10-changed\n");
+
+        // Undo でアンステージ前に戻る（両方の hunk が再びステージされる）。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        let restored = collect_staged_hunk_headers(&repo, "f.txt");
+        assert_eq!(
+            restored.len(),
+            2,
+            "undo で両方の hunk がステージされた状態に戻ること: {restored:?}"
+        );
+        let st = status(&repo).unwrap();
+        assert!(
+            st.unstaged.iter().all(|c| c.path != "f.txt"),
+            "undo 後は未ステージ側に f.txt が残らないこと: {st:?}"
+        );
+    }
+
+    #[test]
+    fn unstage_hunk_on_new_file_removes_it_from_index_then_undo_restores() {
+        // HEAD に存在しない新規ファイルを丸ごとステージし、その唯一の hunk を
+        // アンステージすると、インデックスからファイルごと消えること。
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1\n");
+        fx.stage_all();
+        fx.commit("base");
+
+        fx.write_file("new.txt", "hello\nworld\n");
+        fx.stage_all();
+
+        let repo = fx.open();
+        let headers = collect_staged_hunk_headers(&repo, "new.txt");
+        assert_eq!(headers.len(), 1);
+
+        unstage_hunk(&repo, "new.txt", &headers[0]).unwrap();
+
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.iter().all(|c| c.path != "new.txt"),
+            "新規ファイルはインデックスから完全に消えること: {st:?}"
+        );
+        assert!(
+            st.untracked.iter().any(|p| p == "new.txt"),
+            "作業ツリーには残り、未追跡に戻ること: {st:?}"
+        );
+        // 作業ツリーのファイル内容自体は変わらない。
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("new.txt")).unwrap(),
+            "hello\nworld\n"
+        );
+
+        // Undo で再びステージされた状態に戻る。
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        let st = status(&repo).unwrap();
+        assert!(
+            st.staged.iter().any(|c| c.path == "new.txt"),
+            "undo で新規ファイルが再ステージされること: {st:?}"
+        );
+    }
+
+    #[test]
+    fn unstage_hunk_with_unknown_header_is_rejected() {
+        let fx = TestRepo::new();
+        fx.write_file("f.txt", "a\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("f.txt", "b\n");
+        fx.stage_all();
+
+        let repo = fx.open();
+        let err = unstage_hunk(&repo, "f.txt", "@@ -999,0 +999,0 @@").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn unstage_hunk_rejects_empty_arguments() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(matches!(
+            unstage_hunk(&repo, "  ", "@@ -1 +1 @@").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            unstage_hunk(&repo, "f.txt", "   ").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
     #[test]
     fn create_lightweight_tag_appears_in_list() {
         use crate::repo::list_tags;
@@ -3343,8 +3879,91 @@ mod tests {
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "v1.0.0");
         assert!(tags[0].message.is_none());
-        // 軽量タグの作成は undo を記録しない（安全操作）。
+        // タグ作成も undo を記録する（create_branch / DeleteBranch と同じパターン）。
+        assert!(crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（軽量）は DeleteTag の undo を記録し、Undo でそのタグが削除されること。
+    #[test]
+    fn create_lightweight_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        let desc = undo_last(&repo).unwrap();
+        assert!(desc.contains("v1.0.0"));
+        assert!(list_tags(&repo).unwrap().is_empty());
         assert!(!crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（注釈付き）も同様に Undo でタグが削除されること。
+    #[test]
+    fn create_annotated_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v2.0.0", None, Some("メジャーリリース")).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+    }
+
+    // DeleteTag の apply は冪等: 2回適用してもエラーにならず、タグが消えたままであること。
+    #[test]
+    fn undo_delete_tag_apply_is_idempotent() {
+        use crate::repo::list_tags;
+        use crate::undo::{self, UndoAction, UndoEntry};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+
+        // 直接 DeleteTag アクションを2回積んで適用しても壊れない（1回目は削除、2回目はno-op）。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // 既に削除済みのタグに対してもう一度同じアクションを適用してもエラーにならない。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
     }
 
     #[test]
@@ -3887,6 +4506,18 @@ mod tests {
     }
 
     #[test]
+    fn unstage_hunk_rejects_submodule() {
+        let (fx, sub_path) = repo_with_submodule();
+        let repo = fx.open();
+
+        let err = unstage_hunk(&repo, sub_path, "@@ -1,1 +1,1 @@").unwrap_err();
+        assert!(
+            matches!(err, CoreError::Blocked(_)),
+            "サブモジュールへの hunk アンステージは Blocked のはず: {err:?}"
+        );
+    }
+
+    #[test]
     fn stage_path_still_works_for_normal_files_alongside_submodule() {
         // サブモジュールが存在していても、通常ファイルの stage は妨げられない。
         let (fx, _sub_path) = repo_with_submodule();
@@ -3900,5 +4531,253 @@ mod tests {
             .staged
             .iter()
             .any(|f| f.path == "b.txt" && !f.is_submodule));
+    }
+
+    // --- 出力形式のスナップショットテスト（#175） ---------------------------------
+    //
+    // ops.rs の返り値の「形式」（serde でフロントに渡る JSON 形状、stash の自動命名
+    // 規則、squash の合成メッセージ形式など）が静かに変わっても気づけるよう、insta の
+    // スナップショットで固定する。コミット id / short_id / タイムスタンプのように
+    // 実行のたびに変わる値は redaction で伏せるが、伏せる前に「長さ・16進である」など
+    // 形式そのものを assert で検証してから伏せる（伏せすぎて形式を検証しなくなるのを
+    // 避けるため）。
+    mod snapshot_format {
+        use super::*;
+
+        /// 完全なコミットID（40桁の16進文字列）であることを検証する。
+        fn assert_full_oid_format(id: &str) {
+            assert_eq!(id.len(), 40, "完全なコミットIDは40桁のはず: {id}");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "完全なコミットIDは16進のはず: {id}"
+            );
+        }
+
+        /// 短縮コミットID（7桁の16進文字列）であることを検証する。
+        fn assert_short_oid_format(id: &str) {
+            assert_eq!(id.len(), 7, "短縮コミットIDは7桁のはず: {id}");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "短縮コミットIDは16進のはず: {id}"
+            );
+        }
+
+        #[test]
+        fn commit_info_initial_commit_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "hello");
+            let repo = fx.open();
+            stage_all(&repo).unwrap();
+            let info = commit(&repo, "最初のコミット").unwrap();
+
+            // 実行ごとに変わる値は、まず形式そのものを検証してから伏せる。
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert!(info.id.starts_with(&info.short_id));
+            assert!(info.parent_ids.is_empty(), "最初のコミットは親を持たない");
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+            });
+        }
+
+        #[test]
+        fn commit_info_with_parent_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+
+            let repo = fx.open();
+            fx.write_file("a.txt", "2");
+            stage_all(&repo).unwrap();
+            let info = commit(&repo, "c2").unwrap();
+
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert_eq!(info.parent_ids.len(), 1);
+            assert_full_oid_format(&info.parent_ids[0]);
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+                ".parent_ids[]" => "[parent_id]",
+            });
+        }
+
+        // 空メッセージでの退避は、libgit2 の自動命名（"WIP on <branch>: <短縮id> <summary>"
+        // または "On <branch>: ..."）に落ち着く。この形式が変わると一覧表示の見え方が
+        // 変わるため固定する（#110 関連）。
+        #[test]
+        fn stash_save_empty_message_auto_name_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+            fx.write_file("a.txt", "2");
+
+            let mut repo = fx.open();
+            stash_save(&mut repo, "").unwrap();
+            let list = stash_list(&mut repo).unwrap();
+            assert_eq!(list.len(), 1);
+            let info = list.into_iter().next().unwrap();
+
+            assert_full_oid_format(&info.id);
+
+            // 自動命名メッセージの形式を検証する: "(WIP on|On) main: <短縮id> c1"。
+            let prefix = if info.message.starts_with("WIP on main: ") {
+                "WIP on main: "
+            } else if info.message.starts_with("On main: ") {
+                "On main: "
+            } else {
+                panic!("想定外の自動命名メッセージ: {}", info.message);
+            };
+            let rest = &info.message[prefix.len()..];
+            let mut parts = rest.splitn(2, ' ');
+            let short = parts.next().unwrap_or("");
+            let summary = parts.next().unwrap_or("");
+            assert_short_oid_format(short);
+            assert_eq!(summary, "c1");
+
+            // 上ですでに可変部分（短縮id）の形式は検証済みなので、スナップショットでは
+            // 固定のプレースホルダーに伏せる。接頭辞（"WIP on"/"On"）はそのまま残す。
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".message" => insta::dynamic_redaction(move |value, _path| {
+                    let s = value.as_str().expect("message は文字列のはず");
+                    let prefix = if s.starts_with("WIP on main: ") {
+                        "WIP on main: "
+                    } else {
+                        "On main: "
+                    };
+                    format!("{prefix}[short_id] c1")
+                }),
+            });
+        }
+
+        // squash が「まとめ後のメッセージ」を一切加工せずそのまま採用すること（#175）。
+        // フロントエンド（RebaseWizard）は選んだコミットのメッセージを古い順に "\n\n" で
+        // 連結して渡す。この複数段落のメッセージが squash 後もそのまま保たれ、
+        // summary（先頭段落）が正しく切り出されることを固定する。
+        #[test]
+        fn squash_commits_preserves_composed_message_format() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1\n");
+            fx.stage_all();
+            fx.commit("c1");
+            fx.write_file("a.txt", "2\n");
+            fx.stage_all();
+            fx.commit("c2");
+            fx.write_file("a.txt", "3\n");
+            fx.stage_all();
+            fx.commit("c3");
+
+            let repo = fx.open();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            let c3 = head.id();
+            let c2 = head.parent(0).unwrap().id();
+
+            // フロントエンドと同じ形式: 古い順のメッセージを "\n\n" で連結する。
+            let composed = "c2\n\nc3";
+            squash_commits(&repo, &[&c3.to_string(), &c2.to_string()], composed).unwrap();
+
+            let repo = fx.open();
+            let squashed = repo.head().unwrap().peel_to_commit().unwrap();
+            let full_message = squashed.message().unwrap().to_string();
+            let summary = squashed.summary().unwrap().unwrap_or("").to_string();
+
+            #[derive(serde::Serialize)]
+            struct SquashedMessageShape {
+                summary: String,
+                full_message: String,
+            }
+
+            // ここに現れる値はすべて決定的（コミットハッシュや時刻を含まない）ので
+            // redaction は不要。
+            insta::assert_yaml_snapshot!(SquashedMessageShape {
+                summary,
+                full_message
+            });
+        }
+
+        // cherry-pick 成功時の CommitInfo の形式（#175）。
+        #[test]
+        fn cherry_pick_success_commit_info_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "base\n");
+            fx.stage_all();
+            fx.commit("c1");
+
+            {
+                let repo = fx.open();
+                create_branch(&repo, "feature").unwrap();
+                switch_branch(&repo, "feature").unwrap();
+            }
+            fx.write_file("b.txt", "feature work\n");
+            fx.stage_all();
+            let feature_oid = fx.commit("feature: b.txt を追加");
+
+            {
+                let repo = fx.open();
+                switch_branch(&repo, "main").unwrap();
+            }
+            fx.write_file("c.txt", "main work\n");
+            fx.stage_all();
+            fx.commit("main: c.txt を追加");
+
+            let repo = fx.open();
+            let info = cherry_pick(&repo, &feature_oid.to_string()).unwrap();
+
+            assert_full_oid_format(&info.id);
+            assert_short_oid_format(&info.short_id);
+            assert_eq!(info.parent_ids.len(), 1);
+            assert_full_oid_format(&info.parent_ids[0]);
+
+            insta::assert_yaml_snapshot!(info, {
+                ".id" => "[id]",
+                ".short_id" => "[short_id]",
+                ".time" => "[time]",
+                ".parent_ids[]" => "[parent_id]",
+            });
+        }
+
+        // cherry-pick がコンフリクトで Blocked になったときのメッセージ文言（#175）。
+        // この文言は固定の日本語文字列で動的な値を含まないため、redaction は不要。
+        #[test]
+        fn cherry_pick_conflict_blocked_message_shape() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "base\n");
+            fx.stage_all();
+            fx.commit("c1");
+
+            {
+                let repo = fx.open();
+                create_branch(&repo, "feature").unwrap();
+                switch_branch(&repo, "feature").unwrap();
+            }
+            fx.write_file("a.txt", "feature change\n");
+            fx.stage_all();
+            let feature_oid = fx.commit("feature: a.txt を変更");
+
+            {
+                let repo = fx.open();
+                switch_branch(&repo, "main").unwrap();
+            }
+            fx.write_file("a.txt", "main change\n");
+            fx.stage_all();
+            fx.commit("main: a.txt を変更");
+
+            let repo = fx.open();
+            let err = cherry_pick(&repo, &feature_oid.to_string()).unwrap_err();
+            let message = match err {
+                CoreError::Blocked(m) => m,
+                other => panic!("Blocked エラーのはず: {other:?}"),
+            };
+
+            insta::assert_snapshot!(message);
+        }
     }
 }

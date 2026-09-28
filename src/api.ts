@@ -61,6 +61,16 @@ export interface LogFilter {
   until?: number;
 }
 
+// コミット履歴をカーソルベースでページングしたときの1ページ分の結果
+// （Issue #277）。`cursor` は「続きがあるときに次回の getLogPage へそのまま
+// 渡すオペークな ID」で、中身に意味は無い。`has_more` が true なら `cursor` は
+// 必ず non-null。
+export interface LogPage {
+  commits: CommitInfo[];
+  cursor: string | null;
+  has_more: boolean;
+}
+
 export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
 
 export interface DiffLine {
@@ -323,6 +333,12 @@ export const api = {
     invoke<RepoStatus>("get_status", { repoPath }),
   getBranches: (repoPath: string) =>
     invoke<BranchInfo[]>("get_branches", { repoPath }),
+  // 保護ブランチ一覧（未設定なら既定値の main/master）。リポジトリごとに独立する。
+  getProtectedBranches: (repoPath: string) =>
+    invoke<string[]>("get_protected_branches", { repoPath }),
+  // 保護ブランチ一覧を保存する。空配列を渡すと既定値（main/master）に戻る。
+  setProtectedBranches: (repoPath: string, names: string[]) =>
+    invoke<void>("set_protected_branches", { repoPath, names }),
   // filter を省略すると従来どおり全件を対象にする（後方互換）。
   getLog: (repoPath: string, skip: number, max: number, filter?: LogFilter) =>
     invoke<CommitInfo[]>("get_log", {
@@ -331,6 +347,29 @@ export const api = {
       max,
       filter: filter ?? null,
     }),
+  // カーソルベースのページング（Issue #277）。`cursor` を省略すると先頭ページ、
+  // 渡すとその続きを取得する。各回のコストは「すでに読んだ件数」に依存しない
+  // （詳しくは core 側の `LogCursorStore` を参照）。`fallbackSkip` は、渡した
+  // カーソルが失効していた場合にだけ使われる「現在表示済みの件数」。
+  getLogPage: (
+    repoPath: string,
+    max: number,
+    filter?: LogFilter,
+    cursor?: string,
+    fallbackSkip = 0,
+  ) =>
+    invoke<LogPage>("get_log_page", {
+      repoPath,
+      max,
+      filter: filter ?? null,
+      cursor: cursor ?? null,
+      fallbackSkip,
+    }),
+  // 使い終わったログカーソルを手放す（検索条件の変更・リフレッシュ・タブを
+  // 閉じる等）。呼び忘れてもキャッシュ側の上限超過で自動的に立ち退くが、
+  // すぐに手放したほうがリポジトリのハンドルを長く握り続けずに済む。
+  closeLogCursor: (cursor: string) =>
+    invoke<void>("close_log_cursor", { cursor }),
   getFileLog: (repoPath: string, path: string, max: number) =>
     invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>
@@ -367,6 +406,8 @@ export const api = {
     invoke<void>("stage_hunk", { repoPath, filePath, hunkHeader }),
   unstage: (repoPath: string, path: string) =>
     invoke<void>("unstage", { repoPath, path }),
+  unstageHunk: (repoPath: string, filePath: string, hunkHeader: string) =>
+    invoke<void>("unstage_hunk", { repoPath, filePath, hunkHeader }),
   commit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("commit", { repoPath, message }),
   amendCommit: (repoPath: string, message: string) =>

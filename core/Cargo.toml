@@ -13,4 +13,12 @@ git2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+insta = { version = "1", features = ["yaml", "redactions"] }
 tempfile = "3"
+# html_reports 用の plotters や並列実行用の rayon は使わないため、必要最小限の
+# cargo_bench_support だけを有効化する（`cargo bench` からの実行・テキスト出力に必要）。
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "repo_bench"
+harness = false

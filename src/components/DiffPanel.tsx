@@ -1,6 +1,7 @@
 import type { DiffLine, DiffLineKind, FileDiff } from "../api";
 import { langFromPath } from "../lib/highlight";
 import { HighlightedCode } from "./HighlightedCode";
+import { ExplainTooltip } from "./ExplainTooltip"; // #158 hunk = 変更のまとまり、の説明
 
 export type DiffSource = "staged" | "unstaged" | "conflicted";
 
@@ -16,6 +17,9 @@ interface Props {
   // 未ステージ差分の hunk ヘッダー行で「この塊だけステージ」したときに呼ばれる。
   // 引数はその hunk のヘッダー文字列（例 `@@ -1,3 +1,4 @@`）。
   onStageHunk?: (hunkHeader: string) => void;
+  // #158 ステージ済み差分の hunk ヘッダー行で「この塊だけアンステージ」したときに呼ばれる。
+  // 引数はその hunk のヘッダー文字列（ステージ済み差分表示のもの）。
+  onUnstageHunk?: (hunkHeader: string) => void;
 }
 
 const sourceLabel: Record<DiffSource, string> = {
@@ -42,9 +46,17 @@ function lineClass(line: DiffLine, conflicted: boolean): string {
   return `diff-line diff-${line.kind}`;
 }
 
-export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
+export function DiffPanel({
+  selection,
+  diff,
+  loading,
+  onStageHunk,
+  onUnstageHunk,
+}: Props) {
   // 未ステージ差分のときだけ、hunk 単位の部分ステージを出す。
   const canStageHunk = selection?.source === "unstaged" && !!onStageHunk;
+  // #158 ステージ済み差分のときだけ、hunk 単位の部分アンステージを出す。
+  const canUnstageHunk = selection?.source === "staged" && !!onUnstageHunk;
   // ファイルの拡張子から shiki 言語名を決定する。
   const lang = selection ? langFromPath(selection.path) : "text";
 
@@ -97,20 +109,37 @@ export function DiffPanel({ selection, diff, loading, onStageHunk }: Props) {
                         <td className="diff-lineno">{line.new_lineno ?? ""}</td>
                         <td className="diff-sign">{sign(line.kind)}</td>
                         <td className="diff-content">
-                          {line.kind === "hunk" && canStageHunk ? (
-                            // hunk 行でステージボタンあり: プレーン表示 + ボタン。
+                          {line.kind === "hunk" &&
+                          (canStageHunk || canUnstageHunk) ? (
+                            // hunk 行でステージ/アンステージボタンあり: プレーン表示 + ボタン。
                             <span className="diff-hunk-row">
                               <span className="diff-hunk-header">
                                 {line.content || " "}
                               </span>
-                              <button
-                                type="button"
-                                className="btn btn-small diff-hunk-stage"
-                                title="この変更の塊（hunk）だけをステージします"
-                                onClick={() => onStageHunk?.(line.content)}
-                              >
-                                この塊だけステージ
-                              </button>
+                              {canStageHunk && (
+                                <ExplainTooltip op="stage">
+                                  <button
+                                    type="button"
+                                    className="btn btn-small diff-hunk-stage"
+                                    title="この変更の塊（hunk）だけをステージします"
+                                    onClick={() => onStageHunk?.(line.content)}
+                                  >
+                                    この塊だけステージ
+                                  </button>
+                                </ExplainTooltip>
+                              )}
+                              {canUnstageHunk && (
+                                <ExplainTooltip op="unstage">
+                                  <button
+                                    type="button"
+                                    className="btn btn-small diff-hunk-unstage"
+                                    title="この変更の塊（hunk）だけをアンステージします"
+                                    onClick={() => onUnstageHunk?.(line.content)}
+                                  >
+                                    この塊だけアンステージ
+                                  </button>
+                                </ExplainTooltip>
+                              )}
                             </span>
                           ) : (
                             // その他の行: シンタックスハイライトを適用する。

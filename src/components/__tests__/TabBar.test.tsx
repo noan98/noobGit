@@ -16,6 +16,7 @@ function renderTabBar(
     onSelect: vi.fn(),
     onClose: vi.fn(),
     onAdd: vi.fn(),
+    onReorder: vi.fn(),
   };
   render(
     <TabBar
@@ -24,6 +25,7 @@ function renderTabBar(
       onSelect={handlers.onSelect}
       onClose={handlers.onClose}
       onAdd={handlers.onAdd}
+      onReorder={handlers.onReorder}
       {...overrides}
     />,
   );

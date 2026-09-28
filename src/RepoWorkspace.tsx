@@ -10,7 +10,7 @@
  * そのため window に登録するグローバルショートカット類は、active フラグで
  * アクティブなタブだけが反応するようにする。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
@@ -54,6 +54,8 @@ import {
   TagPanelSkeleton,
 } from "./components/SkeletonPanels";
 import { useDelayedFlag } from "./hooks/useDelayedFlag"; // #171 スケルトンのちらつき防止
+import { useRiskLevels } from "./hooks/useRiskLevels"; // #274 操作トリガーボタンの危険度カラー
+import { riskTriggerClassFor } from "./lib/risk"; // #274 操作トリガーボタンの危険度カラー
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConflictWizard } from "./components/ConflictWizard";
 import { RebaseWizard } from "./components/RebaseWizard";
@@ -253,6 +255,8 @@ export function RepoWorkspace({
   const [branchGraph, setBranchGraph] = useState<BranchGraph | null>(null);
   // #269 ブランチクリーンアップ: マージ済み（保護ブランチ・現在ブランチを除く）ローカルブランチ。
   const [mergedBranches, setMergedBranches] = useState<MergedBranchInfo[]>([]);
+  // #169 保護ブランチの設定一覧（git config `noobgit.protectedBranches`）。
+  const [protectedBranches, setProtectedBranches] = useState<string[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -261,6 +265,43 @@ export function RepoWorkspace({
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
+
+  // #274 操作トリガーボタンの危険度カラー: guarded() を通る操作群をまとめて
+  // 事前評価し、クリック前からボタン自体で Safe/Caution/Destructive を伝える。
+  // 対象（ブランチ名）に依存しない操作は1件、push・delete_branch はブランチ
+  // ごとに評価する（保護ブランチかどうかで結果が変わるため）。
+  // リスク判定ロジックはここには無く、すべて core の assess_operation の結果。
+  const localBranchNames = branches
+    .filter((b) => !b.is_remote)
+    .map((b) => b.name);
+  const nonHeadLocalBranchNames = branches
+    .filter((b) => !b.is_remote && !b.is_head)
+    .map((b) => b.name);
+  // 状態（作業ツリー・履歴・ブランチ）を再取得するたびに危険度も評価し直す。
+  // 例: コミットを送信すると amend_commit が destructive → caution に変わる。
+  const riskRefreshToken = useMemo(() => ({}), [status, commits, branches]);
+  const riskLevels = useRiskLevels(opened ? repoPath : null, [
+    // 対象非依存（常に同じ判定になる操作）。
+    { op: "discard" },
+    { op: "reset_hard" },
+    { op: "cherry_pick" },
+    { op: "merge" },
+    { op: "switch_branch" },
+    { op: "force_push" },
+    { op: "delete_tag" },
+    { op: "remove_remote" },
+    { op: "stash_apply" },
+    { op: "stash_pop" },
+    { op: "restore_file" },
+    { op: "amend_commit" },
+    { op: "pull" },
+    // 対象（ブランチ）依存: 保護ブランチかどうかで危険度が変わる。
+    ...localBranchNames.map((name) => ({ op: "push" as const, target: name })),
+    ...nonHeadLocalBranchNames.map((name) => ({
+      op: "delete_branch" as const,
+      target: name,
+    })),
+  ], riskRefreshToken);
 
   // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
   const [logFilter, setLogFilter] = useState<LogFilter>({});
@@ -289,6 +330,24 @@ export function RepoWorkspace({
   useEffect(() => {
     loadedCount.current = commits.length;
   }, [commits]);
+
+  // #277 履歴のカーソルベースページング用。直前に取得したページが返した
+  // カーソル ID（続きが無ければ null）。loadMore() が「続きから」取得するのに使う。
+  const logCursorRef = useRef<string | null>(null);
+  // 使い終わった（先頭から取り直す・検索条件を変える等で不要になった）カーソルを
+  // 手放す。失敗しても致命的ではない（core 側の上限超過での自動立ち退きが
+  // 安全網になる）ので、エラーは無視する。
+  const releaseLogCursor = useCallback(() => {
+    const id = logCursorRef.current;
+    if (id) {
+      logCursorRef.current = null;
+      void api.closeLogCursor(id).catch(() => {});
+    }
+  }, []);
+  // タブを閉じる（アンマウントする）ときも、握ったままのカーソルを手放す。
+  useEffect(() => {
+    return () => releaseLogCursor();
+  }, [releaseLogCursor]);
 
   const [commitMsg, setCommitMsg] = useState("");
   // コミット入力欄への参照。履歴が空のときの「コミットへ」誘導でフォーカスする。
@@ -447,6 +506,9 @@ export function RepoWorkspace({
           tasks.push(
             api.getMergedBranches(repoPath).then(setMergedBranches),
           );
+          tasks.push(
+            api.getProtectedBranches(repoPath).then(setProtectedBranches),
+          );
         }
         if (parts.log) {
           // すでに「もっと見る」で広げていれば、その件数を保ったまま先頭から取り直す。
@@ -454,10 +516,13 @@ export function RepoWorkspace({
           // 検索条件があればそれを渡す（無ければ未指定で全件＝従来動作）。
           const filter = logFilterRef.current;
           const arg = hasFilter(filter) ? filter : undefined;
+          // 先頭から取り直すので、直前のカーソルはもう使わない。
+          releaseLogCursor();
           tasks.push(
-            api.getLog(repoPath, 0, want, arg).then((cs) => {
-              setCommits(cs);
-              setHasMoreCommits(cs.length === want);
+            api.getLogPage(repoPath, want, arg).then((page) => {
+              setCommits(page.commits);
+              setHasMoreCommits(page.has_more);
+              logCursorRef.current = page.cursor;
             }),
           );
         }
@@ -475,7 +540,7 @@ export function RepoWorkspace({
         return false;
       }
     },
-    [repoPath],
+    [repoPath, releaseLogCursor],
   );
 
   // identity の取得は補助的なので、失敗しても画面表示は止めない（バナーで案内に倒す）。
@@ -720,6 +785,29 @@ export function RepoWorkspace({
     }
   }
 
+  // #169 保護ブランチの設定: 新しい一覧を丸ごと保存し、ブランチ表示を更新する。
+  // set_protected_branches は core 側で正規化・検証する（空配列で既定値に戻る）。
+  async function saveProtectedBranches(names: string[]) {
+    try {
+      await api.setProtectedBranches(repoPath, names);
+      await refresh({ branches: true });
+      setError(null);
+    } catch (e) {
+      const msg = String(e);
+      setError(msg);
+      showToast(msg, "error");
+    }
+  }
+
+  function addProtectedBranch(name: string) {
+    if (protectedBranches.includes(name)) return;
+    void saveProtectedBranches([...protectedBranches, name]);
+  }
+
+  function removeProtectedBranch(name: string) {
+    void saveProtectedBranches(protectedBranches.filter((n) => n !== name));
+  }
+
   // 安全な操作はそのまま実行し、結果を更新する。
   // refresh を省略した場合は全件再取得（取り消しなど影響範囲が読めない操作向け）。
   // networkOp: true を渡すと実行中に isNetworkBusy を立て、完了・失敗時に必ず下ろす。
@@ -843,6 +931,13 @@ export function RepoWorkspace({
 
   // 「もっと見る」: 末尾から次のページを読み、現在の一覧に追記する。
   // 検索条件があれば同じ条件で続きを取得する（条件と無関係なコミットが混ざらない）。
+  //
+  // #277 カーソルベースのページング: 直前のページが返したカーソルを渡すことで、
+  // core 側が revwalk の続きから読む。ページを重ねても各回のコストは
+  // 「すでに読んだ件数」に依存しない（skip を渡す従来方式は O(表示済み件数) を
+  // 毎回払うため、無限スクロールで N ページ捲ると合計 O(N^2) になっていた）。
+  // `commits.length` は、カーソルが失効していた場合にだけ core 側のフォール
+  // バック（従来の skip ベース取得）で使われる。
   function loadMore() {
     if (loadingMore || !repoPath) return;
     setLoadingMore(true);
@@ -850,14 +945,16 @@ export function RepoWorkspace({
       try {
         const filter = logFilterRef.current;
         const arg = hasFilter(filter) ? filter : undefined;
-        const more = await api.getLog(
+        const page = await api.getLogPage(
           repoPath,
-          commits.length,
           LOG_PAGE_SIZE,
           arg,
+          logCursorRef.current ?? undefined,
+          commits.length,
         );
-        setCommits((prev) => [...prev, ...more]);
-        setHasMoreCommits(more.length === LOG_PAGE_SIZE);
+        setCommits((prev) => [...prev, ...page.commits]);
+        setHasMoreCommits(page.has_more);
+        logCursorRef.current = page.cursor;
         setError(null);
       } catch (e) {
         const errMsg = String(e);
@@ -887,12 +984,15 @@ export function RepoWorkspace({
       if (!repoPath) return;
       setSearching(true);
       void (async () => {
-        // ページングはリセットし、先頭ページから取り直す。
+        // ページングはリセットし、先頭ページから取り直す（＝新しいカーソルを開く）。
+        // 直前のカーソルはもう使わないので手放す。
+        releaseLogCursor();
         const arg = hasFilter(filter) ? filter : undefined;
         try {
-          const cs = await api.getLog(repoPath, 0, LOG_PAGE_SIZE, arg);
-          setCommits(cs);
-          setHasMoreCommits(cs.length === LOG_PAGE_SIZE);
+          const page = await api.getLogPage(repoPath, LOG_PAGE_SIZE, arg);
+          setCommits(page.commits);
+          setHasMoreCommits(page.has_more);
+          logCursorRef.current = page.cursor;
           setError(null);
         } catch (e) {
           const errMsg = String(e);
@@ -903,7 +1003,7 @@ export function RepoWorkspace({
         }
       })();
     },
-    [repoPath],
+    [repoPath, releaseLogCursor],
   );
 
   function doUndo() {
@@ -1517,7 +1617,9 @@ export function RepoWorkspace({
         {/* #104 操作説明ツールチップ */}
         <ExplainTooltip op="pull">
           <button
-            className="toolbar-btn"
+            // #274 危険度カラー: pull は常に注意（安全に進められるときだけ取り込むが、
+            // 分岐時は中断する可能性があるため）。
+            className={`toolbar-btn ${riskTriggerClassFor(riskLevels, "pull")}`}
             onClick={doPull}
             disabled={isNetworkBusy}
             title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
@@ -1537,7 +1639,8 @@ export function RepoWorkspace({
         {/* #104 操作説明ツールチップ */}
         <ExplainTooltip op="push">
           <button
-            className="toolbar-btn"
+            // #274 危険度カラー: 保護ブランチ（main/master等）への push だけ注意色になる。
+            className={`toolbar-btn ${riskTriggerClassFor(riskLevels, "push", status?.branch ?? undefined)}`}
             onClick={doPushCurrentBranch}
             disabled={isNetworkBusy || !status?.branch}
             title="現在のブランチをリモートへ送信します [Ctrl+P]"
@@ -1733,6 +1836,7 @@ export function RepoWorkspace({
                     status={status}
                     selected={selectedFile}
                     repoPath={repoPath}
+                    discardRiskClass={riskTriggerClassFor(riskLevels, "discard")}
                     onSelect={selectFile}
                     onStageAll={() => {
                       // stage_all の対象: 未ステージ（追跡済み）+ 未追跡ファイル全て。
@@ -1796,6 +1900,12 @@ export function RepoWorkspace({
                         refresh: REFRESH_BY_OP.stage,
                       })
                     }
+                    // #158 hunk アンステージ
+                    onUnstageHunk={(p, h) =>
+                      void exec(() => api.unstageHunk(repoPath, p, h), {
+                        refresh: REFRESH_BY_OP.unstage,
+                      })
+                    }
                     // #70 .gitignore 管理
                     onIgnore={doIgnore}
                     onShowGitignore={() => void doShowGitignore()}
@@ -1826,6 +1936,13 @@ export function RepoWorkspace({
               void exec(
                 () => api.stageHunk(repoPath, selectedFile!.path, hunkHeader),
                 { refresh: REFRESH_BY_OP.stage },
+              )
+            }
+            onUnstageHunk={(hunkHeader) =>
+              void exec(
+                () =>
+                  api.unstageHunk(repoPath, selectedFile!.path, hunkHeader),
+                { refresh: REFRESH_BY_OP.unstage },
               )
             }
           />
@@ -1924,7 +2041,8 @@ export function RepoWorkspace({
               {/* #104 操作説明ツールチップ */}
               <ExplainTooltip op="amend_commit">
                 <button
-                  className="btn btn-small"
+                  // #274 危険度カラー: 直前のコミットが送信(push)済みなら destructive になる。
+                  className={`btn btn-small ${riskTriggerClassFor(riskLevels, "amend_commit")}`}
                   onClick={doAmend}
                   disabled={commits.length === 0}
                   title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
@@ -1989,6 +2107,9 @@ export function RepoWorkspace({
                       () => api.resetHard(repoPath, newOid),
                     )
                   }
+                  // #274 危険度カラー
+                  resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
+                  cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
                 />
               </motion.div>
             )}
@@ -2033,6 +2154,10 @@ export function RepoWorkspace({
                 mergedBranches={mergedBranches}
                 onBulkDeleteMerged={doBulkDeleteMerged}
                 networkBusy={isNetworkBusy}
+                protectedBranches={protectedBranches}
+                onAddProtected={addProtectedBranch}
+                onRemoveProtected={removeProtectedBranch}
+                riskLevels={riskLevels}
                 onCreate={(name) =>
                   void guarded("ブランチを作成", "create_branch", () =>
                     api.createBranch(repoPath, name),
@@ -2118,6 +2243,7 @@ export function RepoWorkspace({
                   canTag={commits.length > 0}
                   onCreate={doCreateTag}
                   onDelete={doDeleteTag}
+                  deleteRiskClass={riskTriggerClassFor(riskLevels, "delete_tag")}
                 />
               </motion.div>
             )}
@@ -2133,6 +2259,7 @@ export function RepoWorkspace({
               onAdd={doAddRemote}
               onSetUrl={doSetRemoteUrl}
               onRemove={doRemoveRemote}
+              removeRiskClass={riskTriggerClassFor(riskLevels, "remove_remote")}
             />
           </div>
           )}
@@ -2165,6 +2292,8 @@ export function RepoWorkspace({
                   onApply={doStashApply}
                   onPop={doStashPop}
                   onLoadDiff={loadStashDiff}
+                  applyRiskClass={riskTriggerClassFor(riskLevels, "stash_apply")}
+                  popRiskClass={riskTriggerClassFor(riskLevels, "stash_pop")}
                 />
               </motion.div>
             )}
@@ -2209,6 +2338,7 @@ export function RepoWorkspace({
               },
             );
           }}
+          restoreRiskClass={riskTriggerClassFor(riskLevels, "restore_file")}
         />
       )}
 

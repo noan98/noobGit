@@ -3,8 +3,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, MergedBranchInfo, ReflogEntry,
-    RemoteInfo, RepoStatus, TagInfo,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo,
+    ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -240,6 +240,32 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
     }
 
     Ok(out)
+}
+
+/// リポジトリローカルの git config `noobgit.protectedBranches` から保護ブランチ
+/// 一覧を読み込む。
+///
+/// 値はカンマ区切りの文字列（例: `main,master,release`）として保存する
+/// （書き込みは [`crate::ops::save_protected_branches`] がリポジトリローカルの
+/// `.git/config` にのみ行うため、この設定はリポジトリごとに独立する）。
+/// キーが未設定、または正規化後に空リストになる場合は既定値
+/// （[`crate::safety::DEFAULT_PROTECTED_BRANCHES`]）を返す。
+pub fn load_protected_branches(repo: &Repository) -> Result<Vec<String>> {
+    // グローバル設定（~/.gitconfig）に同名キーがあっても混ざらないよう、リポジトリ
+    // ローカルの `.git/config` だけを読む。
+    let cfg = repo.config()?.open_level(git2::ConfigLevel::Local)?;
+    let list = match cfg.get_string("noobgit.protectedBranches") {
+        Ok(raw) => crate::safety::parse_protected_branches(&raw),
+        Err(_) => Vec::new(),
+    };
+    if list.is_empty() {
+        Ok(crate::safety::DEFAULT_PROTECTED_BRANCHES
+            .iter()
+            .map(|s| s.to_string())
+            .collect())
+    } else {
+        Ok(list)
+    }
 }
 
 /// タグの一覧を返す（名前順）。
@@ -552,6 +578,22 @@ impl LogFilter {
     }
 }
 
+/// `git2::Commit` から [`CommitInfo`] を組み立てる。
+///
+/// `log_filtered` / `file_log` / カーソルページング（[`LogCursor`]）で共通して使う。
+fn commit_info_from(oid: git2::Oid, commit: &git2::Commit) -> CommitInfo {
+    let author = commit.author();
+    CommitInfo {
+        id: oid.to_string(),
+        short_id: oid.to_string().chars().take(7).collect(),
+        summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
+        author_name: author.name().unwrap_or("").to_string(),
+        author_email: author.email().unwrap_or("").to_string(),
+        time: commit.time().seconds(),
+        parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
+    }
+}
+
 /// 直近 `max` 件のコミット履歴を新しい順に返す。
 pub fn log(repo: &Repository, max: usize) -> Result<Vec<CommitInfo>> {
     log_paged(repo, 0, max)
@@ -601,22 +643,248 @@ pub fn log_filtered(
             skipped += 1;
             continue;
         }
-        let author = commit.author();
-        out.push(CommitInfo {
-            id: oid.to_string(),
-            short_id: oid.to_string().chars().take(7).collect(),
-            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
-            author_name: author.name().unwrap_or("").to_string(),
-            author_email: author.email().unwrap_or("").to_string(),
-            time: commit.time().seconds(),
-            parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
-        });
+        out.push(commit_info_from(oid, &commit));
         if out.len() >= max {
             break;
         }
     }
 
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// カーソルベースのページング（Issue #277）
+// ---------------------------------------------------------------------------
+//
+// [`log_paged`] / [`log_filtered`] は呼び出すたびに `revwalk.push_head()` から
+// 履歴を丸ごと辿り直し、先頭から `skip` 件を読み飛ばす。履歴パネルの無限スクロール
+// （フロントの `loadMore()`）は `skip = 表示済み件数` で繰り返し呼ぶため、
+// N ページ捲ると合計コストが O(N^2) になってしまう。
+//
+// 採用した方式（Issue本文の案(b)）: `git2::Revwalk` は内部にイテレータの走査状態
+// （未出力コミットの優先度付きキュー等）を持ち続ける。同じインスタンスに対して
+// `.next()` を呼び続ける限り、既存の出力順序（`Sort::TIME`）と完全に同じ列を、
+// 重複・欠落なく「続きから」返せる——これは revwalk のアルゴリズムそのものを
+// 再利用しているだけなので、正しさは revwalk 自身の正しさに帰着でき、独自に
+// 再実装する必要がない。
+//
+// 案(a)（前から skip 件目まで毎回進め直す）は依然 O(skip) で不十分。
+// 案(c)（フロンティアの oid 集合だけを次回へ渡して revwalk を作り直す）は、
+// マージで複数経路から到達できるコミット（ダイヤモンド型の合流）があると、
+// 「そのコミットは既に出力済みなので再訪問しない」という revwalk 内部の
+// 「見た（seen）」集合を丸ごと引き継がない限り重複が発生しうる。その「見た」
+// 集合は最終的に「これまで出力した全コミットの oid 集合」と同じ大きさまで育ち
+// うるため、結局この案(b)と同程度の情報量を毎回やり取りすることになり、
+// 実装だけが複雑になる。そのため、本方式（revwalk そのものをキャッシュに
+// 残し続ける）を採用する。
+//
+// `git2::Revwalk<'repo>` は `Repository` を借用するため、素直には別の構造体の
+// フィールドとして一緒に持ち回れない（自己参照になり、Rust の借用チェッカが
+// 拒否する）。[`LogCursor`] のドキュメントコメントに、その回避方法（`Box` +
+// ライフタイムの `unsafe` な付け替え）と安全性の根拠を書く。
+
+/// カーソルページングの1件を管理する内部エントリ。
+///
+/// `repo_path` から新しく開いたリポジトリと、それに対する `Sort::TIME` の
+/// revwalk を1組にして保持する。作成後は [`LogCursor::take`] を呼ぶたびに
+/// revwalk が続きから進み、ページをまたいでも既存の出力順序と完全に同じ列を返す。
+struct LogCursor {
+    // フィールドは宣言順（上から下）に drop される（Rust の仕様）。
+    // `revwalk` が指す `git_revwalk` は `repo` の ODB 等を参照しうるため、
+    // 必ず `repo` より先に破棄されるよう、`revwalk` を先に宣言する。
+    revwalk: git2::Revwalk<'static>,
+    repo: Box<Repository>,
+    filter: LogFilter,
+}
+
+// SAFETY: `git2::Revwalk` は libgit2 の `*mut git_revwalk` を1本持つだけで、
+// スレッドローカルな状態には依存しない。`git2` クレート自身が `Repository` には
+// `unsafe impl Send` を与えており（スレッドをまたいだ移動は安全、同時アクセスだけ
+// 不可）、`Revwalk` はその `Repository` と同じ libgit2 バックエンド上で動く
+// 薄いハンドルに過ぎないため、移動についても同様に安全と判断できる。
+// `LogCursor` は常に `LogCursorStore` の `Mutex`（Tauri 側）経由で1スレッドずつ
+// 排他アクセスされる前提であり、`Sync` は実装しない（＝同時アクセスは型レベルで
+// 禁止したまま）。
+unsafe impl Send for LogCursor {}
+
+impl LogCursor {
+    /// `repo_path` を新しく開き、`filter` 付きの `Sort::TIME` revwalk を
+    /// HEAD から開始する。呼び出し前に「コミット0件かどうか」は判定済みとする
+    /// （`repo.head()` が無いと `push_head` がエラーになるため）。
+    ///
+    /// # 安全性についての設計メモ
+    /// `git2::Revwalk<'a>` は `Repository` への参照 `'a` を持つ。ここでは:
+    /// 1. `Repository` を `Box` に入れ、ヒープ上の固定アドレスに置く
+    ///    （`LogCursor` 自体が move されても中身のアドレスは変わらない）。
+    /// 2. その参照から作った `Revwalk<'a>` を `unsafe` に `Revwalk<'static>` へ
+    ///    ライフタイムだけ付け替える（型のレイアウトはライフタイムの違いだけでは
+    ///    変わらないため、`transmute` は安全）。
+    /// 3. 上記の通りフィールド宣言順を `revwalk` → `repo` にし、`revwalk` が
+    ///    必ず `repo` より先に破棄されるようにする。
+    /// 4. `repo` フィールドは非公開のままにし、`LogCursor` の外へ `'static` な
+    ///    参照や値を一切漏らさない（漏らすと呼び出し側が実際の生存期間を
+    ///    誤認しうる）。
+    fn open(repo_path: &str, filter: LogFilter) -> Result<Self> {
+        let repo = Box::new(open(repo_path)?);
+        let mut revwalk = repo.revwalk()?;
+        revwalk.push_head()?;
+        revwalk.set_sorting(git2::Sort::TIME)?;
+        // SAFETY: 上のドキュメントコメントの通り。`repo` はこの直後に構造体へ
+        // move されるだけで、`LogCursor` が drop されるまでヒープ上の同じ
+        // アドレスに留まり続けるため、`revwalk` が指す参照は常に有効。
+        let revwalk: git2::Revwalk<'static> = unsafe { std::mem::transmute(revwalk) };
+        Ok(Self {
+            revwalk,
+            repo,
+            filter,
+        })
+    }
+
+    /// 続きから、条件（フィルタ）を通過したコミットを最大 `max` 件取り出す。
+    fn take(&mut self, max: usize) -> Result<Vec<CommitInfo>> {
+        let no_filter = self.filter.is_empty();
+        let mut out = Vec::new();
+        for oid in &mut self.revwalk {
+            let oid = oid?;
+            let commit = self.repo.find_commit(oid)?;
+            if !no_filter && !self.filter.matches(&commit) {
+                continue;
+            }
+            out.push(commit_info_from(oid, &commit));
+            if out.len() >= max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// [`LogCursorStore`] に同時に保持できるカーソルの上限。
+///
+/// デスクトップアプリの単一プロセス内では、タブ（＝履歴パネル）ごとに高々
+/// 1〜2 個しか同時に使わない想定。フロントエンドが検索条件の変更・リフレッシュ・
+/// タブを閉じるタイミングで明示的に [`LogCursorStore::close`] を呼ぶ前提だが、
+/// 呼び忘れ（異常終了など）でカーソルが溜まり続けてリポジトリのハンドルが
+/// リークしないよう、上限を超えたら最も古いものから自動的に立ち退かせる
+/// 安全網として用意する。
+const MAX_CACHED_LOG_CURSORS: usize = 32;
+
+/// 履歴パネルの無限スクロール用に、カーソルベースのページングを行うキャッシュ。
+///
+/// [`LogCursor`] のドキュメントコメントに設計意図（なぜ revwalk を丸ごと
+/// キャッシュに残す方式を選んだか）を書いている。ここでは複数のカーソルを
+/// オペークな文字列 ID で管理する。
+///
+/// `core` に置くことで、Tauri 層（`src-tauri`）は `Mutex<LogCursorStore>` を
+/// `tauri::State` として保持するだけの薄いラッパーになる（Git ロジックは
+/// 引き続き `core` に閉じる）。
+#[derive(Default)]
+pub struct LogCursorStore {
+    entries: std::collections::HashMap<String, LogCursor>,
+    /// 挿入順（＝古さの順）。先頭ほど古い。上限超過時の立ち退きに使う。
+    order: std::collections::VecDeque<String>,
+    next_id: u64,
+}
+
+impl LogCursorStore {
+    pub fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            next_id: 1,
+        }
+    }
+
+    /// 先頭ページ（履歴の最新から、フィルタ適用後で最大 `max` 件）を取得する。
+    ///
+    /// 続きがあれば（＝このページがちょうど `max` 件で埋まっていれば）カーソルを
+    /// キャッシュへ登録して ID を返す。末尾まで読み終えていれば、もう使わない
+    /// revwalk 一式は登録せずにその場で破棄する（自己クリーンアップ）。
+    pub fn first_page(
+        &mut self,
+        repo_path: &str,
+        filter: LogFilter,
+        max: usize,
+    ) -> Result<LogPage> {
+        // コミットが1件も無いリポジトリは revwalk を作らず空を返す
+        // （`push_head` は HEAD が無いとエラーになるため）。
+        let probe = open(repo_path)?;
+        let is_empty_repo = probe.head().is_err();
+        drop(probe);
+        if is_empty_repo {
+            return Ok(LogPage {
+                commits: Vec::new(),
+                cursor: None,
+                has_more: false,
+            });
+        }
+
+        let mut cursor = LogCursor::open(repo_path, filter)?;
+        let commits = cursor.take(max)?;
+        Ok(self.store_or_finish(commits, cursor, max))
+    }
+
+    /// 既存カーソルの続きを取得する。
+    ///
+    /// `cursor_id` が見つからない場合（存在しない・末尾に達して自己クリーン
+    /// アップ済み・上限超過で立ち退き済みのいずれか）は `Ok(None)` を返す。
+    /// 呼び出し側（Tauri 層）は、この場合フロントエンドが持っている「これまでに
+    /// 表示済みの件数」を `skip` として渡す従来の [`log_filtered`] に一度だけ
+    /// フォールバックすることで、正しさを保ったまま続行できる（その1回だけ
+    /// O(skip) になるが、通常運用でこの経路に入るのは close し忘れが積み重なった
+    /// 極端なケースのみ）。
+    pub fn next_page(&mut self, cursor_id: &str, max: usize) -> Result<Option<LogPage>> {
+        let Some(mut cursor) = self.entries.remove(cursor_id) else {
+            return Ok(None);
+        };
+        self.order.retain(|id| id != cursor_id);
+        let commits = cursor.take(max)?;
+        Ok(Some(self.store_or_finish(commits, cursor, max)))
+    }
+
+    /// 使い終わったカーソルを手放す（検索条件の変更・リフレッシュ・タブを閉じる等）。
+    /// 存在しない ID を渡しても何も起きない（冪等）。
+    pub fn close(&mut self, cursor_id: &str) {
+        self.entries.remove(cursor_id);
+        self.order.retain(|id| id != cursor_id);
+    }
+
+    /// このページで末尾に達していなければカーソルをキャッシュに登録し、
+    /// 達していれば（もう使わないので）カーソルをその場で破棄して結果だけ返す。
+    fn store_or_finish(
+        &mut self,
+        commits: Vec<CommitInfo>,
+        cursor: LogCursor,
+        max: usize,
+    ) -> LogPage {
+        // 既存の skip 版 API・フロントエンドの `hasMoreCommits` 判定と同じ約束事:
+        // 「要求した件数ぴったり返ってきたら、まだ続きがあるとみなす」。
+        let has_more = commits.len() == max;
+        if !has_more {
+            return LogPage {
+                commits,
+                cursor: None,
+                has_more: false,
+            };
+        }
+
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        self.entries.insert(id.clone(), cursor);
+        self.order.push_back(id.clone());
+        // 上限を超えたら最も古いものから立ち退かせる（リーク防止の安全網）。
+        while self.order.len() > MAX_CACHED_LOG_CURSORS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+
+        LogPage {
+            commits,
+            cursor: Some(id),
+            has_more: true,
+        }
+    }
 }
 
 /// 指定ファイルを変更したコミットだけを新しい順に最大 `max` 件返す（ファイル別履歴）。
@@ -660,16 +928,7 @@ pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitI
             continue;
         }
 
-        let author = commit.author();
-        out.push(CommitInfo {
-            id: oid.to_string(),
-            short_id: oid.to_string().chars().take(7).collect(),
-            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
-            author_name: author.name().unwrap_or("").to_string(),
-            author_email: author.email().unwrap_or("").to_string(),
-            time: commit.time().seconds(),
-            parent_ids: commit.parent_ids().map(|p| p.to_string()).collect(),
-        });
+        out.push(commit_info_from(oid, &commit));
     }
 
     Ok(out)
@@ -2595,5 +2854,217 @@ mod tests {
             .find(|f| f.path == "libs/foo")
             .expect("サブモジュールのポインタ変更が unstaged に現れるはず");
         assert!(entry.is_submodule, "is_submodule フラグが立っているはず");
+    }
+
+    // -----------------------------------------------------------------
+    // カーソルベースのページング（Issue #277）
+    // -----------------------------------------------------------------
+
+    /// メインの直線履歴 `main_len` 件に加え、`merges` 個のマージ（それぞれ3件の
+    /// 側枝コミット＋1件のマージコミット）を持つ履歴を高速に作る。
+    ///
+    /// `TestRepo::commit_raw` で ODB へ直接コミットを書き込むため、作業ツリーへの
+    /// 書き込み・インデックス更新が要らず、数千コミット規模でも高速に作れる。
+    /// 全コミットの時刻を1秒刻みで厳密に増加させるため、`Sort::TIME` の並びが
+    /// 時刻の同値によるタイブレークの曖昧さなしに一意に定まる
+    /// （＝一括取得とページ連結の比較を厳密な列の一致で検証できる）。
+    fn build_large_history_with_merges(fx: &TestRepo, main_len: usize, merges: usize) -> git2::Oid {
+        let tree = fx.empty_tree_oid();
+        let mut time = 1_700_000_000i64;
+
+        let mut main_chain = Vec::with_capacity(main_len);
+        let mut tip = fx.commit_raw(tree, &[], time, "root");
+        main_chain.push(tip);
+        for i in 1..main_len {
+            time += 1;
+            tip = fx.commit_raw(tree, &[tip], time, &format!("main {i}"));
+            main_chain.push(tip);
+        }
+
+        // メインの過去コミットから枝分かれさせ、数コミット進めてからメインへ
+        // マージする（複数経路から到達できるコミットを含むダイヤモンド型の
+        // 合流を複数作る）。
+        for m in 0..merges {
+            let fork_from = main_chain[(m * 7) % main_chain.len()];
+            time += 1;
+            let mut side_tip = fx.commit_raw(tree, &[fork_from], time, &format!("side {m}-0"));
+            for s in 1..3 {
+                time += 1;
+                side_tip = fx.commit_raw(tree, &[side_tip], time, &format!("side {m}-{s}"));
+            }
+            time += 1;
+            tip = fx.commit_raw(tree, &[tip, side_tip], time, &format!("merge {m}"));
+        }
+
+        fx.set_branch("main", tip);
+        tip
+    }
+
+    /// カーソルで最後まで全ページを読み切り、`(全コミットの id 列, 使ったページ数)` を返す。
+    fn drain_all_pages(
+        store: &mut LogCursorStore,
+        repo_path: &str,
+        filter: LogFilter,
+        page_size: usize,
+    ) -> (Vec<String>, usize) {
+        let mut ids = Vec::new();
+        let mut pages = 0usize;
+        let first = store.first_page(repo_path, filter, page_size).unwrap();
+        pages += 1;
+        ids.extend(first.commits.into_iter().map(|c| c.id));
+        let mut cursor = first.cursor;
+        let mut has_more = first.has_more;
+        while has_more {
+            let id = cursor
+                .clone()
+                .expect("has_more が true ならカーソルがあるはず");
+            let page = store
+                .next_page(&id, page_size)
+                .unwrap()
+                .expect("直前のページで登録したカーソルなので必ず見つかるはず");
+            pages += 1;
+            ids.extend(page.commits.into_iter().map(|c| c.id));
+            cursor = page.cursor;
+            has_more = page.has_more;
+        }
+        (ids, pages)
+    }
+
+    #[test]
+    fn cursor_pages_concat_equal_bulk_fetch_with_merges() {
+        // 数千コミット規模・複数のマージを含む履歴で、
+        // 「一括取得の結果」==「カーソルでページ連結した結果」を検証する。
+        let fx = TestRepo::new_without_identity();
+        let main_len = 2000;
+        let merges = 80;
+        build_large_history_with_merges(&fx, main_len, merges);
+
+        let repo = fx.open();
+        let baseline = log_filtered(&repo, 0, 1_000_000, &LogFilter::default()).unwrap();
+        // メイン main_len 件 + マージごとに側枝3件・マージコミット1件。
+        assert_eq!(baseline.len(), main_len + merges * 4);
+
+        let mut store = LogCursorStore::new();
+        // 割り切れない件数にして、ページ境界のズレも一緒に検証する。
+        let page_size = 37;
+        let (collected, pages) = drain_all_pages(
+            &mut store,
+            fx.path().to_str().unwrap(),
+            LogFilter::default(),
+            page_size,
+        );
+
+        let baseline_ids: Vec<String> = baseline.into_iter().map(|c| c.id).collect();
+        assert_eq!(collected, baseline_ids, "重複・欠落・順序のズレが無いこと");
+        // ページ数は ceil(総数/page_size) のはず（最後の空振り1回を許容する）。
+        let expected_pages = baseline_ids.len().div_ceil(page_size);
+        assert!(
+            pages == expected_pages || pages == expected_pages + 1,
+            "pages={pages}, expected={expected_pages}"
+        );
+    }
+
+    #[test]
+    fn cursor_pages_respect_filter_across_pages() {
+        let fx = TestRepo::new_without_identity();
+        build_large_history_with_merges(&fx, 300, 20);
+
+        let repo = fx.open();
+        let filter = LogFilter {
+            message: Some("side".to_string()),
+            ..Default::default()
+        };
+        let baseline = log_filtered(&repo, 0, 1_000_000, &filter).unwrap();
+        assert!(!baseline.is_empty());
+
+        let mut store = LogCursorStore::new();
+        let (collected, _pages) =
+            drain_all_pages(&mut store, fx.path().to_str().unwrap(), filter, 5);
+
+        let baseline_ids: Vec<String> = baseline.into_iter().map(|c| c.id).collect();
+        assert_eq!(collected, baseline_ids);
+        assert!(collected.iter().all(|id| {
+            let repo = fx.open();
+            let oid = git2::Oid::from_str(id).unwrap();
+            let commit = repo.find_commit(oid).unwrap();
+            let matches = commit
+                .summary()
+                .ok()
+                .flatten()
+                .unwrap_or("")
+                .contains("side");
+            matches
+        }));
+    }
+
+    #[test]
+    fn first_page_on_empty_repo_returns_no_cursor() {
+        let fx = TestRepo::new_without_identity();
+        let mut store = LogCursorStore::new();
+        let page = store
+            .first_page(fx.path().to_str().unwrap(), LogFilter::default(), 10)
+            .unwrap();
+        assert!(page.commits.is_empty());
+        assert!(page.cursor.is_none());
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn next_page_on_unknown_cursor_returns_none() {
+        let mut store = LogCursorStore::new();
+        assert!(store.next_page("no-such-cursor", 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn close_makes_cursor_unusable() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+
+        let mut store = LogCursorStore::new();
+        let page = store
+            .first_page(fx.path().to_str().unwrap(), LogFilter::default(), 2)
+            .unwrap();
+        let cursor = page.cursor.expect("5件中2件取得したので続きがあるはず");
+
+        store.close(&cursor);
+        assert!(store.next_page(&cursor, 2).unwrap().is_none());
+    }
+
+    #[test]
+    fn cache_evicts_oldest_beyond_capacity() {
+        // 上限を超えてカーソルを作り続けると、最も古いものから自動的に失効する
+        // （close し忘れによるリークの安全網）。
+        let fx = TestRepo::new();
+        for i in 0..3 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("c{i}"));
+        }
+        let repo_path = fx.path().to_str().unwrap();
+
+        let mut store = LogCursorStore::new();
+        // max=1 で毎回「続きあり」にし、上限+1個ぶんカーソルを作る。
+        let first = store
+            .first_page(repo_path, LogFilter::default(), 1)
+            .unwrap();
+        let oldest = first.cursor.expect("3件中1件取得したので続きがあるはず");
+
+        let mut latest = oldest.clone();
+        for _ in 0..MAX_CACHED_LOG_CURSORS {
+            // 同じ open 済みリポジトリから新しい先頭ページを作り、カーソルを増やす。
+            let page = store
+                .first_page(repo_path, LogFilter::default(), 1)
+                .unwrap();
+            latest = page.cursor.expect("続きがあるはず");
+        }
+
+        // 最も古いカーソルは立ち退き済みのはず。
+        assert!(store.next_page(&oldest, 1).unwrap().is_none());
+        // 最新のカーソルはまだ使えるはず。
+        assert!(store.next_page(&latest, 1).unwrap().is_some());
     }
 }
