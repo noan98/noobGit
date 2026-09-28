@@ -36,6 +36,8 @@ pub enum UndoAction {
         target: String,
         message: Option<String>,
     },
+    /// 作成したタグを削除して取り消す。既に削除済みなら何もしない（冪等）。
+    DeleteTag { name: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -285,6 +287,12 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                         repo.tag_lightweight(name, &obj, false)?;
                     }
                 }
+            }
+        }
+        UndoAction::DeleteTag { name } => {
+            // 既に削除済みなら何もしない（冪等）。
+            if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+                repo.tag_delete(name)?;
             }
         }
     }
