@@ -56,6 +56,35 @@ pub fn is_protected(branch: &str, protected: &[String]) -> bool {
     protected.iter().any(|p| p == branch)
 }
 
+/// 保護ブランチ名の一覧を正規化する（前後の空白除去・空文字除外・重複除外）。
+///
+/// git config の値（カンマ区切り文字列を分割したもの）と、フロントから渡される
+/// 配列の両方をこの1か所で正規化する（[`crate::repo::load_protected_branches`] /
+/// [`crate::ops::save_protected_branches`] から使う）。順序は最初に出てきたものを
+/// 残す（あとから来た重複は捨てる）。
+pub fn normalize_protected_branch_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw in names {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if seen.insert(name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// git config の値（カンマ区切り文字列。例: `main,master,release`）を
+/// 保護ブランチ一覧へパースし、正規化する。
+pub fn parse_protected_branches(raw: &str) -> Vec<String> {
+    normalize_protected_branch_names(raw.split(','))
+}
+
 /// リスク判定に必要な文脈情報。
 #[derive(Debug, Clone, Default)]
 pub struct SafetyContext {
@@ -615,6 +644,21 @@ mod tests {
         assert!(is_protected("main", &[]));
         assert!(is_protected("master", &[]));
         assert!(!is_protected("feature/x", &[]));
+    }
+
+    #[test]
+    fn parse_protected_branches_normalizes() {
+        // 前後の空白・空文字・重複を取り除く。
+        assert_eq!(
+            parse_protected_branches(" main , master ,, main ,release"),
+            vec![
+                "main".to_string(),
+                "master".to_string(),
+                "release".to_string()
+            ]
+        );
+        assert_eq!(parse_protected_branches(""), Vec::<String>::new());
+        assert_eq!(parse_protected_branches("   "), Vec::<String>::new());
     }
 
     #[test]

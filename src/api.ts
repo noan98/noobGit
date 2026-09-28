@@ -329,6 +329,12 @@ export const api = {
     invoke<RepoStatus>("get_status", { repoPath }),
   getBranches: (repoPath: string) =>
     invoke<BranchInfo[]>("get_branches", { repoPath }),
+  // 保護ブランチ一覧（未設定なら既定値の main/master）。リポジトリごとに独立する。
+  getProtectedBranches: (repoPath: string) =>
+    invoke<string[]>("get_protected_branches", { repoPath }),
+  // 保護ブランチ一覧を保存する。空配列を渡すと既定値（main/master）に戻る。
+  setProtectedBranches: (repoPath: string, names: string[]) =>
+    invoke<void>("set_protected_branches", { repoPath, names }),
   // filter を省略すると従来どおり全件を対象にする（後方互換）。
   getLog: (repoPath: string, skip: number, max: number, filter?: LogFilter) =>
     invoke<CommitInfo[]>("get_log", {
