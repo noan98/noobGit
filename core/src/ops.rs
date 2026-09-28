@@ -1302,6 +1302,7 @@ pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
 ///
 /// 作業ツリー・インデックス・現在ブランチには一切触れない安全操作。取り込む前に
 /// 「何が来ているか」を確認するために使う。更新された追跡ブランチ数を返す。
+/// リモートで削除されたブランチのプルーニング（追跡ブランチの整理）は既定で有効。
 pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
     fetch_with_progress(repo, remote_name, &mut |_| {})
 }
@@ -1310,9 +1311,33 @@ pub fn fetch(repo: &Repository, remote_name: &str) -> Result<FetchOutcome> {
 ///
 /// `on_progress` は UI スレッドをブロックしないよう軽量に保つこと（例: Tauri の
 /// Channel へ送るだけ）。`fetch` はこの関数を何もしないコールバックで呼ぶ薄いラッパー。
+/// プルーニングは既定で有効（[`fetch_with_options`] 参照）。
 pub fn fetch_with_progress(
     repo: &Repository,
     remote_name: &str,
+    on_progress: &mut dyn FnMut(NetworkProgress),
+) -> Result<FetchOutcome> {
+    fetch_with_options(repo, remote_name, true, on_progress)
+}
+
+/// [`fetch_with_progress`] のオプション付き版。
+///
+/// `prune` が `true`（既定）なら、リモートで削除されたブランチに対応する
+/// `refs/remotes/<remote_name>/...` の追跡ブランチも一緒に削除して手元を整理する
+/// （`git fetch --prune` 相当。`git2::FetchOptions::prune`）。`false` にすると、
+/// 追跡ブランチはリモートで削除されても手元に残り続ける（旧来の挙動）。
+/// いまの呼び出し元（[`fetch`] / [`fetch_with_progress`]）はすべて `true` 固定だが、
+/// 将来 UI 側でオフにできる余地として引数を残してある。
+///
+/// **ローカルブランチ本体は、prune の対象であっても絶対に削除しない** — 対象は
+/// `refs/remotes/` 以下の追跡ブランチのみ。整理された追跡ブランチ名（例:
+/// `origin/feature-x`）は [`FetchOutcome::pruned`] に入れて返す。取りこぼしが
+/// 無いよう、fetch 前後の `refs/remotes/<remote_name>/*` の実際の差分を突き合わせて
+/// 求める（libgit2 の prune コールバック頼みにしない）。
+pub fn fetch_with_options(
+    repo: &Repository,
+    remote_name: &str,
+    prune: bool,
     on_progress: &mut dyn FnMut(NetworkProgress),
 ) -> Result<FetchOutcome> {
     let remote_name = remote_name.trim();
@@ -1338,6 +1363,10 @@ pub fn fetch_with_progress(
         indexed_deltas: 0,
         total_deltas: 0,
     });
+
+    // プルーニングで消える追跡ブランチを取りこぼしなく求めるため、fetch 前の
+    // `refs/remotes/<remote_name>/*` を控えておく。
+    let before = remote_tracking_ref_names(repo, remote_name);
 
     // 更新（前進・新規取得）された追跡ブランチ数を update_tips コールバックで数える。
     let updated = Cell::new(0usize);
@@ -1372,6 +1401,11 @@ pub fn fetch_with_progress(
 
         let mut fo = FetchOptions::new();
         fo.remote_callbacks(cb);
+        fo.prune(if prune {
+            git2::FetchPrune::On
+        } else {
+            git2::FetchPrune::Off
+        });
 
         // リモートに設定された取得 refspec（例: +refs/heads/*:refs/remotes/origin/*）で取得する。
         let refspecs: Vec<String> = remote
@@ -1386,10 +1420,37 @@ pub fn fetch_with_progress(
             .map_err(|e| CoreError::Git(format!("取得（fetch）に失敗しました: {}", e.message())))?;
     }
 
+    // fetch 後の `refs/remotes/<remote_name>/*` との差分が、実際に整理された追跡ブランチ。
+    let after = remote_tracking_ref_names(repo, remote_name);
+    let pruned: Vec<String> = before.difference(&after).cloned().collect();
+
     Ok(FetchOutcome {
         remote: remote_name.to_string(),
         updated_refs: updated.get(),
+        pruned,
     })
+}
+
+/// `refs/remotes/<remote_name>/*` にある追跡ブランチの表示名（例: `origin/main`）の集合。
+///
+/// fetch のプルーニングで実際に消えた追跡ブランチを、前後の差分から確実に求めるための
+/// 補助。列挙に失敗しても（通常起きない）fetch 全体を失敗させたくないので空集合にする。
+fn remote_tracking_ref_names(
+    repo: &Repository,
+    remote_name: &str,
+) -> std::collections::BTreeSet<String> {
+    let glob = format!("refs/remotes/{remote_name}/*");
+    let mut out = std::collections::BTreeSet::new();
+    if let Ok(iter) = repo.references_glob(&glob) {
+        for r in iter.flatten() {
+            if let Ok(name) = r.name() {
+                if let Some(short) = name.strip_prefix("refs/remotes/") {
+                    out.insert(short.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// リモートから取得したうえで、安全に進められるとき（fast-forward）だけ取り込む。
@@ -2298,6 +2359,61 @@ mod tests {
         assert_eq!(tracking.id(), upstream.head_oid());
         // 作業ツリーは変わっていない（安全操作）。
         assert!(status(&repo).unwrap().is_clean);
+    }
+
+    /// #268 fetch のプルーニング: リモートでブランチが削除されたら、次の fetch で
+    /// 対応する追跡ブランチ（`refs/remotes/origin/...`）が整理され、`pruned` に入る。
+    /// 同名のローカルブランチ本体は一切削除されない。
+    #[test]
+    fn fetch_prunes_deleted_remote_tracking_branch_but_keeps_local_branch() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        // upstream 側に feature ブランチを作る。
+        {
+            let repo = upstream.open();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("feature", &head, false).unwrap();
+        }
+
+        let (_keep, local_path) = clone_local(&upstream);
+        let repo = git2::Repository::open(&local_path).unwrap();
+
+        // 最初の fetch で origin/feature が現れる。プルーニングは何も起きない。
+        let outcome = fetch(&repo, "origin").unwrap();
+        assert!(outcome.pruned.is_empty());
+        assert!(repo.find_reference("refs/remotes/origin/feature").is_ok());
+
+        // ローカルにも同名のブランチを作り、upstream として origin/feature を設定する
+        // （switch_branch 相当のシナリオを避けて直接 git2 で組み立てる）。
+        {
+            let tracking_oid = repo
+                .find_reference("refs/remotes/origin/feature")
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .id();
+            let commit = repo.find_commit(tracking_oid).unwrap();
+            let mut local_branch = repo.branch("feature", &commit, false).unwrap();
+            local_branch.set_upstream(Some("origin/feature")).unwrap();
+        }
+
+        // upstream 側で feature ブランチを削除する。
+        {
+            let repo = upstream.open();
+            let mut b = repo.find_branch("feature", BranchType::Local).unwrap();
+            b.delete().unwrap();
+        }
+
+        // 再 fetch すると origin/feature の追跡ブランチが整理（prune）される。
+        let outcome = fetch(&repo, "origin").unwrap();
+        assert_eq!(outcome.pruned, vec!["origin/feature".to_string()]);
+        assert!(repo.find_reference("refs/remotes/origin/feature").is_err());
+
+        // ローカルの feature ブランチ本体は残っている（削除されない）。
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
     }
 
     /// #167 進捗フィードバック: fetch_with_progress が「接続待ち」を最初に必ず通知し、
