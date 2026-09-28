@@ -7,12 +7,14 @@
  * 自前のタイトルバーを描く。ライト/ダークの切り替えは既存の
  * `[data-theme="dark"]` に自動で追従する（ThemeToggle.tsx 参照）。
  *
- * ドラッグ移動・ダブルクリックでの最大化切り替えは Tauri 公式ドキュメントの
- * 推奨実装に合わせる: ドラッグ領域の mousedown で `e.detail === 2`
- * （ダブルクリック）なら `toggleMaximize()`、それ以外なら `startDragging()`
- * を呼ぶ。`data-tauri-drag-region` 属性 + `app-region: drag`（styles.css）は
- * Windows のタッチ/ペン操作でのドラッグに必要（公式ドキュメント推奨）。
- * ボタン領域は `data-tauri-drag-region` を付けずドラッグ対象外にする。
+ * ドラッグ移動・ダブルクリックでの最大化切り替えは、Tauri 組み込みの
+ * `data-tauri-drag-region` 処理に任せる（Tauri が document の mousedown で
+ * start_dragging / ダブルクリック時は最大化切り替えを呼ぶ）。自前の mousedown
+ * ハンドラを併用すると、ダブルクリックで最大化切り替えが 2 回走って打ち消し
+ * 合うため付けない。値を `"deep"` にして、タイトル文字の上からでもドラッグ
+ * できるようにする。`app-region: drag`（styles.css）は Windows のタッチ/ペン
+ * 操作でのドラッグに必要（公式ドキュメント推奨）。
+ * ボタン領域は `data-tauri-drag-region` の外に置き、ドラッグ対象外にする。
  *
  * `npm run dev`（vite のみ、Tauri API が無いブラウザ環境）でも落ちないよう、
  * `window.__TAURI_INTERNALS__` の有無で実行環境を判定する。無い場合は
@@ -75,17 +77,6 @@ export function TitleBar() {
     };
   }, []);
 
-  function handleDragMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    const appWindow = appWindowRef.current;
-    // 左ボタン以外（右クリックメニュー等）はドラッグ扱いにしない。
-    if (!appWindow || e.buttons !== 1) return;
-    if (e.detail === 2) {
-      void appWindow.toggleMaximize().catch(() => {});
-    } else {
-      void appWindow.startDragging().catch(() => {});
-    }
-  }
-
   function handleMinimize() {
     void appWindowRef.current?.minimize().catch(() => {});
   }
@@ -100,8 +91,7 @@ export function TitleBar() {
     <div className="titlebar">
       <div
         className="titlebar-drag"
-        data-tauri-drag-region
-        onMouseDown={handleDragMouseDown}
+        data-tauri-drag-region="deep"
       >
         <span className="titlebar-title">noobGit</span>
       </div>
