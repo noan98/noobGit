@@ -149,6 +149,60 @@ impl TestRepo {
         self.open().head().unwrap().target().unwrap()
     }
 
+    /// 空のツリー（ファイルを1つも持たないツリー）の oid を書き込んで返す。
+    ///
+    /// 大量の合成コミットを作るテスト（カーソルページングの大規模履歴テスト等）
+    /// では、ファイル内容そのものは検証対象ではないので、全コミットでこの
+    /// 同じ空ツリーを使い回す。
+    pub fn empty_tree_oid(&self) -> git2::Oid {
+        let repo = self.open();
+        let builder = repo.treebuilder(None).unwrap();
+        builder.write().unwrap()
+    }
+
+    /// 任意の親（0〜複数）・任意のコミット時刻を指定して、ODB へ直接コミット
+    /// オブジェクトを書き込む（作業ツリーもインデックスも介さないので高速）。
+    /// `commit_with_raw_message` と違い、複数親（マージコミット）を作れる。
+    /// HEAD やブランチ参照は動かさないので、必要なら [`TestRepo::set_branch`] で
+    /// 別途動かす。戻り値は作成したコミットの oid。
+    pub fn commit_raw(
+        &self,
+        tree: git2::Oid,
+        parents: &[git2::Oid],
+        time: i64,
+        message: &str,
+    ) -> git2::Oid {
+        let repo = self.open();
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(format!("tree {tree}\n").as_bytes());
+        for p in parents {
+            buf.extend_from_slice(format!("parent {p}\n").as_bytes());
+        }
+        buf.extend_from_slice(
+            format!("author Test User <test@example.com> {time} +0000\n").as_bytes(),
+        );
+        buf.extend_from_slice(
+            format!("committer Test User <test@example.com> {time} +0000\n").as_bytes(),
+        );
+        buf.extend_from_slice(b"\n");
+        buf.extend_from_slice(message.as_bytes());
+
+        let odb = repo.odb().unwrap();
+        odb.write(git2::ObjectType::Commit, &buf).unwrap()
+    }
+
+    /// 指定したブランチ（例: `"main"`）の参照を指定コミットへ強制的に付け替える。
+    pub fn set_branch(&self, name: &str, oid: git2::Oid) {
+        let repo = self.open();
+        repo.reference(
+            &format!("refs/heads/{name}"),
+            oid,
+            true,
+            "test: move branch",
+        )
+        .unwrap();
+    }
+
     /// `upstream`（コミットを1つ以上持つ別リポジトリ）をサブモジュールとして
     /// `path` に追加する。ネットワークアクセスは使えないため、`upstream` の
     /// ローカルパスをそのままサブモジュール URL として使う。

@@ -38,7 +38,7 @@ noobGit/
 | モジュール | 責務 |
 |---|---|
 | `model.rs` | Serde データ型: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`, `StashInfo`（`file_count` 付き）, `FileDiff` / `DiffLine` / `DiffLineKind`（差分表示）, `BlameHunk`（blame）, `ConflictFile`（コンフリクト一覧）, `TagInfo`（タグ）, `GitignorePatternCheck` /`GitignoreSuggestion`（`.gitignore` パターンの検証結果・提案）。 |
-| `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log` / `log_paged` / `log_filtered`（`LogFilter` でメッセージ・作者・日付フィルタ）, `current_branch`, `is_dirty`, `head_is_published`（HEAD が上流より先行していない＝公開済みかの判定。amend / rebase の危険度に使う）, `diff_unstaged` / `diff_staged` / `diff_conflict` / `diff_commits`（任意コミット間差分）, `blame_file`（行ごとの最終変更コミット）, `file_log`（ファイル別履歴）, `get_conflicts`（コンフリクト中ファイル一覧）, `list_tags`。 |
+| `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log` / `log_paged` / `log_filtered`（`LogFilter` でメッセージ・作者・日付フィルタ。`skip` を渡すたびに履歴を先頭から辿り直すため、無限スクロールで繰り返し呼ぶと O(N²) になる。シグネチャは他所からの利用に備えて維持し、内部実装のみ共有ヘルパー `commit_info_from` を使う）, `LogCursorStore`（Issue #277: カーソルベースのページング。`git2::Revwalk` の走査状態そのものをページをまたいで保持し続けることで、`skip` 版と完全に同じ出力順序を、重複・欠落なく・各ページ O(取得件数) で返す。`Revwalk<'repo>` は `Repository` を借用するため自己参照になり、内部の `LogCursor` は `Repository` を `Box` に置いて `unsafe` にライフタイムを `'static` へ付け替えて同居させる——設計意図と安全性の根拠は `LogCursor` のドキュメントコメントを参照。`first_page` / `next_page` / `close` を持ち、`MAX_CACHED_LOG_CURSORS` を超えたカーソルは close し忘れへの安全網として最も古いものから自動失効する）, `current_branch`, `is_dirty`, `head_is_published`（HEAD が上流より先行していない＝公開済みかの判定。amend / rebase の危険度に使う）, `diff_unstaged` / `diff_staged` / `diff_conflict` / `diff_commits`（任意コミット間差分）, `blame_file`（行ごとの最終変更コミット）, `file_log`（ファイル別履歴）, `get_conflicts`（コンフリクト中ファイル一覧）, `list_tags`。 |
 | `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `stage_hunk`（hunk 単位の部分ステージ。undo は `UnstagePath`）, `unstage`, `commit`（マージ中は MERGE_HEAD を第2親に加えてマージを完了させる。コンフリクト未解消なら中断）, `amend_commit`（直前コミットの書き換え。author 据え置き・committer 更新。元コミットへの soft reset を undo に記録）, `reword_commit` / `squash_commits`（インタラクティブリベース。HEAD からの連続範囲のみ。元 HEAD への reset を undo に記録）, `cherry_pick`（別コミットを HEAD にコピー。ステージ済み変更あり・コンフリクト・未コミット変更との衝突時は何も変えずに `Blocked`。soft reset を undo に記録）, `mark_resolved`（コンフリクト解消マーク）, `discard_path`（未コミット変更の破棄。HEAD にあれば最後のコミット状態へ強制復元、新規なら index から外して削除。不可逆なので undo は記録しない）, `stash_save` / `stash_apply` / `stash_pop` / `stash_list` / `stash_diff`（作業の一時退避と差分プレビュー。`stash_save` は未追跡も含めて退避し、空メッセージなら自動命名、取り出し用の `PopStash` undo を記録。`stash_diff` は適用せずツリー比較のみ。`apply` / `pop` はコンフリクトしうる。stash 系は `&mut Repository` を取る）, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`, `create_tag` / `delete_tag`（タグ。作成は `DeleteTag`、削除は `RecreateTag` undo を記録）、`add_to_gitignore`（`.gitignore` への追記。`validate_gitignore_pattern` で glob 構文を検証してから書く）、`validate_gitignore_pattern`（純粋関数。`GitignorePatternCheck` を返す）、`check_gitignore_pattern`（構文チェック＋既存 `.gitignore` との重複チェック）、`suggest_gitignore_patterns`（ファイルパスから「このファイルのみ／同じ拡張子／ディレクトリ全体」の `GitignoreSuggestion` 候補を生成する純粋関数）、リモート取り込み `fetch` / `pull`（`pull` は安全な fast-forward のみ。分岐時は何も変えずに中断）、リモート送信 `push`（`force` で強制 push）。ローカルの書き込みは undo エントリを記録する（ベストエフォート。`discard` は不可逆なので例外）。`fetch` / `pull` / `push` はネットワーク操作で undo は記録しない。 |
 | `safety.rs` | リスク分類: `assess(op, ctx) -> RiskAssessment`（`RiskLevel::{Safe, Caution, Destructive}`）。`OperationKind` は stage 系・コミット系のほか `CherryPick`（Caution）, `CreateTag`（Safe）/ `DeleteTag`（Caution）, `Rebase`（Destructive。公開済み履歴で警告を強める）を含む。保護ブランチ（`main`/`master`）を定義する。 |
 | `explain.rs` | `OperationKind` ごとの平易な日本語の説明（`what` / `why` / `on_trouble`）。操作文言の唯一の出典。 |
@@ -159,6 +159,7 @@ npm run typecheck        # tsc --noEmit
 
 ```bash
 cargo test -p noobgit-core    # core のテストを実行
+cargo bench -p noobgit-core   # core のベンチマークを実行（下記参照）
 cargo fmt                     # Rust を整形
 cargo clippy                  # Rust を lint
 npm run typecheck             # TS の型チェック（strict, noUnusedLocals/Parameters）
@@ -167,8 +168,47 @@ npm run build                 # フロントエンドがコンパイルできる
 
 Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実行すること。
 フロントエンドの変更を完了と報告する前に `npm run typecheck` を実行すること。
-UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
-ので、UI が動くと主張するのではなく、その旨を明示すること。
+
+### E2E テスト（tauri-driver + WebdriverIO, #177）
+
+`e2e/` に、実際にビルドしたデスクトップアプリを操作する E2E テストがある
+（リポジトリを開く・ステージ・コミット・ブランチ作成の主要 4 シナリオ、
+`e2e/specs/main-flow.e2e.ts`）。ネイティブのフォルダ選択ダイアログ
+（plugin-dialog）は WebDriver から操作できないため、`src/App.tsx` が
+localStorage に保存するタブセッション（`noobgit_tab_session`）へテスト側
+から直接パスを書き込み、リロードしてリポジトリを自動オープンさせている
+（本番コードへの E2E 専用分岐は追加していない）。テスト用の一時 Git
+リポジトリは Node 側で `git` CLI を使って作る（`e2e/support/fixture.ts`。
+noobGit 本体が git2 のみを使う規約はアプリ本体の話であり、E2E フィクス
+チャ作成には適用しない）。
+
+```bash
+npm run test:e2e   # e2e/wdio.conf.ts を実行（デバッグビルド → tauri-driver 起動 → 4シナリオ）
+```
+
+- **Linux（CI と同じ）**: `webkit2gtk-driver`（apt）と実ウィンドウ用の
+  `xvfb` が必要。ヘッドレスに動かすには
+  `xvfb-run npm run test:e2e` のように実行する。
+- **Windows でローカル実行する場合**: tauri-driver は Windows でも動くが、
+  別途インストール済みの Edge と同じバージョンの `msedgedriver` が必要
+  （`msedgedriver-tool` などで取得し、PATH に通す）。
+- **macOS**: tauri-driver は Linux / Windows のみ対応のため、このコマンドは
+  macOS では動かない。
+- `e2e/wdio.conf.ts` の `onPrepare` が `npm run tauri -- build --debug
+  --no-bundle` を自動実行してデバッグビルドを用意する。ビルド成果物の場所は
+  `CARGO_TARGET_DIR` が設定されていればそれを優先し、無ければ
+  `<repo>/target/debug` を使う。
+- `e2e/` は独立した TypeScript プロジェクト（`e2e/tsconfig.json`、`tsx` で
+  実行、型チェックはしない）で、ルートの `tsconfig.json`（`include:
+  ["src"]`）には含めないため `npm run typecheck` に影響しない。同様に
+  `vite.config.ts` の `test.exclude` で `e2e/**` を vitest の対象からも
+  除外している。
+
+UI/機能の正しさは、上記 4 シナリオの範囲では CI（Linux, `.github/workflows/
+e2e.yml`）でヘッドレスに検証できるが、それ以外（ネイティブファイルダイアログ
+そのものの見た目、Windows 固有の挙動、NSIS/MSI インストーラの生成物）は
+ここでは検証できないので、UI 全体が動くと主張するのではなく、その旨を
+明示すること。
 
 ### スナップショットテスト（insta）
 
@@ -198,6 +238,32 @@ noobgit-core` でスナップショットを直接更新できる（レビュー
 が残っていないか確認し、残っていれば削除するか `cargo insta review` で解消する
 （`.snap.new` はコミットしない）。CI は `INSTA_UPDATE=no` を明示しているため、
 更新を忘れてコミットするとスナップショット不一致でテストが失敗する。
+
+### ベンチマーク（`core/benches/`）
+
+`core::repo` の主要な読み取り関数（`status` / `log_paged` / `diff_unstaged` /
+`blame_file` / `get_conflicts`）に対する criterion ベンチを `core/benches/repo_bench.rs`
+に置き、大規模リポジトリでのパフォーマンスリグレッションを検知する（Issue #160）。
+`core/benches/support/mod.rs` に、10,000 コミットのベンチ用リポジトリを高速に
+生成するヘルパーがある — `test_support::TestRepo` は `#[cfg(test)]` 専用で
+ベンチ（別クレート扱い）からは使えないため、ここに専用に用意している。
+ワーキングツリー／インデックスへ毎コミット書き込むと生成が非常に遅くなるため、
+`TreeUpdateBuilder` で直前のツリーとの差分だけを適用し、コミットを ODB に
+直接書き込む。
+
+```bash
+cargo bench -p noobgit-core                                    # フルの計測（数十秒程度）
+cargo bench -p noobgit-core --bench repo_bench -- \
+  --warm-up-time 1 --measurement-time 3                        # 手元で手早く確認する場合
+```
+
+計測（`cargo bench`）は通常の PR の CI（`ci.yml`）には含めない — 週次
+スケジュールの `.github/workflows/bench.yml`（後述）でのみ実行し、結果をジョブ
+サマリーに出す。ただし ci.yml の `cargo llvm-cov nextest --all-targets` は
+ベンチのターゲットも**テストモード**（`--bench` 引数なし。各ベンチを 1 回だけ
+実行してコードが壊れていないことを確かめる）で実行する。PR の CI を遅くしない
+よう、`repo_bench.rs` は `--bench` 引数の有無を見て、テストモードでは 50
+コミットの小さなリポジトリに切り替える（10k コミットの生成は計測時だけ）。
 
 ## 規約
 
@@ -310,6 +376,29 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     トリガー: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`。
     フロントエンドのみの変更では Rust ジョブは**実行されない**（Rust のソース/
     テストは影響を受けず、frontend ジョブがすでにビルドを検証している）。
+- **`workflows/e2e.yml`**（#177）— tauri-driver + WebdriverIO による E2E
+  テスト（`e2e/`、リポジトリを開く・ステージ・コミット・ブランチ作成の主要
+  4 シナリオ）を実データのデスクトップアプリ上で検証する。`main` への
+  push（`paths-ignore` でドキュメントのみの変更はスキップ）と手動
+  ディスパッチでのみ実行し、**PR では実行しない**（`ci.yml` は変更していない）。
+  デバッグビルドのコンパイル + 実ウィンドウ操作を伴い PR ごとに走らせるには
+  重く、また `ci.yml` に混ぜると automerge が見る「ci.yml の結論」に影響
+  してしまうため、独立したワークフローに分離した。`ubuntu-latest` 上の
+  単一ジョブで、`ci.yml` の rust ジョブと同じ Tauri Linux 依存
+  （`TAURI_APT_PACKAGES`）に加えて tauri-driver を動かすための
+  `webkit2gtk-driver`（Linux 版 `WebKitWebDriver` 本体）と `xvfb`
+  （ヘッドレス実行用の仮想ディスプレイ）をインストールし（`ci.yml` と同じ
+  apt キャッシュ復元漏れの自己修復ステップも踏襲）、`cargo install
+  tauri-driver --locked` で tauri-driver 自体を用意してから
+  `xvfb-run npm run test:e2e` を実行する。`npm run test:e2e` 自体（内部の
+  `e2e/wdio.conf.ts`）がデバッグビルド（`tauri build --debug --no-bundle`）
+  を `onPrepare` で用意し、`beforeSession` / `afterSession` で tauri-driver
+  プロセスを起動・停止する。Rust のビルドは `ci.yml` と同じく `sccache` +
+  `Swatinem/rust-cache` でキャッシュする。失敗したテストのスクリーンショット
+  は `e2e/wdio.conf.ts` の `afterTest` フックが `e2e/screenshots/` に保存し、
+  ジョブが失敗した場合だけ `actions/upload-artifact` で成果物として残す
+  （`if-no-files-found: ignore` なので、全テスト成功時は何もアップロード
+  しない）。権限は最小限（`contents: read`）。
 - **`workflows/release.yml`** — `v*` タグの push（または手動ディスパッチ）で実行。
   `windows-latest` 上で `tauri-apps/tauri-action` により Windows インストーラを
   ビルドし、**ドラフト**の GitHub Release を公開する。リリースを切る = `vX.Y.Z`
@@ -374,6 +463,22 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
   Issue が open のまま残ってしまうため。そのため `permissions` に `issues:
   write` を加えている。クローズはベストエフォートで、失敗してもマージ済みの
   ワークフローは失敗させない。
+- **`workflows/bench.yml`** — `core` の主要な読み取り関数（`status` /
+  `log_paged` / `diff_unstaged` / `blame_file` / `get_conflicts`）を
+  10,000 コミットの一時リポジトリで計測し、パフォーマンスリグレッションを
+  検知する（Issue #160、`core/benches/`）。**通常の PR の CI（`ci.yml`）には
+  含めない** — `schedule`（`0 3 * * 1`、毎週月曜 03:00 UTC）と
+  `workflow_dispatch` のみでトリガーし、`ci.yml` 自体は変更しない。
+  `cargo bench -p noobgit-core` は noobgit-core とその依存関係だけをビルド
+  し、`src-tauri` はビルド対象に入らないため、Tauri 2 の Linux システム依存
+  （apt）もフロントエンドのビルドも不要（`ci.yml` の rust ジョブと違い、
+  checkout・Rust セットアップ・キャッシュだけで足りる）。`cargo bench` の
+  `--output-format bencher` オプションで
+  `test <名前> ... bench: <ns> ns/iter (+/- <誤差>)` 形式の1行1ベンチの出力に
+  し、後続の Python ステップでそれをパースしてジョブサマリー
+  （`$GITHUB_STEP_SUMMARY`）に表として出す。あわせて Issue #160 の受け入れ
+  条件「10k コミットで `log_paged(100)` が 500ms 以内」を機械的にチェックし、
+  超えていればジョブを失敗させる。
 - **`dependabot.yml`** — 3 つのエコシステムに対する週次の更新 PR: `cargo`
   （ルートワークスペース）、`npm`（フロントエンド）、`github-actions`（ピン留め
   したアクション SHA を最新に保つ）。マイナー/パッチの更新はエコシステムごとに
