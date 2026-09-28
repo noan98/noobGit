@@ -1,0 +1,229 @@
+// #271: HistoryPanel の仮想スクロール化のテスト。
+//
+// jsdom はレイアウトを計算しない（offsetHeight は常に 0）ため、
+// @tanstack/react-virtual が「表示範囲」を正しく求められるよう、スクロール
+// 領域（.commits-scroll / .reflog-scroll）と各行（<li>）の offsetHeight /
+// offsetWidth をここでモックする。これが無いとビューポート高さが 0 と判定され、
+// 「仮想化されている」ことをテストで意味のある形で検証できない。
+import type { ComponentProps } from "react";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
+import { invoke } from "@tauri-apps/api/core";
+import { vi, describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { HistoryPanel } from "../HistoryPanel";
+import type { CommitInfo, ReflogEntry } from "../../api";
+
+// スクロール領域のビューポート高さ（テスト用の仮の値）。
+const VIEWPORT_HEIGHT_PX = 300;
+// 行の高さ（テスト用の仮の値。コミット行・reflog 行どちらにも使う）。
+const ROW_HEIGHT_PX = 56;
+
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (
+        this.classList.contains("commits-scroll") ||
+        this.classList.contains("reflog-scroll")
+      ) {
+        return VIEWPORT_HEIGHT_PX;
+      }
+      if (this.tagName === "LI") {
+        return ROW_HEIGHT_PX;
+      }
+      return 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get() {
+      return 600;
+    },
+  });
+});
+
+// ダミーの id を作る。short_id（先頭7桁）が commit ごとに一意になるよう、
+// 連番を左詰め・固定幅にしてから埋め文字を付ける（末尾を埋めると先頭7桁が
+// 衝突してしまうため）。
+function dummyId(index: number): string {
+  return `${String(index).padStart(6, "0")}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+}
+
+function makeCommits(count: number): CommitInfo[] {
+  const commits: CommitInfo[] = [];
+  for (let i = 0; i < count; i++) {
+    const id = dummyId(i);
+    const parentId = i + 1 < count ? dummyId(i + 1) : undefined;
+    commits.push({
+      id,
+      short_id: id.slice(0, 7),
+      summary: `コミット #${i}`,
+      author_name: "山田太郎",
+      author_email: "yamada@example.com",
+      time: 1700000000 - i * 60,
+      parent_ids: parentId ? [parentId] : [],
+    });
+  }
+  return commits;
+}
+
+function makeReflogEntries(count: number): ReflogEntry[] {
+  const entries: ReflogEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    entries.push({
+      old_oid: `old-${i}`,
+      new_oid: `new-${i}`,
+      short_id: `new${i}`.slice(0, 7),
+      message: `HEAD@{${i}}: commit: reflog エントリ #${i}`,
+      short_message: "コミット",
+      timestamp: 1700000000 - i * 60,
+    });
+  }
+  return entries;
+}
+
+type PanelProps = ComponentProps<typeof HistoryPanel>;
+
+function renderHistoryPanel(overrides: Partial<PanelProps> = {}) {
+  const props: PanelProps = {
+    commits: [],
+    currentBranch: "main",
+    onReset: vi.fn(),
+    onCherryPick: vi.fn(),
+    hasMore: false,
+    loadingMore: false,
+    onLoadMore: vi.fn(),
+    onGoToCommit: vi.fn(),
+    onCompareSelect: vi.fn(),
+    compareBaseId: null,
+    onSearch: vi.fn(),
+    searching: false,
+    selectedIds: new Set<string>(),
+    onToggleSelect: vi.fn(),
+    onStartRebase: vi.fn(),
+    repoPath: "/tmp/repo",
+    onResetTo: vi.fn(),
+    ...overrides,
+  };
+  return {
+    props,
+    ...render(
+      <ChakraProvider value={defaultSystem}>
+        <HistoryPanel {...props} />
+      </ChakraProvider>,
+    ),
+  };
+}
+
+describe("HistoryPanel のコミット一覧（仮想スクロール）", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("大量のコミットがあっても DOM に描画される行数は全件よりずっと少ないこと", () => {
+    const commits = makeCommits(2000);
+    renderHistoryPanel({ commits });
+
+    const rows = screen.getAllByRole("listitem");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(commits.length);
+  });
+
+  it("先頭のコミットが表示されること", () => {
+    const commits = makeCommits(2000);
+    renderHistoryPanel({ commits });
+
+    expect(screen.getByText("コミット #0")).toBeInTheDocument();
+  });
+
+  it("チェックボックスをクリックすると onToggleSelect が呼ばれること", () => {
+    const commits = makeCommits(50);
+    const onToggleSelect = vi.fn();
+    renderHistoryPanel({ commits, onToggleSelect });
+
+    const checkbox = screen.getByLabelText(`コミット ${commits[0].short_id} を選択`);
+    fireEvent.click(checkbox);
+
+    expect(onToggleSelect).toHaveBeenCalledWith(commits[0].id);
+  });
+
+  it("「比較」ボタンをクリックすると onCompareSelect が呼ばれること", () => {
+    const commits = makeCommits(50);
+    const onCompareSelect = vi.fn();
+    renderHistoryPanel({ commits, onCompareSelect });
+
+    fireEvent.click(screen.getAllByText("比較")[0]);
+
+    expect(onCompareSelect).toHaveBeenCalledWith(commits[0]);
+  });
+
+  it("「戻す」ボタンをクリックすると onReset が呼ばれること", () => {
+    const commits = makeCommits(50);
+    const onReset = vi.fn();
+    renderHistoryPanel({ commits, onReset });
+
+    fireEvent.click(screen.getAllByText("戻す")[0]);
+
+    expect(onReset).toHaveBeenCalledWith(commits[0]);
+  });
+
+  it("「もっと見る」ボタンで onLoadMore が呼ばれること（無限スクロールの読み込みトリガー）", () => {
+    const commits = makeCommits(50);
+    const onLoadMore = vi.fn();
+    renderHistoryPanel({ commits, hasMore: true, onLoadMore });
+
+    fireEvent.click(screen.getByRole("button", { name: "もっと見る" }));
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("コミットが 0 件のときは空状態が表示されること", () => {
+    renderHistoryPanel({ commits: [] });
+
+    expect(screen.getByText("まだコミットがありません")).toBeInTheDocument();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+  });
+});
+
+describe("HistoryPanel の reflog 一覧（仮想スクロール）", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("reflog タブに切り替えると一覧が表示され、描画行数が全件より少ないこと", async () => {
+    const entries = makeReflogEntries(100);
+    vi.mocked(invoke).mockResolvedValue(entries);
+    renderHistoryPanel({ commits: makeCommits(5) });
+
+    fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
+
+    await screen.findByText(entries[0].message.length > 60 ? `${entries[0].message.slice(0, 60)}…` : entries[0].message);
+
+    const rows = screen.getAllByRole("listitem");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(entries.length);
+  });
+
+  it("reflog 行の「戻す」ボタンをクリックすると onResetTo が new_oid で呼ばれること", async () => {
+    const entries = makeReflogEntries(10);
+    vi.mocked(invoke).mockResolvedValue(entries);
+    const onResetTo = vi.fn();
+    renderHistoryPanel({ commits: makeCommits(5), onResetTo });
+
+    fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
+    await screen.findAllByText("戻す");
+
+    fireEvent.click(screen.getAllByText("戻す")[0]);
+
+    expect(onResetTo).toHaveBeenCalledWith(entries[0].new_oid);
+  });
+
+  it("reflog が空のときは空状態が表示されること", async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+    renderHistoryPanel({ commits: makeCommits(5) });
+
+    fireEvent.click(screen.getByRole("tab", { name: "reflog" }));
+
+    expect(await screen.findByText("reflog がありません")).toBeInTheDocument();
+  });
+});
