@@ -128,7 +128,7 @@ export function ExplainTooltip({ op, children }: Props) {
               borderLeft: `3px solid ${borderColor(op)}`,
               borderRadius: 6,
               padding: "10px 12px",
-              boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+              boxShadow: "var(--shadow-tooltip)",
               // フォント
               fontSize: 12,
               lineHeight: 1.6,

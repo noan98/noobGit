@@ -136,7 +136,7 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
       display="flex"
       alignItems="center"
       justifyContent="center"
-      style={{ background: "rgba(0, 0, 0, 0.55)" }}
+      style={{ background: "var(--overlay-strong)" }}
     >
       {/* 中央カード */}
       <Box
@@ -148,7 +148,7 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
           background: "var(--panel)",
           border: "1px solid var(--border)",
           borderRadius: "12px",
-          boxShadow: "0 8px 40px rgba(0,0,0,0.32)",
+          boxShadow: "var(--shadow-modal)",
           width: "min(480px, 90vw)",
           padding: "2rem",
           display: "flex",
