@@ -3,6 +3,9 @@ import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
 import { EmptyState } from "./EmptyState";
 import { AheadBehindBadge } from "./AheadBehindBadge";
 import { Icon } from "./Icon";
+// #274 危険度カラー: push・delete_branch はブランチごとに結果が変わりうる
+// （保護ブランチかどうか）ため、raw な riskLevels マップを受け取ってこの中で引く。
+import { riskTriggerClassFor, type RiskLevels } from "../lib/risk";
 
 interface Props {
   branches: BranchInfo[];
@@ -19,6 +22,8 @@ interface Props {
   protectedBranches: string[];
   onAddProtected: (name: string) => void;
   onRemoveProtected: (name: string) => void;
+  // #274 危険度カラー。未取得の間は空オブジェクト（Safe相当の通常スタイル）。
+  riskLevels?: RiskLevels;
 }
 
 export function BranchPanel({
@@ -34,6 +39,7 @@ export function BranchPanel({
   protectedBranches,
   onAddProtected,
   onRemoveProtected,
+  riskLevels = {},
 }: Props) {
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
@@ -123,7 +129,8 @@ export function BranchPanel({
                 </span>
                 <span className="branch-actions">
                   <button
-                    className="link"
+                    // #274 危険度カラー: 保護ブランチ（main/master等）への送信だけ注意色。
+                    className={`link ${riskTriggerClassFor(riskLevels, "push", b.name)}`}
                     onClick={() => onPush(b.name)}
                     disabled={networkBusy}
                     title={
@@ -135,13 +142,16 @@ export function BranchPanel({
                     {networkBusy ? "送信中…" : "送信"}
                   </button>
                   {!b.is_head && (
-                    <button className="link" onClick={() => onSwitch(b.name)}>
+                    <button
+                      className={`link ${riskTriggerClassFor(riskLevels, "switch_branch")}`}
+                      onClick={() => onSwitch(b.name)}
+                    >
                       切り替え
                     </button>
                   )}
                   {!b.is_head && (
                     <button
-                      className="link"
+                      className={`link ${riskTriggerClassFor(riskLevels, "merge")}`}
                       onClick={() => onMerge(b.name)}
                       title="このブランチの変更を現在のブランチに取り込みます（マージ）"
                     >
@@ -150,14 +160,15 @@ export function BranchPanel({
                   )}
                   {!b.is_head && (
                     <button
-                      className="link danger"
+                      // #274 危険度カラー: 保護ブランチの削除は destructive、それ以外は caution。
+                      className={`link ${riskTriggerClassFor(riskLevels, "delete_branch", b.name)}`}
                       onClick={() => onDelete(b.name)}
                     >
                       削除
                     </button>
                   )}
                   <button
-                    className="link danger"
+                    className={`link ${riskTriggerClassFor(riskLevels, "force_push")}`}
                     onClick={() => onForcePush(b.name)}
                     disabled={networkBusy}
                     title={
