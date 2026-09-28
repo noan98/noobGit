@@ -301,6 +301,23 @@ export interface LfsCandidate {
   reason: string;
 }
 
+// #173 .gitignore バリデーション: 1 パターンの検証結果。
+// valid が false のとき error に平易な日本語の理由が入る。duplicate は構文として
+// 正しいが既存の .gitignore に同じ行がすでにあることを示す（エラーではなく警告）。
+export interface GitignorePatternCheck {
+  valid: boolean;
+  error: string | null;
+  duplicate: boolean;
+}
+
+// #173 .gitignore 提案: ファイルパスから生成した無視パターンの候補1件。
+// pattern が実際に追記する文字列、label が選択肢の短いラベル、description が説明。
+export interface GitignoreSuggestion {
+  pattern: string;
+  label: string;
+  description: string;
+}
+
 // #131 reflog の可視化: HEAD の移動履歴の1エントリ。
 // old_oid は移動前、new_oid は移動後のコミット OID（40桁）。
 // short_id は new_oid の先頭7桁。message は生のメッセージ、short_message は日本語化した説明。
@@ -428,6 +445,13 @@ export const api = {
   // #70 .gitignore 管理: パターンを .gitignore の末尾に 1 行追記する（無ければ新規作成）。
   addToGitignore: (repoPath: string, pattern: string) =>
     invoke<void>("add_to_gitignore", { repoPath, pattern }),
+  // #173 .gitignore バリデーション: glob 構文チェックと重複チェックをまとめて行う。
+  checkGitignorePattern: (repoPath: string, pattern: string) =>
+    invoke<GitignorePatternCheck>("check_gitignore_pattern", { repoPath, pattern }),
+  // #173 .gitignore 提案: ファイルパスから無視パターンの候補を生成する（リポジトリの
+  // 状態には依存しないので repoPath は渡さない）。
+  suggestGitignorePatterns: (path: string) =>
+    invoke<GitignoreSuggestion[]>("suggest_gitignore_patterns", { path }),
 
   getStashes: (repoPath: string) =>
     invoke<StashInfo[]>("get_stashes", { repoPath }),

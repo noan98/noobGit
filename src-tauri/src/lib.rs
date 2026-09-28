@@ -13,8 +13,9 @@ use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome,
-    FileChange, FileDiff, LfsCandidate, LogPage, MergeOutcome, NetworkProgress, PullOutcome,
-    ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo, TagInfo,
+    FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion, LfsCandidate, LogPage,
+    MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -337,6 +338,25 @@ fn get_gitignore(repo_path: String) -> Result<Option<String>, String> {
 fn add_to_gitignore(repo_path: String, pattern: String) -> Result<(), String> {
     let r = open(&repo_path)?;
     ops::add_to_gitignore(&r, &pattern).map_err(|e| e.to_string())
+}
+
+/// `.gitignore` の 1 パターンを、glob 構文チェックと重複チェックの両方込みで検証する。
+///
+/// 入力中のリアルタイムバリデーションと、追加ボタン押下前の重複確認の両方に使う。
+#[tauri::command]
+fn check_gitignore_pattern(
+    repo_path: String,
+    pattern: String,
+) -> Result<GitignorePatternCheck, String> {
+    let r = open(&repo_path)?;
+    ops::check_gitignore_pattern(&r, &pattern).map_err(|e| e.to_string())
+}
+
+/// ファイルパスから `.gitignore` パターンの候補（このファイルのみ／同じ拡張子／
+/// ディレクトリ全体）を生成する。リポジトリの状態には依存しない純粋な変換。
+#[tauri::command]
+fn suggest_gitignore_patterns(path: String) -> Vec<GitignoreSuggestion> {
+    ops::suggest_gitignore_patterns(&path)
 }
 
 /// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避する。
@@ -708,6 +728,8 @@ pub fn run() {
             discard_path,
             get_gitignore,
             add_to_gitignore,
+            check_gitignore_pattern,
+            suggest_gitignore_patterns,
             stash_save,
             stash_apply,
             stash_pop,

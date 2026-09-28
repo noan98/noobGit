@@ -1434,6 +1434,24 @@ export function RepoWorkspace({
     }
   }
 
+  // #173 .gitignore バリデーション: モーダルの手入力欄から任意のパターンを追加する。
+  // バリデーション・重複チェックはモーダル側で（入力中に）済ませたうえで呼ばれる想定。
+  // 追加後はモーダルの表示内容を最新化し、無視によって未追跡ファイルが一覧から
+  // 消えることがあるので status も更新する。
+  function doAddGitignorePattern(pattern: string): Promise<void> {
+    return exec(
+      async () => {
+        await api.addToGitignore(repoPath, pattern);
+        const content = await api.getGitignore(repoPath);
+        setGitignore({ content });
+      },
+      {
+        successMsg: `.gitignore に追加しました: ${pattern}`,
+        refresh: REFRESH_BY_OP.stage,
+      },
+    );
+  }
+
   // 直前のコミットを修正（amend）。コミットと同様に名前・メール未設定なら先に案内する。
   function doAmend() {
     if (commits.length === 0) return;
@@ -2589,6 +2607,8 @@ export function RepoWorkspace({
       {gitignore && (
         <GitignoreModal
           content={gitignore.content}
+          repoPath={repoPath}
+          onAdd={doAddGitignorePattern}
           onClose={() => setGitignore(null)}
         />
       )}
