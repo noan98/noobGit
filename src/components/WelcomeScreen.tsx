@@ -27,6 +27,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { transitions, spring } from "../theme/motion";
 import { showToast } from "./Toaster";
 import { Icon } from "./Icon";
+import { api, type NetworkErrorKind } from "../api";
+import { joinDestPath, repoNameFromUrl } from "../lib/cloneUrl";
+import { useNetworkProgress } from "../hooks/useNetworkProgress";
+import { NetworkProgressBar } from "./NetworkProgressBar";
+import { NetworkErrorDialog } from "./NetworkErrorDialog";
 
 // localStorage のキー。最近使ったリポジトリを新しい順に最大 5 件保存する。
 const STORAGE_KEY = "noobgit_recent_repos";
@@ -155,6 +160,144 @@ const cardVariants = {
   },
 };
 
+// 「URLからクローン」セクション。#267。
+// URL とフォルダ選択ダイアログで保存先を決め、api.cloneRepo でリモートリポジトリを
+// 新規取得する。保存先の初期値は「選択フォルダ/リポジトリ名」（URL から推定）。
+// ユーザーが保存先欄を直接編集したら、以後は URL やフォルダを変えても自動上書きしない。
+// 成功したら `onCloned(path)` を呼び、呼び出し元（WelcomeScreen）がそのパスをタブで開く。
+function CloneSection({ onCloned }: { onCloned: (path: string) => void }) {
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [cloneFolder, setCloneFolder] = useState("");
+  const [cloneDest, setCloneDest] = useState("");
+  const [destEdited, setDestEdited] = useState(false);
+  const [cloning, setCloning] = useState(false);
+  const [cloneError, setCloneError] = useState<{
+    kind: NetworkErrorKind;
+    raw: string;
+  } | null>(null);
+  const cloneProgress = useNetworkProgress();
+
+  // URL を入力し直したとき、保存先欄がまだユーザー編集されていなければ
+  // 「選択済みフォルダ/推定リポジトリ名」で追従させる。
+  function handleUrlChange(nextUrl: string) {
+    setCloneUrl(nextUrl);
+    if (destEdited || !cloneFolder) return;
+    const name = repoNameFromUrl(nextUrl);
+    setCloneDest(name ? joinDestPath(cloneFolder, name) : cloneFolder);
+  }
+
+  // 保存先の親フォルダを選ぶ。選び直したら「自動追従」に戻す（手入力による
+  // 上書きより、いま選んだフォルダを優先したいため）。
+  async function browseCloneFolder() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "クローン先の保存フォルダを選択",
+      });
+      if (typeof selected === "string") {
+        setCloneFolder(selected);
+        setDestEdited(false);
+        const name = repoNameFromUrl(cloneUrl);
+        setCloneDest(name ? joinDestPath(selected, name) : selected);
+      }
+    } catch {
+      showToast(
+        "フォルダ選択ダイアログを開けませんでした。保存先を直接入力してください。",
+        "error",
+      );
+    }
+  }
+
+  async function doClone() {
+    const url = cloneUrl.trim();
+    const dest = cloneDest.trim();
+    if (!url || !dest || cloning) return;
+    setCloning(true);
+    try {
+      const outcome = await cloneProgress.run("クローン", (onProgress) =>
+        api.cloneRepo(url, dest, onProgress),
+      );
+      showToast(
+        `「${repoName(outcome.path)}」をクローンしました。`,
+        "success",
+      );
+      onCloned(outcome.path);
+      // 次のクローンに備えて入力をリセットする。
+      setCloneUrl("");
+      setCloneFolder("");
+      setCloneDest("");
+      setDestEdited(false);
+    } catch (e) {
+      const msg = String(e);
+      try {
+        const kind = await api.classifyNetworkError(msg);
+        setCloneError({ kind, raw: msg });
+      } catch {
+        // 分類自体が失敗した場合は従来のトースト通知にフォールバックする。
+        showToast(msg, "error");
+      }
+    } finally {
+      setCloning(false);
+    }
+  }
+
+  return (
+    <div className="welcome-clone-section">
+      <p className="recent-repos-label">URLからクローン</p>
+      <div className="clone-box">
+        <input
+          value={cloneUrl}
+          placeholder="クローン元のURL (例: https://github.com/user/repo.git)"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            handleUrlChange(e.target.value)
+          }
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) =>
+            e.key === "Enter" && void doClone()
+          }
+        />
+        <div className="clone-dest-row">
+          <input
+            value={cloneDest}
+            placeholder="保存先フォルダ (例: C:\Users\you\projects\repo)"
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setCloneDest(e.target.value);
+              setDestEdited(true);
+            }}
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) =>
+              e.key === "Enter" && void doClone()
+            }
+          />
+          <button
+            className="btn"
+            onClick={() => void browseCloneFolder()}
+            title="フォルダ選択ダイアログで保存先を参照します"
+          >
+            参照…
+          </button>
+        </div>
+        <button
+          className="btn btn-primary-accent clone-submit"
+          onClick={() => void doClone()}
+          disabled={cloning || !cloneUrl.trim() || !cloneDest.trim()}
+        >
+          <Icon name="clone" /> クローン
+        </button>
+      </div>
+
+      <NetworkProgressBar state={cloneProgress.state} />
+
+      {cloneError && (
+        <NetworkErrorDialog
+          kind={cloneError.kind}
+          raw={cloneError.raw}
+          onClose={() => setCloneError(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -177,6 +320,13 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
   // setRepoPath は非同期で state を更新するため、onOpen を同フレームで呼ぶと
   // 古い repoPath が参照される。setTimeout で次のレンダリング後まで遅らせる。
   function openRecent(path: string) {
+    setRepoPath(path);
+    setTimeout(onOpen, 0);
+  }
+
+  // クローン成功時: openRecent と同じ理由で setTimeout を挟んで開く。
+  // 開けたら（openRepo 内で）自動的に「最近使ったリポジトリ」に記録される。
+  function handleCloned(path: string) {
     setRepoPath(path);
     setTimeout(onOpen, 0);
   }
@@ -322,6 +472,15 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
             まずは手元の Git リポジトリのフォルダを開いてみましょう。
           </p>
         </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ ...transitions.normal, delay: 0.15 }}
+          style={{ width: "100%" }}
+        >
+          <CloneSection onCloned={handleCloned} />
+        </motion.div>
       </div>
     );
   }
@@ -386,6 +545,16 @@ export function WelcomeScreen({ repoPath, setRepoPath, onOpen, error }: Props) {
       >
         <p className="recent-repos-label">別のリポジトリを開く</p>
         {inputArea}
+      </motion.div>
+
+      {/* URLからクローンする導線。 */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ ...transitions.normal, delay: 0.2 }}
+        className="home-open-section"
+      >
+        <CloneSection onCloned={handleCloned} />
       </motion.div>
     </div>
   );

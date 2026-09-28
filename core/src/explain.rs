@@ -181,6 +181,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "特定のファイルだけを過去の状態に戻したいときに使います。今の変更は上書きされます。".into(),
             on_trouble: "ステージされるので、誤ったときは Undo（アンステージ）で戻せます。上書き前の内容が必要なら事前に stash 退避を。".into(),
         },
+        OperationKind::Clone => Explanation {
+            title: "クローン（新規取得）".into(),
+            what: "リモートリポジトリの URL を指定して、その内容を丸ごと新しいフォルダに取得します。".into(),
+            why: "既存のファイルには一切触れず、指定した保存先が空でない場合は何も変更せず中断します。".into(),
+            on_trouble: "URL を間違えていないか確認してください。認証が必要なリポジトリで失敗した場合は、エラーダイアログに表示される手順（SSH鍵の作成・登録など）に沿って解決してください。".into(),
+        },
     }
 }
 
@@ -214,6 +220,7 @@ mod tests {
             OperationKind::Merge,
             OperationKind::RemoveRemote,
             OperationKind::RestoreFile,
+            OperationKind::Clone,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);
@@ -223,7 +230,7 @@ mod tests {
         }
     }
 
-    // #157: fetch/pull/push の on_trouble は、SSH鍵未設定エラー時に
+    // #157: fetch/pull/push/clone の on_trouble は、SSH鍵未設定エラー時に
     // NetworkErrorDialog 側の専用セットアップ手順へ案内する文言を含む。
     #[test]
     fn network_ops_on_trouble_mentions_ssh_guidance() {
@@ -231,6 +238,7 @@ mod tests {
             OperationKind::Fetch,
             OperationKind::Pull,
             OperationKind::Push,
+            OperationKind::Clone,
         ] {
             let e = explain(op);
             assert!(

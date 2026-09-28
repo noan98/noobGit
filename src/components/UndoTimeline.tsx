@@ -34,6 +34,9 @@ const OP_LABEL: Record<OperationKind, string> = {
   merge: "ブランチの統合",
   remove_remote: "リモートを削除",
   restore_file: "ファイルを復元",
+  // クローンはネットワーク操作で undo journal には記録されないが、Record<OperationKind, ...>
+  // を満たすためのラベルは用意しておく。
+  clone: "クローン",
 };
 
 // 操作ごとのアイコン。見た目の定義は Icon.tsx に集約している（絵文字は使わない）。
@@ -61,6 +64,7 @@ const OP_ICON: Record<OperationKind, IconName> = {
   merge: "merge",
   remove_remote: "remoteRemove",
   restore_file: "restore",
+  clone: "clone",
 };
 
 // #48 Undo タイムライン: 取り消し履歴をタイムライン形式で表示するパネル。

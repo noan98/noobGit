@@ -431,6 +431,40 @@ textarea:focus-visible {
   text-align: center;
 }
 
+/* ---- URLからクローン (#267) ---- */
+.welcome-clone-section {
+  width: 100%;
+  text-align: left;
+  margin-top: 32px;
+}
+.clone-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clone-box input {
+  width: 100%;
+}
+.clone-dest-row {
+  display: flex;
+  gap: 8px;
+}
+.clone-dest-row input {
+  flex: 1;
+}
+.clone-submit {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* ウェルカム画面内に置くプログレスバーは、ツールバー直下前提の角丸なしを緩和する。 */
+.welcome-clone-section .network-progress {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
 /* ---- inputs ---- */
 input,
 textarea {

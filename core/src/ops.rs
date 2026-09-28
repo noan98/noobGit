@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Component, Path};
 
-use git2::build::CheckoutBuilder;
+use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     BranchType, Commit, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions,
     RemoteCallbacks, Repository, ResetType, StashFlags,
@@ -9,7 +9,7 @@ use git2::{
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, NetworkProgress,
+    ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange, MergeOutcome, NetworkProgress,
     NetworkProgressStage, PullOutcome, StashInfo,
 };
 use crate::repo::{current_branch, is_submodule_path};
@@ -1157,17 +1157,7 @@ pub fn fetch_with_progress(
         ))
     })?;
 
-    // まだ何も届いていない「接続待ち」の段階を最初に一度だけ通知する。
-    // transfer_progress のコールバックは接続確立後にしか呼ばれないため、これが無いと
-    // 接続に時間がかかるとき UI が完全に無反応に見えてしまう。
-    on_progress(NetworkProgress {
-        stage: NetworkProgressStage::Connecting,
-        received_objects: 0,
-        total_objects: 0,
-        received_bytes: 0,
-        indexed_deltas: 0,
-        total_deltas: 0,
-    });
+    notify_connecting(on_progress);
 
     // 更新（前進・新規取得）された追跡ブランチ数を update_tips コールバックで数える。
     let updated = Cell::new(0usize);
@@ -1375,6 +1365,51 @@ fn credentials(
     ))
 }
 
+/// push / clone の認証情報を解決する。
+///
+/// [`credentials`]（fetch / pull 用）は既に開いているリポジトリの設定
+/// （`repo.config()`）を見るが、push は書き込み用に OS の既定設定を直接見ており、
+/// clone は（これから作るリポジトリなので）まだ `Repository` を持たない。この2つは
+/// 同じ「既定設定を見る」方式で足りるため、この関数へ共通化する。
+fn default_remote_credentials(
+    url: &str,
+    username_from_url: Option<&str>,
+    allowed: CredentialType,
+) -> std::result::Result<Cred, git2::Error> {
+    // SSH 鍵はエージェントから取り出す。ユーザ名が不明なら Git サーバの慣例 "git" を使う。
+    if allowed.contains(CredentialType::SSH_KEY) {
+        return Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+    }
+    // HTTPS など: Git の認証ヘルパ（資格情報マネージャ）に委ねる。
+    if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        if let Ok(config) = git2::Config::open_default() {
+            if let Ok(cred) = Cred::credential_helper(&config, url, username_from_url) {
+                return Ok(cred);
+            }
+        }
+    }
+    if allowed.contains(CredentialType::DEFAULT) {
+        return Cred::default();
+    }
+    Err(git2::Error::from_str(
+        "利用できる認証情報が見つかりませんでした。",
+    ))
+}
+
+/// fetch / pull / push / clone 共通: まだ何も届いていない「接続待ち」の段階を
+/// 一度だけ通知する。transfer_progress 系のコールバックは接続確立後にしか呼ばれない
+/// ため、これが無いと接続に時間がかかるとき UI が完全に無反応に見えてしまう。
+fn notify_connecting(on_progress: &mut dyn FnMut(NetworkProgress)) {
+    on_progress(NetworkProgress {
+        stage: NetworkProgressStage::Connecting,
+        received_objects: 0,
+        total_objects: 0,
+        received_bytes: 0,
+        indexed_deltas: 0,
+        total_deltas: 0,
+    });
+}
+
 /// 指定地点までハードリセットする。破壊的操作。直後にコミット位置を Undo で戻せる。
 pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
     let prev = repo.head().ok().and_then(|h| h.target()).ok_or_else(|| {
@@ -1562,37 +1597,13 @@ pub fn push_with_progress(
 
     // fetch と同様、接続確立前は push_transfer_progress が一度も呼ばれないため、
     // まず「接続待ち」を一度通知しておく。
-    on_progress(NetworkProgress {
-        stage: NetworkProgressStage::Connecting,
-        received_objects: 0,
-        total_objects: 0,
-        received_bytes: 0,
-        indexed_deltas: 0,
-        total_deltas: 0,
-    });
+    notify_connecting(on_progress);
 
     {
         let mut callbacks = RemoteCallbacks::new();
         // 認証は SSH エージェント → 資格情報ヘルパ（トークン等）→ 既定 の順で試す。
         // ローカルパスのリモートでは認証は不要で、この callback は呼ばれない。
-        callbacks.credentials(|url, username_from_url, allowed| {
-            if allowed.contains(CredentialType::SSH_KEY) {
-                return Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-            }
-            if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
-                if let Ok(config) = git2::Config::open_default() {
-                    if let Ok(cred) = Cred::credential_helper(&config, url, username_from_url) {
-                        return Ok(cred);
-                    }
-                }
-            }
-            if allowed.contains(CredentialType::DEFAULT) {
-                return Cred::default();
-            }
-            Err(git2::Error::from_str(
-                "利用できる認証情報が見つかりませんでした。",
-            ))
-        });
+        callbacks.credentials(default_remote_credentials);
         // 各参照の更新結果。status が Some なら、その参照はリモートに拒否されている。
         callbacks.push_update_reference(|refname, status| {
             if let Some(msg) = status {
@@ -1641,6 +1652,171 @@ fn map_push_error(e: git2::Error) -> CoreError {
                 .to_string(),
         ),
         _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", e.message())),
+    }
+}
+
+/// リモートリポジトリを `dest_path` へ新規にクローンする（進捗通知なし版）。
+///
+/// 詳細は [`clone_with_progress`] を参照。undo は記録しない（ネットワーク操作）。
+pub fn clone_repo(url: &str, dest_path: &Path) -> Result<CloneOutcome> {
+    clone_with_progress(url, dest_path, &mut |_| {})
+}
+
+/// リモートリポジトリを `dest_path` へ新規にクローンし、通信の進捗を `on_progress` へ
+/// 都度通知する。`clone_repo` はこの関数を何もしないコールバックで呼ぶ薄いラッパー。
+///
+/// # 安全のための約束
+/// - `url` が空、または明らかに URL の形をしていない場合は [`CoreError::InvalidInput`]。
+/// - `dest_path` が既に存在し、かつ中身が空でないディレクトリなら、**既存データを一切
+///   変更・削除せず** [`CoreError::Blocked`] で中断する（空のディレクトリへは通常の
+///   `git clone` と同様にクローンできる）。
+/// - クローンが失敗した場合、**このクローンのために新規作成したディレクトリだけ**を
+///   後片付けする。呼び出し前から存在していた（空の）ディレクトリは、中身だけ片付けて
+///   ディレクトリ自体は残す。どちらの場合も、呼び出し前から存在していたファイルを
+///   消すことは無い。
+/// - 認証・進捗の通知は [`fetch_with_progress`] / [`push_with_progress`] と同じ基盤
+///   （[`default_remote_credentials`] / [`notify_connecting`]）を再利用する。
+/// - ネットワーク操作のため undo は記録しない。
+pub fn clone_with_progress(
+    url: &str,
+    dest_path: &Path,
+    on_progress: &mut dyn FnMut(NetworkProgress),
+) -> Result<CloneOutcome> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "クローン元の URL を入力してください。".to_string(),
+        ));
+    }
+    if url.chars().any(|c| c.is_whitespace()) {
+        return Err(CoreError::InvalidInput(
+            "URL に空白を含めることはできません。".to_string(),
+        ));
+    }
+    // 明らかに URL/パスの形をしていないものを早めに弾く。
+    // 対応する形: "scheme://..."、scp形式 "user@host:path"、絶対/相対パス。
+    let looks_like_source = url.contains("://")
+        || url.contains('@')
+        || url.starts_with('/')
+        || url.starts_with('.')
+        || url.starts_with('~')
+        // Windows のドライブレター形式 (C:\ や C:/)。
+        || (url.len() >= 3
+            && url.as_bytes()[0].is_ascii_alphabetic()
+            && url.as_bytes()[1] == b':'
+            && matches!(url.as_bytes()[2], b'\\' | b'/'));
+    if !looks_like_source {
+        return Err(CoreError::InvalidInput(format!(
+            "「{url}」は有効な URL に見えません。https://... や git@... の形式で指定してください。"
+        )));
+    }
+
+    if dest_path.as_os_str().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "保存先のフォルダを指定してください。".to_string(),
+        ));
+    }
+
+    // 保存先の既存状態を確認する。既に存在して中身があれば、既存データを守るため
+    // 何もせず拒否する。
+    let pre_existed = dest_path.exists();
+    if pre_existed {
+        if !dest_path.is_dir() {
+            return Err(CoreError::InvalidInput(format!(
+                "保存先「{}」はフォルダではありません。別の保存先を指定してください。",
+                dest_path.display()
+            )));
+        }
+        let has_entries = std::fs::read_dir(dest_path)
+            .map_err(|e| CoreError::Git(format!("保存先フォルダを確認できませんでした: {e}")))?
+            .next()
+            .is_some();
+        if has_entries {
+            return Err(CoreError::Blocked(format!(
+                "保存先「{}」には既にファイルがあります。空のフォルダか、新しいフォルダ名を指定してください。",
+                dest_path.display()
+            )));
+        }
+    }
+
+    notify_connecting(on_progress);
+
+    let mut cb = RemoteCallbacks::new();
+    // push と同じ基盤（OS 既定設定を見る）を再利用する。clone はまだリポジトリを
+    // 開いていないため、fetch/pull のようにリポジトリの設定を見る方式は使えない。
+    cb.credentials(default_remote_credentials);
+    cb.transfer_progress(|stats| {
+        let stage = if stats.indexed_deltas() > 0 || stats.total_deltas() > 0 {
+            NetworkProgressStage::ResolvingDeltas
+        } else {
+            NetworkProgressStage::ReceivingObjects
+        };
+        on_progress(NetworkProgress {
+            stage,
+            received_objects: stats.received_objects(),
+            total_objects: stats.total_objects(),
+            received_bytes: stats.received_bytes(),
+            indexed_deltas: stats.indexed_deltas(),
+            total_deltas: stats.total_deltas(),
+        });
+        true
+    });
+
+    let mut fo = FetchOptions::new();
+    fo.remote_callbacks(cb);
+
+    let mut builder = RepoBuilder::new();
+    builder.fetch_options(fo);
+
+    match builder.clone(url, dest_path) {
+        Ok(_repo) => Ok(CloneOutcome {
+            path: dest_path.to_string_lossy().into_owned(),
+        }),
+        Err(e) => {
+            // 失敗したら、このクローンのために作った分だけ後片付けする。
+            cleanup_failed_clone(dest_path, pre_existed);
+            Err(map_clone_error(e))
+        }
+    }
+}
+
+/// クローン失敗後の後片付け。
+///
+/// 呼び出し前から `dest_path` が存在していた（`pre_existed`）場合は、そのディレクトリ
+/// 自体は残して中身だけを片付ける（もともと空だったはずなので、消すのはクローンが
+/// 部分的に作った分だけになる）。存在していなかった（今回のクローンのために新規作成
+/// した）場合は、ディレクトリごと削除する。いずれの経路でも、呼び出し前から存在して
+/// いたファイルを消すことは無い。後片付け自体の失敗はベストエフォートで無視する
+/// （クローン失敗というエラーの伝達を優先し、後片付けの失敗で上書きしない）。
+fn cleanup_failed_clone(dest_path: &Path, pre_existed: bool) {
+    if pre_existed {
+        if let Ok(entries) = std::fs::read_dir(dest_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let _ = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(dest_path);
+    }
+}
+
+/// clone の git2 エラーを初心者向けの日本語 [`CoreError`] に変換する。
+fn map_clone_error(e: git2::Error) -> CoreError {
+    use git2::ErrorCode;
+    match e.code() {
+        ErrorCode::Auth => CoreError::Blocked(
+            "認証に失敗しました。URL やアクセス権、SSH鍵・トークンの設定を確認してください。"
+                .to_string(),
+        ),
+        ErrorCode::NotFound => CoreError::InvalidInput(
+            "指定したリポジトリが見つかりませんでした。URL を確認してください。".to_string(),
+        ),
+        _ => CoreError::Git(format!("クローンに失敗しました: {}", e.message())),
     }
 }
 
@@ -2008,6 +2184,152 @@ mod tests {
         cfg.set_str("user.name", "Clone User").unwrap();
         cfg.set_str("user.email", "clone@example.com").unwrap();
         (dir, dest)
+    }
+
+    // --- Issue #267: clone_with_progress / clone_repo のテスト ---
+
+    #[test]
+    fn clone_repo_creates_local_copy_of_upstream() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("最初のコミット");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // まだ存在しないパス（親フォルダは存在する）へクローンする典型ケース。
+        let dest = dir.path().join("cloned-repo");
+
+        let outcome = clone_repo(upstream.path().to_str().unwrap(), &dest).unwrap();
+        assert_eq!(outcome.path, dest.to_string_lossy());
+
+        let repo = git2::Repository::open(&dest).unwrap();
+        assert_eq!(log(&repo, 10).unwrap().len(), 1);
+        assert!(dest.join("a.txt").exists());
+        // クローン直後は作業ツリーがきれいな状態。
+        assert!(status(&repo).unwrap().is_clean);
+    }
+
+    #[test]
+    fn clone_into_existing_empty_directory_succeeds() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("empty-dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        let outcome = clone_repo(upstream.path().to_str().unwrap(), &dest).unwrap();
+        assert_eq!(outcome.path, dest.to_string_lossy());
+        assert!(dest.join("a.txt").exists());
+    }
+
+    #[test]
+    fn clone_rejects_nonempty_existing_destination_and_keeps_existing_files() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("occupied");
+        std::fs::create_dir(&dest).unwrap();
+        // 既存の（無関係な）ファイルを置いておく。
+        std::fs::write(dest.join("keep-me.txt"), "大事なファイル").unwrap();
+
+        let err = clone_repo(upstream.path().to_str().unwrap(), &dest).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+
+        // 既存ファイルは一切触れられていないはず。
+        assert!(dest.join("keep-me.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("keep-me.txt")).unwrap(),
+            "大事なファイル"
+        );
+        // クローンは行われていない（.git が作られていない）。
+        assert!(!dest.join(".git").exists());
+    }
+
+    #[test]
+    fn clone_failure_removes_newly_created_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 呼び出し前は存在しないパス。存在しないローカルパスを URL として渡すと、
+        // クローンはネットワーク/Git レベルで失敗する。
+        let dest = dir.path().join("will-not-exist");
+        let bogus_source = dir.path().join("no-such-upstream-repo");
+
+        let err = clone_repo(bogus_source.to_str().unwrap(), &dest).unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::Git(_) | CoreError::InvalidInput(_)
+        ));
+        // 今回のクローンのために作ったディレクトリは残らない。
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn clone_failure_keeps_preexisting_empty_directory_but_cleans_its_contents() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("preexisting-empty");
+        std::fs::create_dir(&dest).unwrap();
+        let bogus_source = dir.path().join("no-such-upstream-repo");
+
+        let err = clone_repo(bogus_source.to_str().unwrap(), &dest).unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::Git(_) | CoreError::InvalidInput(_)
+        ));
+        // 呼び出し前から存在していたディレクトリ自体は消さない。
+        assert!(dest.exists());
+        assert!(dest.is_dir());
+    }
+
+    #[test]
+    fn clone_rejects_empty_or_invalid_url() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("dest");
+
+        assert!(matches!(
+            clone_repo("", &dest).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            clone_repo("   ", &dest).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            clone_repo("not a url with spaces", &dest).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            clone_repo("clearlynotaurl", &dest).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        // 入力エラーでは、そもそも保存先に触れない。
+        assert!(!dest.exists());
+    }
+
+    /// #167 進捗フィードバック基盤の再利用: clone_with_progress も fetch と同様、
+    /// 「接続待ち」を最初に必ず通知する。
+    #[test]
+    fn clone_with_progress_reports_connecting_first() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "1");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dest = dir.path().join("progress-dest");
+
+        let mut events: Vec<NetworkProgress> = Vec::new();
+        clone_with_progress(upstream.path().to_str().unwrap(), &dest, &mut |p| {
+            events.push(p)
+        })
+        .unwrap();
+
+        assert!(!events.is_empty());
+        assert_eq!(events[0].stage, NetworkProgressStage::Connecting);
     }
 
     #[test]
