@@ -746,6 +746,8 @@ mod tests {
         fx.commit("c1");
 
         let repo = fx.open();
+        // 前提: 適用前は main が存在する（存在しないまま「無いこと」を確かめる空振りを防ぐ）。
+        assert!(repo.find_reference("refs/heads/main").is_ok());
         let action = UndoAction::UncommitInitial {
             branch: "main".into(),
         };
@@ -771,6 +773,8 @@ mod tests {
         fx.stage_all();
 
         let repo = fx.open();
+        // 前提: 適用前はステージ済みの変更がある。
+        assert_eq!(crate::repo::status(&repo).unwrap().staged.len(), 1);
         let action = UndoAction::UnstagePath {
             path: "a.txt".into(),
         };
