@@ -1164,6 +1164,66 @@ pub fn read_reflog(repo: &Repository, max: usize) -> Result<Vec<ReflogEntry>> {
     Ok(out)
 }
 
+/// 大規模リポジトリでも重くならないよう、コミットメッセージ補完で走査する
+/// コミット数の上限。
+const MAX_SUGGEST_SCANNED_COMMITS: usize = 2000;
+
+/// HEAD から辿れる履歴のコミットメッセージ件名（1 行目）から、`prefix` に前方一致
+/// するものを頻度順（同頻度は新しい順）で最大 `max` 件返す（コミットメッセージの
+/// インライン補完 #185）。
+///
+/// - 前方一致の判定は `to_lowercase` による大文字小文字無視で行う。noobGit は
+///   日本語の件名を主対象とし、英字の大文字小文字は入力の揺れになりやすいため。
+/// - 同じ件名は 1 件にまとめ、出現頻度が高い順に並べる。同頻度のときは、より
+///   新しいコミット（走査中に先に見つかったもの）を優先する。
+/// - `prefix` が空文字列、または `max` が 0 のときは空のベクタを返す。コミット欄が
+///   空の状態で候補を出すかどうかはフロント側の判断に委ね（Conventional Commits の
+///   プレフィックス提案に任せる）、ここでは「入力に一致する履歴」だけを返す。
+/// - HEAD が無い（コミットが 1 件も無い）リポジトリは空のベクタを返す。
+/// - 走査するコミット数は [`MAX_SUGGEST_SCANNED_COMMITS`] 件までに制限する
+///   （マッチの有無に関わらず、新しい方から数えた件数）。
+pub fn suggest_commit_messages(repo: &Repository, prefix: &str, max: usize) -> Result<Vec<String>> {
+    if prefix.is_empty() || max == 0 {
+        return Ok(Vec::new());
+    }
+    if repo.head().is_err() {
+        // コミットが1件も無いリポジトリ。
+        return Ok(Vec::new());
+    }
+
+    let needle = prefix.to_lowercase();
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    revwalk.set_sorting(git2::Sort::TIME)?;
+
+    // 一致した件名を、初出順（＝新しい順。revwalk が TIME 降順のため）に保持する。
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (scanned, oid) in revwalk.enumerate() {
+        if scanned >= MAX_SUGGEST_SCANNED_COMMITS {
+            break;
+        }
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
+        if summary.is_empty() || !summary.to_lowercase().starts_with(&needle) {
+            continue;
+        }
+        let count = counts.entry(summary.clone()).or_insert(0);
+        *count += 1;
+        if *count == 1 {
+            order.push(summary);
+        }
+    }
+
+    // 頻度降順。同頻度は order（＝新しい順）の並びをそのまま保つ安定ソートで揃える。
+    order.sort_by(|a, b| counts[b].cmp(&counts[a]));
+
+    Ok(order.into_iter().take(max).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2410,5 +2470,115 @@ mod tests {
             .find(|f| f.path == "libs/foo")
             .expect("サブモジュールのポインタ変更が unstaged に現れるはず");
         assert!(entry.is_submodule, "is_submodule フラグが立っているはず");
+    }
+
+    #[test]
+    fn suggest_commit_messages_matches_prefix_case_insensitively() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("Fix: ログイン画面のバグを修正");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("feat: ログアウト機能を追加");
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("docs: README を更新");
+
+        let repo = fx.open();
+        // 大文字小文字を無視した前方一致。"FIX" は "Fix: ..." にマッチする。
+        let got = suggest_commit_messages(&repo, "FIX", 10).unwrap();
+        assert_eq!(got, vec!["Fix: ログイン画面のバグを修正".to_string()]);
+
+        // 前方一致のみ。途中に含まれるだけでは一致しない。
+        let got = suggest_commit_messages(&repo, "ログ", 10).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn suggest_commit_messages_dedups_and_orders_by_frequency_then_recency() {
+        let fx = TestRepo::new();
+        // 「fix: バグA」を 1 回、「fix: バグB」を 2 回。頻度が高い「バグB」が
+        // 先頭に来るはず。
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("fix: バグAを修正");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("fix: バグBを修正");
+        fx.write_file("a.txt", "3");
+        fx.stage_all();
+        fx.commit("fix: バグBを修正");
+
+        let repo = fx.open();
+        let got = suggest_commit_messages(&repo, "fix", 10).unwrap();
+        // 重複排除されている（同じ件名が1件だけ）。
+        assert_eq!(got.len(), 2);
+        // 頻度の高い「バグB」が先頭。
+        assert_eq!(got[0], "fix: バグBを修正");
+        assert_eq!(got[1], "fix: バグAを修正");
+    }
+
+    #[test]
+    fn suggest_commit_messages_same_frequency_prefers_newer() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("fix: 古い方");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("fix: 新しい方");
+
+        let repo = fx.open();
+        let got = suggest_commit_messages(&repo, "fix", 10).unwrap();
+        assert_eq!(
+            got,
+            vec!["fix: 新しい方".to_string(), "fix: 古い方".to_string()]
+        );
+    }
+
+    #[test]
+    fn suggest_commit_messages_respects_max_limit() {
+        let fx = TestRepo::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &format!("v{i}"));
+            fx.stage_all();
+            fx.commit(&format!("fix: パターン{i}"));
+        }
+
+        let repo = fx.open();
+        let got = suggest_commit_messages(&repo, "fix", 2).unwrap();
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn suggest_commit_messages_empty_repo_returns_empty() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        assert!(suggest_commit_messages(&repo, "fix", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suggest_commit_messages_empty_prefix_returns_empty() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("fix: バグを修正");
+
+        let repo = fx.open();
+        assert!(suggest_commit_messages(&repo, "", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suggest_commit_messages_uses_subject_only_for_multiline_messages() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("fix: バグを修正\n\n詳細な説明文がここに続く。\n複数行の本文。");
+
+        let repo = fx.open();
+        let got = suggest_commit_messages(&repo, "fix", 5).unwrap();
+        // 件名（1行目）のみが候補になり、本文は含まれない。
+        assert_eq!(got, vec!["fix: バグを修正".to_string()]);
     }
 }

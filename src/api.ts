@@ -312,6 +312,9 @@ export const api = {
     }),
   getFileLog: (repoPath: string, path: string, max: number) =>
     invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
+  // 過去のコミット履歴から件名（1行目）が prefix に前方一致する候補を頻度順で返す (#185)。
+  suggestCommitMessages: (repoPath: string, prefix: string, max: number) =>
+    invoke<string[]>("suggest_commit_messages", { repoPath, prefix, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>
     invoke<FileDiff>("get_diff_unstaged", { repoPath, path }),
   getDiffStaged: (repoPath: string, path: string) =>
