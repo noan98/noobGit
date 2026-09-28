@@ -139,6 +139,10 @@ export default function App() {
       const direction = tabCycleDirection(e);
       if (direction === null) return;
       if (tabs.length <= 1) return;
+      // アクティブなタブでモーダル（確認ダイアログ等）が開いている間は切り替え
+      // ない。確認の途中で別リポジトリへ移ると、どのリポジトリへの操作かを
+      // 見失ったり、モーダルのフォーカストラップを抜けてしまうため。
+      if (document.querySelector('.tab-pane:not([hidden]) [aria-modal="true"]')) return;
       e.preventDefault();
       const ids = tabs.map((t) => t.id);
       setActiveId((prev) => cycleActiveTabId(ids, prev, direction));
