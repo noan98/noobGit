@@ -302,6 +302,15 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             original_branch,
             original_commit,
         } => {
+            // 復元は強制チェックアウトなので、未コミットの変更があると消してしまう。
+            // bisect 終了後に作業を続けてから「取り消し」を押すこともあるため、
+            // その場合は何も変えずに中断する（bisect_reset と同じ安全ルール）。
+            if crate::repo::is_dirty(repo)? {
+                return Err(CoreError::Blocked(
+                    "未コミットの変更があるため、Bisect の開始を取り消せません。先にコミットするか退避(stash)してください。"
+                        .to_string(),
+                ));
+            }
             // bisect_reset と同じ復元ロジックを共有する（冪等: 同じ場所へ checkout し
             // 直すだけなので、セッションが既に手動で終了していても壊れない）。
             crate::bisect::restore_original_head(

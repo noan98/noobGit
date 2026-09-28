@@ -648,6 +648,34 @@ mod tests {
         assert!(bisect_status(&repo).unwrap().is_none());
     }
 
+    // 未コミットの変更があるときの Undo は、変更を消さずに Blocked で中断する。
+    #[test]
+    fn undo_is_blocked_when_working_dir_dirty() {
+        let fx = TestRepo::new();
+        let mut oids = Vec::new();
+        for i in 0..5 {
+            fx.write_file("a.txt", &i.to_string());
+            fx.stage_all();
+            oids.push(fx.commit(&format!("c{i}")));
+        }
+
+        let repo = fx.open();
+        bisect_start(&repo, &oids[4].to_string(), &oids[0].to_string()).unwrap();
+        bisect_reset(&repo).unwrap();
+
+        // 終了後に作業を続けて、未コミットの変更がある状態で取り消しを押す。
+        fx.write_file("a.txt", "作業中の大事な変更");
+        let repo = fx.open();
+        assert!(matches!(
+            undo::undo_last(&repo).unwrap_err(),
+            CoreError::Blocked(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "作業中の大事な変更"
+        );
+    }
+
     // 進行状況の永続化: 別プロセス（リポジトリの開き直し）でも bisect_status から
     // 同じ内容が復元できる。
     #[test]
