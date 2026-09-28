@@ -182,6 +182,8 @@ const ICONS = {
   reflog: IconListDetails,
   /** ステージ手順の説明（オンボーディング）。 */
   checklist: IconChecklist,
+  /** 保護ブランチ（従来のテキストバッジに添える鍵アイコン）。 */
+  protected: IconLock,
 
   // --- リポジトリ・リモート -------------------------------------------
   repo: IconFolder,
