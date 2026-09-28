@@ -159,7 +159,8 @@ describe("StatusPanel", () => {
       });
     }
 
-    it("staged / unstaged / untracked / conflicted がそれぞれのセクション見出しの下に表示されること", () => {
+    // 各ファイルがどのセクションに属するかは、次のテストの onSelect の source で検証する。
+    it("staged / unstaged / untracked / conflicted の各セクション見出しとファイルが表示されること", () => {
       renderStatusPanel(statusWithAllSections(), handlers);
 
       expect(screen.getByText("コミット予定（ステージ済み）")).toBeInTheDocument();
