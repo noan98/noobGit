@@ -33,6 +33,8 @@ interface Props {
   onCancel: () => void;
   // reset_hard 時のみ渡す。staged + unstaged の変更ファイル一覧。
   affectedFiles?: FileChange[];
+  // #269 マージ済みブランチの一括削除時のみ渡す。削除対象のブランチ名一覧。
+  affectedBranches?: string[];
 }
 
 export function ConfirmDialog({
@@ -42,6 +44,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   affectedFiles,
+  affectedBranches,
 }: Props) {
   const tone = levelTone[assessment.level];
   const isDestructive = assessment.level === "destructive";
@@ -139,6 +142,21 @@ export function ConfirmDialog({
             ))}
           </ul>
         </section>
+
+        {/* #269 マージ済みブランチの一括削除時のみ表示: 削除対象のブランチ一覧 */}
+        {affectedBranches !== undefined && (
+          <section className="affected-files-section">
+            <h3>削除するブランチ（{affectedBranches.length}件）</h3>
+            <div className="affected-files-list">
+              {affectedBranches.map((name) => (
+                <div key={name} className="affected-file">
+                  <Icon name="branch" />
+                  <span className="affected-file-path">{name}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* reset_hard 時のみ表示: 失われる変更ファイルの一覧 */}
         {affectedFiles !== undefined && (

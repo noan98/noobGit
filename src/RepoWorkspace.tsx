@@ -26,6 +26,7 @@ import {
   type IdentityScope,
   type LfsCandidate,
   type LogFilter,
+  type MergedBranchInfo,
   type NetworkErrorKind,
   type OperationKind,
   type RepoStatus,
@@ -235,6 +236,8 @@ interface Guard {
   networkOp?: boolean;
   // reset_hard 時のみ設定。ConfirmDialog に失われる変更ファイル一覧を渡す。
   affectedFiles?: FileChange[];
+  // #269 マージ済みブランチの一括削除時のみ設定。ConfirmDialog に削除対象のブランチ名一覧を渡す。
+  affectedBranches?: string[];
 }
 
 // RepoWorkspace の props。App.tsx（タブ管理）から渡される。
@@ -268,6 +271,8 @@ export function RepoWorkspace({
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [branchGraph, setBranchGraph] = useState<BranchGraph | null>(null);
+  // #269 ブランチクリーンアップ: マージ済み（保護ブランチ・現在ブランチを除く）ローカルブランチ。
+  const [mergedBranches, setMergedBranches] = useState<MergedBranchInfo[]>([]);
   // #169 保護ブランチの設定一覧（git config `noobgit.protectedBranches`）。
   const [protectedBranches, setProtectedBranches] = useState<string[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
@@ -632,6 +637,10 @@ export function RepoWorkspace({
         if (parts.branches) {
           tasks.push(api.getBranches(repoPath).then(setBranches));
           tasks.push(api.getBranchGraph(repoPath).then(setBranchGraph));
+          // #269 ブランチクリーンアップ導線の候補一覧。
+          tasks.push(
+            api.getMergedBranches(repoPath).then(setMergedBranches),
+          );
           tasks.push(
             api.getProtectedBranches(repoPath).then(setProtectedBranches),
           );
@@ -987,6 +996,8 @@ export function RepoWorkspace({
     action: () => Promise<void>,
     targetBranch?: string,
     networkOp?: boolean,
+    // #269 マージ済みブランチの一括削除時に、確認ダイアログへそのまま渡す削除対象一覧。
+    affectedBranches?: string[],
   ) {
     try {
       const [assessment, explanation] = await Promise.all([
@@ -1008,7 +1019,16 @@ export function RepoWorkspace({
             affectedFiles = undefined;
           }
         }
-        setGuard({ title, assessment, explanation, action, refresh: parts, networkOp, affectedFiles });
+        setGuard({
+          title,
+          assessment,
+          explanation,
+          action,
+          refresh: parts,
+          networkOp,
+          affectedFiles,
+          affectedBranches,
+        });
       }
     } catch (e) {
       const msg = String(e);
@@ -1295,6 +1315,40 @@ export function RepoWorkspace({
         }
       },
       undefined,
+    );
+  }
+
+  // #269 マージ済みブランチの一括削除。core 側が削除直前に再検証するため、選んだ
+  // ブランチの一部だけが削除されることがある（結果はトーストで件数を案内する）。
+  // 既存の delete_branch のリスク評価（Caution）をそのまま流用する
+  // （候補は常に非保護・現在ブランチ以外なので Destructive にはならない）。
+  function doBulkDeleteMerged(names: string[]) {
+    if (names.length === 0) return;
+    void guarded(
+      `マージ済みブランチを削除（${names.length}件）`,
+      "delete_branch",
+      async () => {
+        const outcome = await api.deleteBranches(repoPath, names);
+        if (outcome.skipped.length === 0) {
+          showToast(
+            `${outcome.deleted.length}件のブランチを削除しました。`,
+            "success",
+          );
+        } else if (outcome.deleted.length === 0) {
+          showToast(
+            "選んだブランチを削除できませんでした（条件を満たさないためスキップされました）。",
+            "warning",
+          );
+        } else {
+          showToast(
+            `${outcome.deleted.length}件を削除、${outcome.skipped.length}件はスキップしました。`,
+            "warning",
+          );
+        }
+      },
+      undefined,
+      undefined,
+      names,
     );
   }
 
@@ -2351,6 +2405,8 @@ export function RepoWorkspace({
               <BranchPanel
                 branches={branches}
                 graph={branchGraph}
+                mergedBranches={mergedBranches}
+                onBulkDeleteMerged={doBulkDeleteMerged}
                 networkBusy={isNetworkBusy}
                 protectedBranches={protectedBranches}
                 onAddProtected={addProtectedBranch}
@@ -2514,6 +2570,7 @@ export function RepoWorkspace({
           assessment={guard.assessment}
           explanation={guard.explanation}
           affectedFiles={guard.affectedFiles}
+          affectedBranches={guard.affectedBranches}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
         />

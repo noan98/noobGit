@@ -3,8 +3,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, ReflogEntry, RemoteInfo,
-    RepoStatus, TagInfo,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo,
+    ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -460,6 +460,86 @@ fn pick_likely_base(mut candidates: Vec<(String, usize, usize)>) -> Option<Likel
         ahead,
         behind,
     })
+}
+
+/// マージ済みローカルブランチ（保護ブランチのいずれかに既に取り込み済みのブランチ）を返す。
+///
+/// ブランチクリーンアップ（Issue #269）の一括削除候補を洗い出すための読み取り専用 API。
+/// 候補から次を除外する:
+/// - 保護ブランチ自身（[`is_protected`]）
+/// - 現在チェックアウト中のブランチ
+/// - 保護ブランチがローカルに1つも無い場合は、判定基準が無いため常に空を返す
+///
+/// 判定は [`branch_graph`] の `merged_into_current` と同じ考え方（`graph_ahead_behind`
+/// の ahead=0 ＝ 対象ブランチの先端が比較先の祖先、または同一）を、現在ブランチではなく
+/// 各保護ブランチの先端に対して行う。複数の保護ブランチに取り込み済みのブランチは、
+/// ローカルブランチの走査順で最初に一致した保護ブランチ名を `merged_into` として採用する
+/// （どちらが採用されても「削除して安全」という結論は変わらないため、優先順位は決めない）。
+pub fn merged_branches(repo: &Repository, protected: &[String]) -> Result<Vec<MergedBranchInfo>> {
+    let current = current_branch(repo);
+
+    // ローカルに実在する保護ブランチの (名前, 先端oid) 一覧を先に集める。
+    let mut protected_tips: Vec<(String, git2::Oid)> = Vec::new();
+    for item in repo.branches(Some(BranchType::Local))? {
+        let (branch, _) = item?;
+        let name = match branch.name()? {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !is_protected(&name, protected) {
+            continue;
+        }
+        if let Some(tip) = branch.get().target() {
+            protected_tips.push((name, tip));
+        }
+    }
+
+    // 保護ブランチが1つもローカルに無ければ、判定基準が無いので空を返す。
+    if protected_tips.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    for item in repo.branches(Some(BranchType::Local))? {
+        let (branch, _) = item?;
+        let name = match branch.name()? {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // 保護ブランチ自身と現在ブランチは候補から除外する。
+        if is_protected(&name, protected) {
+            continue;
+        }
+        if current.as_deref() == Some(name.as_str()) {
+            continue;
+        }
+        let tip = match branch.get().target() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        // いずれかの保護ブランチに取り込み済み（ahead=0 ＝ 独自コミットが無い）かを判定する。
+        let mut merged_into: Option<&str> = None;
+        for (pname, ptip) in &protected_tips {
+            let (ahead, _behind) = repo.graph_ahead_behind(tip, *ptip)?;
+            if ahead == 0 {
+                merged_into = Some(pname);
+                break;
+            }
+        }
+
+        if let Some(pname) = merged_into {
+            let id = tip.to_string();
+            out.push(MergedBranchInfo {
+                name,
+                merged_into: pname.to_string(),
+                short_id: id.chars().take(7).collect(),
+            });
+        }
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 /// コミット履歴の絞り込み条件。すべて任意で、`None` の項目は条件として使わない。
@@ -2101,6 +2181,111 @@ mod tests {
         assert!(main.upstream_gone);
         // ローカルブランチ自体は変わらず存在する。
         assert!(repo.find_branch("main", BranchType::Local).is_ok());
+    }
+
+    #[test]
+    fn merged_branches_returns_only_merged_non_protected_non_current() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        // merged は c1 のまま据え置く（main が進むので取り込み済みになる）。
+        create_branch(&repo, "merged").unwrap();
+        // feature は独自コミットを持たせて未取り込みにする。
+        create_branch(&repo, "feature").unwrap();
+
+        switch_branch(&repo, "feature").unwrap();
+        fx.write_file("b.txt", "x");
+        fx.stage_all();
+        fx.commit("feature-c2"); // feature: c1 -> feature-c2
+
+        let repo = fx.open();
+        switch_branch(&repo, "main").unwrap();
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("main-c2"); // main: c1 -> main-c2
+
+        let repo = fx.open();
+        let merged = merged_branches(&repo, &[]).unwrap();
+
+        // マージ済みの "merged" だけが候補に出る。未マージの "feature"・保護ブランチの
+        // "main"（＝現在ブランチでもある）はどちらも出ない。
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "merged");
+        assert_eq!(merged[0].merged_into, "main");
+        assert_eq!(merged[0].short_id.len(), 7);
+    }
+
+    #[test]
+    fn merged_branches_excludes_current_branch_even_if_merged() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        create_branch(&repo, "on-c1").unwrap();
+        switch_branch(&repo, "on-c1").unwrap();
+
+        // main はまだ c1 のまま。on-c1（現在ブランチ）は main に取り込み済みだが、
+        // 現在チェックアウト中なので候補から除外される。
+        let repo = fx.open();
+        let merged = merged_branches(&repo, &[]).unwrap();
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn merged_branches_empty_when_no_protected_branch_locally() {
+        use crate::ops::{create_branch, delete_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        create_branch(&repo, "other").unwrap();
+        switch_branch(&repo, "other").unwrap();
+        // main（既定の保護ブランチ）をローカルから消してしまうと、判定基準が無くなる。
+        delete_branch(&repo, "main").unwrap();
+
+        let repo = fx.open();
+        // 保護ブランチがローカルに1つも無いので、常に空を返す。
+        assert!(merged_branches(&repo, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merged_branches_respects_custom_protected_list() {
+        use crate::ops::{create_branch, switch_branch};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1"); // main: c1
+
+        let repo = fx.open();
+        create_branch(&repo, "release").unwrap();
+        create_branch(&repo, "merged").unwrap();
+        create_branch(&repo, "other").unwrap();
+        switch_branch(&repo, "other").unwrap();
+
+        let repo = fx.open();
+        // カスタム保護ブランチ指定時は既定の main は保護されない。
+        let custom = vec!["release".to_string()];
+        let merged = merged_branches(&repo, &custom).unwrap();
+        // "release" と "merged" はどちらも c1 のまま（release へ取り込み済み）。
+        // "main" は保護されないので候補になりうるが、これも c1 のままなので候補に出る。
+        let names: Vec<&str> = merged.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"merged"));
+        assert!(names.contains(&"main"));
+        // release 自身は保護ブランチなので候補に出ない。
+        assert!(!names.contains(&"release"));
     }
 
     #[test]

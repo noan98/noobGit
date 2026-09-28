@@ -1,5 +1,10 @@
-import { useRef, useState } from "react";
-import type { BranchGraph, BranchInfo, BranchRelation } from "../api";
+import { useEffect, useRef, useState } from "react";
+import type {
+  BranchGraph,
+  BranchInfo,
+  BranchRelation,
+  MergedBranchInfo,
+} from "../api";
 import { EmptyState } from "./EmptyState";
 import { AheadBehindBadge } from "./AheadBehindBadge";
 import { Icon } from "./Icon";
@@ -10,12 +15,17 @@ import { riskTriggerClassFor, type RiskLevels } from "../lib/risk";
 interface Props {
   branches: BranchInfo[];
   graph: BranchGraph | null;
+  // #269 ブランチクリーンアップ: マージ済み（＝安全に削除できる）ローカルブランチの一覧。
+  // 保護ブランチ・現在ブランチはすでに除かれている。
+  mergedBranches: MergedBranchInfo[];
   onCreate: (name: string) => void;
   onSwitch: (name: string) => void;
   onDelete: (name: string) => void;
   onMerge: (name: string) => void;
   onPush: (name: string) => void;
   onForcePush: (name: string) => void;
+  // #269 選択したマージ済みブランチをまとめて削除する。
+  onBulkDeleteMerged: (names: string[]) => void;
   // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
   networkBusy?: boolean;
   // 保護ブランチ名の一覧（#169）。設定は git config に保存され、リポジトリごとに独立する。
@@ -29,12 +39,14 @@ interface Props {
 export function BranchPanel({
   branches,
   graph,
+  mergedBranches,
   onCreate,
   onSwitch,
   onDelete,
   onMerge,
   onPush,
   onForcePush,
+  onBulkDeleteMerged,
   networkBusy = false,
   protectedBranches,
   onAddProtected,
@@ -57,6 +69,47 @@ export function BranchPanel({
   }
   const local = branches.filter((b) => !b.is_remote);
   const remote = branches.filter((b) => b.is_remote);
+
+  // #269 マージ済みブランチの一括整理。
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [selectedMerged, setSelectedMerged] = useState<Set<string>>(
+    new Set(),
+  );
+
+  // 一覧が更新されたら（削除完了・ブランチ操作後の再取得など）、もう候補に
+  // 無い名前を選択から取り除く。
+  useEffect(() => {
+    setSelectedMerged((prev) => {
+      const names = new Set(mergedBranches.map((m) => m.name));
+      const next = new Set([...prev].filter((n) => names.has(n)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [mergedBranches]);
+
+  function toggleMerged(name: string) {
+    setSelectedMerged((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllMerged() {
+    setSelectedMerged((prev) =>
+      prev.size === mergedBranches.length
+        ? new Set()
+        : new Set(mergedBranches.map((m) => m.name)),
+    );
+  }
+
+  function submitBulkDelete() {
+    if (selectedMerged.size === 0) return;
+    onBulkDeleteMerged([...selectedMerged]);
+  }
 
   // ブランチ名 → 現在ブランチとの関係。バッジ表示の参照に使う。
   const relByName = new Map<string, BranchRelation>(
@@ -89,6 +142,63 @@ export function BranchPanel({
         <button className="btn btn-small" onClick={submitCreate}>
           作成
         </button>
+      </div>
+
+      {/* #269 ブランチクリーンアップ: マージ済みブランチの一括検出・削除導線。
+          対象は保護ブランチ・現在ブランチを除いた「取り込み済み」ローカルブランチのみ。 */}
+      <div className="branch-cleanup">
+        <button
+          type="button"
+          className="btn btn-small"
+          onClick={() => setCleanupOpen((v) => !v)}
+          disabled={mergedBranches.length === 0}
+          title={
+            mergedBranches.length === 0
+              ? "取り込み済みのローカルブランチはありません。"
+              : "取り込み済みのローカルブランチをまとめて削除できます。"
+          }
+        >
+          <Icon name="branchCleanup" /> マージ済みブランチを整理
+          {mergedBranches.length > 0 && `（${mergedBranches.length}）`}
+        </button>
+
+        {cleanupOpen && mergedBranches.length > 0 && (
+          <div className="branch-cleanup-panel">
+            <label className="branch-cleanup-select-all">
+              <input
+                type="checkbox"
+                checked={selectedMerged.size === mergedBranches.length}
+                onChange={toggleAllMerged}
+              />
+              すべて選択
+            </label>
+            <ul className="branch-cleanup-list">
+              {mergedBranches.map((m) => (
+                <li key={m.name}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={selectedMerged.has(m.name)}
+                      onChange={() => toggleMerged(m.name)}
+                    />
+                    <span className="branch-cleanup-name">{m.name}</span>
+                    <span className="branch-cleanup-meta">
+                      （先端 {m.short_id}）→ {m.merged_into} に取り込み済み
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              className="link danger"
+              disabled={selectedMerged.size === 0}
+              onClick={submitBulkDelete}
+            >
+              選択したブランチを削除（{selectedMerged.size}）
+            </button>
+          </div>
+        )}
       </div>
 
       <ul className="branches">

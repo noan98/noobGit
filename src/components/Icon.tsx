@@ -92,6 +92,7 @@ import {
   IconTerminal2,
   IconTool,
   IconTrash,
+  IconTrashX,
   IconUser,
   IconWorldSearch,
   IconX,
@@ -160,6 +161,8 @@ const ICONS = {
   /** upstream（リモート）のブランチが削除済みの目印バッジ（#268）。 */
   remoteGone: IconGitBranchDeleted,
   branchSwitch: IconSwitchHorizontal,
+  /** マージ済みブランチの一括整理（#269）。 */
+  branchCleanup: IconTrashX,
   merge: IconGitMerge,
   /** 履歴が分岐した状態（non-fast-forward の説明など）。 */
   diverged: IconGitFork,

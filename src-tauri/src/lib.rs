@@ -12,10 +12,10 @@ use noobgit_core::error::{classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BlameHunk, BranchGraph, BranchInfo, CloneOutcome, CommitInfo, ConflictFile, FetchOutcome,
-    FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion, LfsCandidate, LogPage,
-    MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
-    SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
+    BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome, CommitInfo,
+    ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck, GitignoreSuggestion,
+    LfsCandidate, LogPage, MergeOutcome, MergedBranchInfo, NetworkProgress, PullOutcome,
+    ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -441,6 +441,31 @@ fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::delete_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// マージ済みローカルブランチ（保護ブランチのいずれかに取り込み済み）の一覧を返す。
+///
+/// 保護ブランチ自身・現在チェックアウト中のブランチは含まれない。保護ブランチが
+/// ローカルに1つも無い場合は空の配列を返す（ブランチクリーンアップ導線 #269）。
+#[tauri::command]
+fn get_merged_branches(repo_path: String) -> Result<Vec<MergedBranchInfo>, String> {
+    let r = open(&repo_path)?;
+    let protected = protected_branches_or_default(&r);
+    repo::merged_branches(&r, &protected).map_err(|e| e.to_string())
+}
+
+/// マージ済みブランチを一括削除する（ブランチクリーンアップ導線 #269）。
+///
+/// フロントから渡された `names` はそのまま信用せず、core 側（[`ops::delete_branches`]）が
+/// 削除直前に再検証する。条件を満たさないブランチは削除せずスキップし、理由と合わせて返す。
+#[tauri::command]
+fn delete_branches(
+    repo_path: String,
+    names: Vec<String>,
+) -> Result<BulkDeleteBranchesOutcome, String> {
+    let r = open(&repo_path)?;
+    let protected = protected_branches_or_default(&r);
+    ops::delete_branches(&r, &names, &protected).map_err(|e| e.to_string())
+}
+
 /// リモートから最新を取得し、リモート追跡ブランチを更新する（作業ツリーは変えない）。
 ///
 /// `progress` へ受信オブジェクト数などの進捗を Tauri の Channel 経由で
@@ -740,6 +765,8 @@ pub fn run() {
             create_branch,
             switch_branch,
             delete_branch,
+            get_merged_branches,
+            delete_branches,
             fetch,
             pull,
             reset_hard,
