@@ -90,6 +90,19 @@ jobs:
       - name: Type-check and build
         run: npm run build
 
+      # rust ジョブも generate_context! 用に同じ dist/ を必要とする。ここで
+      # ビルドした成果物を共有すれば、rust ジョブ側での npm ci / npm run build の
+      # 二重実行（同じビルドを2回走らせるだけの無駄なCPU消費）をなくせる。
+      # rust が変更されない PR（frontendのみ変更）ではそもそも rust ジョブが
+      # dist を必要としないので、アップロード自体をスキップする。
+      - name: frontend dist をアップロード（rust ジョブと共有）
+        if: needs.changes.outputs.rust == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 1
+
   rust-fmt:
     name: rust (fmt)
     needs: changes
@@ -110,8 +123,22 @@ jobs:
 
   rust:
     name: rust (check + clippy + test)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # frontend ジョブが成功した（frontend/rust 両方変更）場合は、その dist/
+    # 成果物をダウンロードして再利用するため、needs に frontend を追加する。
+    # rust のみの変更では frontend ジョブが即座にスキップ終了するので、
+    # apt/Rust セットアップの開始はほぼ遅れない。両方変更の PR では frontend
+    # ジョブ（数分程度）の完了を待ってから始まる — 二重ビルドの計算資源と
+    # 引き換えに受け入れるトレードオフ。
+    needs: [changes, frontend]
+    # 既定の if は「needs の全ジョブが成功」を要求し、frontend がスキップ/失敗
+    # しただけで rust ジョブもスキップされてしまうため、!cancelled() で既定を
+    # 外して自前の条件を書く。frontend が失敗した場合（例: Vitest だけが落ちた）
+    # でも Rust のテスト結果は得られるよう、rust ジョブは実行し、dist は下の
+    # ステップで自前ビルドにフォールバックする（npm run build 自体が壊れて
+    # いれば、ここでも同じく失敗する）。
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -154,7 +181,11 @@ jobs:
             pkg-config --exists glib-2.0 gtk+-3.0 webkit2gtk-4.1
           fi
 
-      - name: Setup Node
+      # frontend ジョブの dist をダウンロードするだけなら npm/Node は不要なので、
+      # frontend ジョブが成功しなかった（スキップ/失敗。自前で npm run build
+      # する）場合のみセットアップする。
+      - name: Setup Node（frontendジョブの dist が無い場合の自前ビルド用）
+        if: needs.frontend.result != 'success'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -185,12 +216,26 @@ jobs:
         with:
           tool: cargo-nextest,cargo-llvm-cov
 
-      - name: Install frontend deps
+      # frontend ジョブがこの PR で実際に走った（frontend/rust 両方変更）場合は
+      # そのビルド成果物をダウンロードして再利用し、ここでの npm ci /
+      # npm run build（＝同じビルドの二重実行）を省略する。
+      - name: frontend dist をダウンロード（frontendジョブと共有）
+        if: needs.frontend.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: frontend-dist
+          path: dist
+
+      # frontend ジョブが成功しなかった（rust のみの変更でスキップ、または失敗）
+      # 場合は、これまで通りここで自前にビルドする。
+      - name: Install frontend deps（frontendジョブの dist が無い場合のみ）
+        if: needs.frontend.result != 'success'
         run: npm ci
 
       # src-tauri の `tauri::generate_context!` が frontendDist(../dist) を
       # 参照するため、Rustのビルド前にフロントエンドを用意しておく。
-      - name: Build frontend (needed for tauri::generate_context!)
+      - name: Build frontend（frontendジョブの dist が無い場合のみ。tauri::generate_context! に必要）
+        if: needs.frontend.result != 'success'
         run: npm run build
 
       # Tauriコマンド登録漏れをPythonスクリプトで検証する。

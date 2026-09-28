@@ -953,7 +953,8 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
 /// `target` が `None` なら HEAD のコミットに付ける。`Some` なら revparse で解決した対象に
 /// 付ける（コミットの短縮 oid やブランチ名など）。`message` が空でなければ注釈付きタグ
 /// （作成者・メッセージを持つ）、空または `None` なら軽量タグ（参照だけ）を作る。
-/// 同名タグが既にあれば日本語エラーで案内する。タグ作成は undo を記録しない（安全操作）。
+/// 同名タグが既にあれば日本語エラーで案内する。作成したタグは `DeleteTag` の undo を記録する
+/// （`create_branch` / `DeleteBranch` と同じパターン）。
 pub fn create_tag(
     repo: &Repository,
     name: &str,
@@ -1006,6 +1007,17 @@ pub fn create_tag(
             repo.tag_lightweight(name, &obj, false)?;
         }
     }
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::CreateTag,
+            description: format!("タグ「{name}」の作成を取り消す"),
+            action: UndoAction::DeleteTag {
+                name: name.to_string(),
+            },
+        },
+    );
 
     Ok(())
 }
@@ -3193,8 +3205,91 @@ mod tests {
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "v1.0.0");
         assert!(tags[0].message.is_none());
-        // 軽量タグの作成は undo を記録しない（安全操作）。
+        // タグ作成も undo を記録する（create_branch / DeleteBranch と同じパターン）。
+        assert!(crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（軽量）は DeleteTag の undo を記録し、Undo でそのタグが削除されること。
+    #[test]
+    fn create_lightweight_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        let desc = undo_last(&repo).unwrap();
+        assert!(desc.contains("v1.0.0"));
+        assert!(list_tags(&repo).unwrap().is_empty());
         assert!(!crate::undo::can_undo(&repo).unwrap());
+    }
+
+    // タグ作成（注釈付き）も同様に Undo でタグが削除されること。
+    #[test]
+    fn create_annotated_tag_then_undo_removes_it() {
+        use crate::repo::list_tags;
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v2.0.0", None, Some("メジャーリリース")).unwrap();
+        assert_eq!(list_tags(&repo).unwrap().len(), 1);
+
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+    }
+
+    // DeleteTag の apply は冪等: 2回適用してもエラーにならず、タグが消えたままであること。
+    #[test]
+    fn undo_delete_tag_apply_is_idempotent() {
+        use crate::repo::list_tags;
+        use crate::undo::{self, UndoAction, UndoEntry};
+
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        create_tag(&repo, "v1.0.0", None, None).unwrap();
+
+        // 直接 DeleteTag アクションを2回積んで適用しても壊れない（1回目は削除、2回目はno-op）。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
+
+        // 既に削除済みのタグに対してもう一度同じアクションを適用してもエラーにならない。
+        undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateTag,
+                description: "タグ「v1.0.0」の作成を取り消す".into(),
+                action: UndoAction::DeleteTag {
+                    name: "v1.0.0".into(),
+                },
+            },
+        )
+        .unwrap();
+        undo_last(&repo).unwrap();
+        assert!(list_tags(&repo).unwrap().is_empty());
     }
 
     #[test]
