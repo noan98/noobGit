@@ -86,12 +86,23 @@ import { useNetworkProgress } from "./hooks/useNetworkProgress"; // #167 進捗�
 import { transitions } from "./theme/motion";
 import {
   BODY_WRAP_LIMIT,
+  getCommitSubject,
   getSubjectLength,
   SUBJECT_LIMIT,
 } from "./lib/commitMessage"; // #172 50/72 文字ガイドライン
+import {
+  applyCommitSuggestion,
+  buildCommitSuggestions,
+  type CommitSuggestion,
+} from "./lib/commitSuggest"; // #185 コミットメッセージ補完（過去履歴 + Conventional Commits）
 
 // 履歴の初期表示件数。初回表示を軽くするため小さめにし、「もっと見る」で追記する。
 const LOG_PAGE_SIZE = 30;
+
+// #185 コミットメッセージ件名の補完: 入力が落ち着いてから履歴を問い合わせるまでの
+// デバウンス時間と、ドロップダウンに表示する候補の最大件数。
+const COMMIT_SUGGEST_DEBOUNCE_MS = 300;
+const COMMIT_SUGGEST_MAX = 5;
 
 // Conventional Commits プレフィックス定義 (#77)。
 const COMMIT_PREFIXES: { label: string; desc: string }[] = [
@@ -374,6 +385,38 @@ export function RepoWorkspace({
   // 沿って空行を自動挿入し、本文エリアへ自然に移行できるようにする。
   // 既に空行がある場合や本文入力中はブラウザ標準の Enter 動作に任せる。
   function handleCommitKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // IME 変換中のキー入力は無視する（日本語入力で Enter が変換確定と誤って
+    // 衝突しないように #185）。
+    if (e.nativeEvent.isComposing) return;
+
+    // 補完ドロップダウンが開いているときは、まずそちらのキー操作を優先する。
+    // Ctrl/Cmd+Enter は既存のコミットショートカットを壊さないよう素通しする。
+    if (showSuggestDropdown && subjectSuggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSuggestIndex((i) => (i + 1) % subjectSuggestions.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSuggestIndex(
+          (i) => (i - 1 + subjectSuggestions.length) % subjectSuggestions.length,
+        );
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.ctrlKey && !e.metaKey)) {
+        e.preventDefault();
+        confirmSuggestion(suggestIndex);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowSuggestDropdown(false);
+        return;
+      }
+    }
+
+    // ドロップダウンが開いていないときの Enter は、これまでどおりの挙動。
     if (e.key !== "Enter") return;
     const el = e.currentTarget;
     const cursor = el.selectionStart ?? el.value.length;
@@ -389,6 +432,69 @@ export function RepoWorkspace({
       el.selectionStart = el.selectionEnd = nextCursor;
     });
   }
+
+  // #185 コミットメッセージ件名の補完（過去の履歴 + Conventional Commits）。
+  const [subjectSuggestions, setSubjectSuggestions] = useState<
+    CommitSuggestion[]
+  >([]);
+  const [showSuggestDropdown, setShowSuggestDropdown] = useState(false);
+  const [suggestIndex, setSuggestIndex] = useState(0);
+  // 直近のリクエストの通し番号。古いリクエストが後から解決しても、新しい入力の
+  // 結果を上書きしないための競合対策。
+  const suggestRequestId = useRef(0);
+
+  const commitSubject = getCommitSubject(commitMsg);
+  useEffect(() => {
+    if (!opened || !repoPath || commitSubject.trim() === "") {
+      setShowSuggestDropdown(false);
+      setSubjectSuggestions([]);
+      return;
+    }
+    const requestId = ++suggestRequestId.current;
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        let historyMatches: string[] = [];
+        try {
+          historyMatches = await api.suggestCommitMessages(
+            repoPath,
+            commitSubject,
+            COMMIT_SUGGEST_MAX,
+          );
+        } catch {
+          // 補完の取得に失敗してもコミット操作自体は妨げない。
+          // Conventional Commits のフォールバックだけで表示を続ける。
+        }
+        if (requestId !== suggestRequestId.current) return; // 古いリクエストは無視
+        // 入力欄にフォーカスが無いとき（amend でメッセージを読み込んだ直後など、
+        // プログラムから件名が変わったとき）は候補を開かない。
+        if (document.activeElement !== commitInput.current) return;
+        const items = buildCommitSuggestions(
+          historyMatches,
+          commitSubject,
+          COMMIT_SUGGEST_MAX,
+        );
+        setSubjectSuggestions(items);
+        setSuggestIndex(0);
+        setShowSuggestDropdown(items.length > 0);
+      })();
+    }, COMMIT_SUGGEST_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [commitSubject, opened, repoPath]);
+
+  // 選択中の候補を件名へ確定する（Tab / Enter / クリック）。
+  function confirmSuggestion(index: number) {
+    const item = subjectSuggestions[index];
+    if (!item) return;
+    const { text, cursor } = applyCommitSuggestion(commitMsg, item.text);
+    setCommitMsg(text);
+    setShowSuggestDropdown(false);
+    const el = commitInput.current;
+    requestAnimationFrame(() => {
+      el?.focus();
+      if (el) el.selectionStart = el.selectionEnd = cursor;
+    });
+  }
+
   const [error, setError] = useState<string | null>(null);
   // ネットワーク操作（fetch / pull / push）の実行中フラグ。
   // true の間は fetch / pull / push ボタンを無効化して二重実行を防ぐ。
@@ -1955,10 +2061,57 @@ export function RepoWorkspace({
                 onChange={(e) => setCommitMsg(e.target.value)}
                 onFocus={handleCommitFocus}
                 onKeyDown={handleCommitKeyDown}
+                // #185 フォーカスが外れたら候補を閉じる。候補クリックは onMouseDown
+                // 側で preventDefault しているので blur は発生せず、選択操作は壊れない。
+                onBlur={() => setShowSuggestDropdown(false)}
+                role="combobox"
+                aria-expanded={showSuggestDropdown}
+                aria-controls="commit-suggest-listbox"
+                aria-autocomplete="list"
               />
               {/* #172 本文の 72 文字折り返し目安（薄い縦線）。可変幅フォントのため
                   厳密な位置ではなくあくまで目安。 */}
               <div className="commit-col-guide" aria-hidden="true" />
+              {/* #185 コミットメッセージ件名の補完候補（過去の履歴 + Conventional Commits）。
+                  ↑↓ で選択、Tab / Enter で確定、Esc で閉じる。 */}
+              <AnimatePresence>
+                {showSuggestDropdown && subjectSuggestions.length > 0 && (
+                  <motion.ul
+                    id="commit-suggest-listbox"
+                    className="commit-suggest-dropdown"
+                    role="listbox"
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={transitions.fast}
+                  >
+                    {subjectSuggestions.map((item, i) => (
+                      <li
+                        key={`${item.text}-${i}`}
+                        role="option"
+                        aria-selected={i === suggestIndex}
+                        className={
+                          "commit-suggest-item" +
+                          (i === suggestIndex ? " active" : "")
+                        }
+                        // mousedown で確定する: textarea の blur（それに伴う
+                        // ドロップダウンの消滅）より先に発火させ、フォーカスを
+                        // 保ったままクリックで確定できるようにする。
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          confirmSuggestion(i);
+                        }}
+                        onMouseEnter={() => setSuggestIndex(i)}
+                      >
+                        <span className="commit-suggest-text">{item.text}</span>
+                        {item.desc && (
+                          <span className="commit-suggest-desc">{item.desc}</span>
+                        )}
+                      </li>
+                    ))}
+                  </motion.ul>
+                )}
+              </AnimatePresence>
             </div>
             {/* 文字数カウンター (#77, #172: コードポイント単位で数え 50/72 の目安を表示) */}
             {commitMsg.length > 0 && (() => {

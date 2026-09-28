@@ -150,6 +150,18 @@ fn get_file_log(repo_path: String, path: String, max: usize) -> Result<Vec<Commi
     repo::file_log(&r, &path, max).map_err(|e| e.to_string())
 }
 
+/// 過去のコミット履歴から `prefix` に前方一致する件名候補を頻度順で返す
+/// （コミットメッセージのインライン補完 #185）。
+#[tauri::command]
+fn suggest_commit_messages(
+    repo_path: String,
+    prefix: String,
+    max: usize,
+) -> Result<Vec<String>, String> {
+    let r = open(&repo_path)?;
+    repo::suggest_commit_messages(&r, &prefix, max).map_err(|e| e.to_string())
+}
+
 /// 指定ファイルの未ステージ差分（インデックス↔作業ツリー）を返す。
 #[tauri::command]
 fn get_diff_unstaged(repo_path: String, path: String) -> Result<FileDiff, String> {
@@ -663,6 +675,7 @@ pub fn run() {
             get_log_page,
             close_log_cursor,
             get_file_log,
+            suggest_commit_messages,
             get_diff_unstaged,
             get_diff_staged,
             get_diff_conflict,
