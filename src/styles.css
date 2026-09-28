@@ -698,6 +698,8 @@ textarea {
   color: inherit;
   font-size: 12px;
   cursor: pointer;
+  /* #270: ここがドラッグ並べ替えの起点（タッチ操作でスクロールと競合しないように）。 */
+  touch-action: none;
 }
 .tabbar-tab-icon {
   display: inline-flex;
