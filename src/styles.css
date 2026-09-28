@@ -1744,6 +1744,51 @@ textarea {
   pointer-events: none;
 }
 
+/* ---- コミットメッセージ件名の補完ドロップダウン (#185) ---- */
+.commit-suggest-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 21;
+  margin: 2px 0 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+.commit-suggest-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.commit-suggest-item .commit-suggest-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.commit-suggest-item.active,
+.commit-suggest-item:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.commit-suggest-desc {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ---- #271 仮想スクロール ----
    コミット一覧・reflog 一覧は絶対配置された行を持つスクロール領域。表示範囲
    ＋オーバースキャン分だけが DOM に生成されるため、数千件でも描画コストが
