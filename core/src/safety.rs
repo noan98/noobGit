@@ -16,6 +16,7 @@ pub enum OperationKind {
     StashSave,
     StashApply,
     StashPop,
+    StashDrop,
     CreateBranch,
     SwitchBranch,
     DeleteBranch,
@@ -180,6 +181,21 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             permanent_data_loss: false,
             recommended_alternative: Some(
                 "コンフリクトが心配なときは、先に「適用（一覧に残す）」で試すと、失敗しても退避が残ります。".to_string(),
+            ),
+        },
+
+        OperationKind::StashDrop => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "退避（stash）を一覧から取り除きます。中身は復元できません。".to_string(),
+                "多くの場合、コンフリクトを解消したあとの「もう要らない退避」を片付けるために使います。"
+                    .to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "不安なら削除せず一覧に残しておいても困りません。あとで必要なくなったときに削除できます。"
+                    .to_string(),
             ),
         },
 
@@ -818,6 +834,15 @@ mod tests {
     }
 
     #[test]
+    fn stash_drop_is_caution_and_not_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::StashDrop, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        // libgit2 に stash を戻す API が無く undo できないため reversible は false。
+        assert!(!a.reversible);
+    }
+
+    #[test]
     fn cherry_pick_is_caution_and_reversible() {
         let ctx = SafetyContext::default();
         let a = assess(OperationKind::CherryPick, &ctx);
@@ -872,6 +897,7 @@ mod tests {
             OperationKind::StashSave,
             OperationKind::StashApply,
             OperationKind::StashPop,
+            OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
             OperationKind::DeleteBranch,

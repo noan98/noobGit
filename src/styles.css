@@ -1331,6 +1331,19 @@ textarea {
   color: var(--caution);
 }
 
+/* #156 stash_pop コンフリクト解消後の後片付け案内。解消完了なので safe トーン。 */
+.stash-pop-followup {
+  border-color: var(--safe-border);
+}
+.stash-pop-followup .conflict-guide {
+  background: var(--safe-bg);
+  border-color: var(--safe-border);
+  margin-bottom: 10px;
+}
+.stash-pop-followup .dialog-actions {
+  justify-content: flex-end;
+}
+
 /* ---- commits ---- */
 .commits .sha {
   color: var(--accent);
