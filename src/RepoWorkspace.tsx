@@ -377,10 +377,24 @@ export function RepoWorkspace({
   // #156 stash_pop がコンフリクトで退避を一覧に残したときの追跡情報。
   // コンフリクトウィザードで全ファイルを解消し終えたタイミングで、
   // 「退避を削除する / 残す」を選べる案内を出すために使う。
+  // id は退避の ID（番号は新しい退避でずれるため、削除は ID で指定する）。
+  // seenConflicts は、pop 後にコンフリクト一覧を実際に取得できたか。取得前の
+  // 一瞬（conflicts がまだ空）に「解消しました」を出さないために使う。
   const [stashPopConflict, setStashPopConflict] = useState<{
-    index: number;
+    id: string;
     message: string;
+    seenConflicts: boolean;
   } | null>(null);
+
+  // pop 後にコンフリクト一覧が実際に届いたら「観測済み」にする。これ以降に一覧が
+  // 空になったときだけ、解消完了として後片付けの案内を出す。
+  useEffect(() => {
+    if (conflicts.length > 0) {
+      setStashPopConflict((prev) =>
+        prev && !prev.seenConflicts ? { ...prev, seenConflicts: true } : prev,
+      );
+    }
+  }, [conflicts]);
 
   // リベース（squash / reword）で選択中のコミット id 集合と、ウィザードの表示状態。
   const [selectedCommitIds, setSelectedCommitIds] = useState<Set<string>>(
@@ -1216,11 +1230,12 @@ export function RepoWorkspace({
   // 一覧に残すので、解消し終えたら「退避を削除する / 残す」を選べるように
   // stashPopConflict へ記録する（#156）。
   function doStashPop(index: number) {
-    const message = stashes.find((s) => s.index === index)?.message ?? "";
+    const target = stashes.find((s) => s.index === index);
+    const message = target?.message ?? "";
     void guarded("退避を取り出す", "stash_pop", async () => {
       const outcome = await api.stashPop(repoPath, index);
-      if (outcome.conflicted) {
-        setStashPopConflict({ index, message });
+      if (outcome.conflicted && target) {
+        setStashPopConflict({ id: target.id, message, seenConflicts: false });
         showToast(
           "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避はいったん一覧に残しています）。",
           "warning",
@@ -1233,9 +1248,9 @@ export function RepoWorkspace({
 
   // #156 stash_pop のコンフリクトを解消し終えたあと、不要になった退避を削除する。
   // 破壊的（元に戻せない）ので guarded を通す（stash_drop は Caution）。
-  function doStashDrop(index: number) {
+  function doStashDrop(stashId: string) {
     void guarded("退避を削除", "stash_drop", async () => {
-      await api.stashDrop(repoPath, index);
+      await api.stashDrop(repoPath, stashId);
       showToast("退避を削除しました。", "success");
       setStashPopConflict(null);
     });
@@ -1811,10 +1826,10 @@ export function RepoWorkspace({
 
           {/* #156 stash_pop がコンフリクトで残した退避の後片付け。
               コンフリクトが（このタブで）すべて解消された時点でだけ表示する。 */}
-          {stashPopConflict && conflicts.length === 0 && (
+          {stashPopConflict?.seenConflicts && conflicts.length === 0 && (
             <StashPopFollowUp
               message={stashPopConflict.message}
-              onDelete={() => doStashDrop(stashPopConflict.index)}
+              onDelete={() => doStashDrop(stashPopConflict.id)}
               onKeep={() => setStashPopConflict(null)}
             />
           )}

@@ -382,8 +382,9 @@ export const api = {
   stashPop: (repoPath: string, index: number) =>
     invoke<StashRestoreOutcome>("stash_pop", { repoPath, index }),
   // 退避を一覧から取り除く（中身は復元できない。undo は記録されない）。
-  stashDrop: (repoPath: string, index: number) =>
-    invoke<void>("stash_drop", { repoPath, index }),
+  // 番号は新しい退避でずれるため、StashInfo.id で指定する。
+  stashDrop: (repoPath: string, stashId: string) =>
+    invoke<void>("stash_drop", { repoPath, stashId }),
   // 指定退避の変更ファイル一覧を返す（退避は適用しない安全な操作）。
   stashDiff: (repoPath: string, index: number) =>
     invoke<FileChange[]>("stash_diff", { repoPath, index }),

@@ -769,14 +769,31 @@ pub fn stash_pop(repo: &mut Repository, index: usize) -> Result<StashRestoreOutc
 /// を復元する簡単な方法が libgit2 には無いため、**undo は記録しない**（他の破壊的操作と
 /// 違い、直後の「取り消し」ボタンでは戻せない）。呼び出し側は必ず確認ダイアログ
 /// （`guarded()`）を経由すること。
-pub fn stash_drop(repo: &mut Repository, index: usize) -> Result<()> {
-    repo.stash_drop(index).map_err(|e| {
-        if e.code() == git2::ErrorCode::NotFound {
-            CoreError::InvalidInput("指定した退避が見つかりませんでした。".to_string())
+///
+/// 退避は番号（index）ではなく ID（退避コミットの oid。[`StashInfo::id`]）で指定する。
+/// 番号は新しい退避を作るたびにずれるため、画面を開いたあとに別の退避が作られていると
+/// 「別の退避を消してしまう」事故になる。ID が一覧に見つからなければ何もせず
+/// [`CoreError::InvalidInput`] を返す。
+pub fn stash_drop(repo: &mut Repository, stash_id: &str) -> Result<()> {
+    let target = git2::Oid::from_str(stash_id.trim())
+        .map_err(|_| CoreError::InvalidInput("退避の指定が正しくありません。".to_string()))?;
+    let mut found = None;
+    repo.stash_foreach(|index, _message, id| {
+        if *id == target {
+            found = Some(index);
+            false
         } else {
-            CoreError::Git(format!("退避の削除に失敗しました: {}", e.message()))
+            true
         }
-    })
+    })?;
+    let index = found.ok_or_else(|| {
+        CoreError::InvalidInput(
+            "指定した退避が見つかりませんでした（すでに削除されている可能性があります）。"
+                .to_string(),
+        )
+    })?;
+    repo.stash_drop(index)
+        .map_err(|e| CoreError::Git(format!("退避の削除に失敗しました: {}", e.message())))
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。各退避の変更ファイル数も付ける。
@@ -3159,14 +3176,42 @@ mod tests {
         }
 
         let mut repo = fx.open();
-        assert_eq!(stash_list(&mut repo).unwrap().len(), 1);
-        stash_drop(&mut repo, 0).unwrap();
+        let list = stash_list(&mut repo).unwrap();
+        assert_eq!(list.len(), 1);
+        stash_drop(&mut repo, &list[0].id).unwrap();
         assert!(stash_list(&mut repo).unwrap().is_empty());
     }
 
-    // 存在しない index への stash_drop は入力エラーになること。
+    // 番号がずれても（あとから別の退避が作られても）、ID で指定した退避だけを消すこと。
     #[test]
-    fn stash_drop_unknown_index_is_rejected() {
+    fn stash_drop_by_id_is_not_confused_by_shifted_index() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "first");
+        let first_id = {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "first").unwrap();
+            stash_list(&mut repo).unwrap()[0].id.clone()
+        };
+        // 新しい退避を作ると、first の番号は 0 → 1 にずれる。
+        fx.write_file("a.txt", "second");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "second").unwrap();
+        }
+
+        let mut repo = fx.open();
+        stash_drop(&mut repo, &first_id).unwrap();
+        let rest = stash_list(&mut repo).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert!(rest[0].message.contains("second"), "{rest:?}");
+    }
+
+    // 存在しない ID・不正な ID への stash_drop は入力エラーになること。
+    #[test]
+    fn stash_drop_unknown_id_is_rejected() {
         let fx = TestRepo::new();
         fx.write_file("a.txt", "1");
         fx.stage_all();
@@ -3174,7 +3219,11 @@ mod tests {
 
         let mut repo = fx.open();
         assert!(matches!(
-            stash_drop(&mut repo, 0).unwrap_err(),
+            stash_drop(&mut repo, "0123456789012345678901234567890123456789").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            stash_drop(&mut repo, "not-an-id").unwrap_err(),
             CoreError::InvalidInput(_)
         ));
     }

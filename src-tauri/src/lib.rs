@@ -254,9 +254,9 @@ fn stash_pop(repo_path: String, index: usize) -> Result<StashRestoreOutcome, Str
 
 /// 退避を一覧から取り除く（中身は復元できない）。undo は記録しない。
 #[tauri::command]
-fn stash_drop(repo_path: String, index: usize) -> Result<(), String> {
+fn stash_drop(repo_path: String, stash_id: String) -> Result<(), String> {
     let mut r = open(&repo_path)?;
-    ops::stash_drop(&mut r, index).map_err(|e| e.to_string())
+    ops::stash_drop(&mut r, &stash_id).map_err(|e| e.to_string())
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。
