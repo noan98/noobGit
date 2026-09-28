@@ -15,6 +15,10 @@ interface Props {
   onForcePush: (name: string) => void;
   // ネットワーク操作中は true。送信・強制送信ボタンを無効化して二重実行を防ぐ。
   networkBusy?: boolean;
+  // 保護ブランチ名の一覧（#169）。設定は git config に保存され、リポジトリごとに独立する。
+  protectedBranches: string[];
+  onAddProtected: (name: string) => void;
+  onRemoveProtected: (name: string) => void;
 }
 
 export function BranchPanel({
@@ -27,9 +31,21 @@ export function BranchPanel({
   onPush,
   onForcePush,
   networkBusy = false,
+  protectedBranches,
+  onAddProtected,
+  onRemoveProtected,
 }: Props) {
   const [newName, setNewName] = useState("");
   const newNameInput = useRef<HTMLInputElement>(null);
+  const [newProtectedName, setNewProtectedName] = useState("");
+
+  function submitAddProtected() {
+    const name = newProtectedName.trim();
+    if (name) {
+      onAddProtected(name);
+      setNewProtectedName("");
+    }
+  }
   const local = branches.filter((b) => !b.is_remote);
   const remote = branches.filter((b) => b.is_remote);
 
@@ -81,6 +97,7 @@ export function BranchPanel({
                   {b.name}
                   {b.is_protected && (
                     <span className="protected" title="保護ブランチ">
+                      <Icon name="protected" />
                       保護
                     </span>
                   )}
@@ -206,6 +223,48 @@ export function BranchPanel({
           </ul>
         </div>
       )}
+
+      <div className="protected-branches-settings">
+        <h3>
+          <Icon name="protected" /> 保護ブランチの設定
+        </h3>
+        <p className="settings-field-help">
+          保護ブランチへの削除・強制送信（force push）は「破壊的」操作として強く警告されます。
+          一覧を空にすると既定値（main / master）に戻ります。
+        </p>
+
+        {protectedBranches.length > 0 ? (
+          <ul className="protected-branches-list">
+            {protectedBranches.map((name) => (
+              <li key={name}>
+                <Icon name="protected" />
+                <span>{name}</span>
+                <button
+                  className="link"
+                  onClick={() => onRemoveProtected(name)}
+                  title={`「${name}」を保護対象から外す`}
+                >
+                  <Icon name="close" label={`「${name}」を保護対象から外す`} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="protected-branches-empty">読み込み中…</p>
+        )}
+
+        <div className="branch-create">
+          <input
+            value={newProtectedName}
+            placeholder="保護するブランチ名（例: release）"
+            onChange={(e) => setNewProtectedName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitAddProtected()}
+          />
+          <button className="btn btn-small" onClick={submitAddProtected}>
+            追加
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

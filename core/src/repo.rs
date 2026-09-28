@@ -242,6 +242,30 @@ pub fn branches(repo: &Repository, protected: &[String]) -> Result<Vec<BranchInf
     Ok(out)
 }
 
+/// リポジトリローカルの git config `noobgit.protectedBranches` から保護ブランチ
+/// 一覧を読み込む。
+///
+/// 値はカンマ区切りの文字列（例: `main,master,release`）として保存する
+/// （書き込みは [`crate::ops::save_protected_branches`] がリポジトリローカルの
+/// `.git/config` にのみ行うため、この設定はリポジトリごとに独立する）。
+/// キーが未設定、または正規化後に空リストになる場合は既定値
+/// （[`crate::safety::DEFAULT_PROTECTED_BRANCHES`]）を返す。
+pub fn load_protected_branches(repo: &Repository) -> Result<Vec<String>> {
+    let cfg = repo.config()?;
+    let list = match cfg.get_string("noobgit.protectedBranches") {
+        Ok(raw) => crate::safety::parse_protected_branches(&raw),
+        Err(_) => Vec::new(),
+    };
+    if list.is_empty() {
+        Ok(crate::safety::DEFAULT_PROTECTED_BRANCHES
+            .iter()
+            .map(|s| s.to_string())
+            .collect())
+    } else {
+        Ok(list)
+    }
+}
+
 /// タグの一覧を返す（名前順）。
 ///
 /// 軽量タグ・注釈付きタグの両方を扱う。注釈付きタグは `repo.find_tag` で解決でき、

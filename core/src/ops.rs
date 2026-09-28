@@ -948,6 +948,43 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 保護ブランチ一覧をリポジトリローカルの git config `noobgit.protectedBranches`
+/// に保存する（カンマ区切り文字列。例: `main,master,release`）。
+///
+/// グローバル設定（`~/.gitconfig`）には書き込まない — 必ず
+/// `ConfigLevel::Local`（`.git/config`）を明示的に開くので、この設定はリポジトリ
+/// ごとに独立する（読み込みは [`crate::repo::load_protected_branches`]）。
+///
+/// `names` は前後の空白を取り除き、空文字・重複を除去したうえで、それぞれが
+/// Git のブランチ名として有効かを検証する。不正な名前が1つでもあれば何も
+/// 書き込まず `InvalidInput` を返す。正規化した結果が空リストになる場合は、
+/// キー自体を削除して既定値（`main`/`master`）に戻す。
+pub fn save_protected_branches(repo: &Repository, names: &[String]) -> Result<()> {
+    let normalized =
+        crate::safety::normalize_protected_branch_names(names.iter().map(|s| s.as_str()));
+
+    for name in &normalized {
+        let valid = git2::Branch::name_is_valid(name).unwrap_or(false);
+        if !valid {
+            return Err(CoreError::InvalidInput(format!(
+                "「{name}」は有効なブランチ名ではありません。"
+            )));
+        }
+    }
+
+    let mut local = repo
+        .config()?
+        .open_level(git2::ConfigLevel::Local)
+        .map_err(CoreError::from)?;
+    if normalized.is_empty() {
+        // 空にする = 既定値（main/master）に戻す。キーが元々無い場合のエラーは無視する。
+        let _ = local.remove("noobgit.protectedBranches");
+    } else {
+        local.set_str("noobgit.protectedBranches", &normalized.join(","))?;
+    }
+    Ok(())
+}
+
 /// コミットに目印（タグ）を付ける。
 ///
 /// `target` が `None` なら HEAD のコミットに付ける。`Some` なら revparse で解決した対象に
@@ -3053,6 +3090,127 @@ mod tests {
         assert!(
             msg.contains("チェックアウト") || msg.contains("削除できません"),
             "日本語メッセージがチェックアウト中を説明すること: {msg}"
+        );
+    }
+
+    // --- save_protected_branches / load_protected_branches のテスト ---
+
+    #[test]
+    fn save_and_load_protected_branches_roundtrip() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(&repo, &["develop".to_string(), "release".to_string()]).unwrap();
+
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["develop".to_string(), "release".to_string()]);
+    }
+
+    #[test]
+    fn load_protected_branches_defaults_when_unset() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["main".to_string(), "master".to_string()]);
+    }
+
+    #[test]
+    fn save_protected_branches_normalizes_and_dedupes() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(
+            &repo,
+            &[
+                " develop ".to_string(),
+                "".to_string(),
+                "develop".to_string(),
+                "  ".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let loaded = crate::repo::load_protected_branches(&repo).unwrap();
+        assert_eq!(loaded, vec!["develop".to_string()]);
+    }
+
+    #[test]
+    fn save_empty_protected_branches_resets_to_default() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        save_protected_branches(&repo, &["develop".to_string()]).unwrap();
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["develop".to_string()]
+        );
+
+        // 空配列で保存すると既定値（main/master）に戻る。
+        save_protected_branches(&repo, &[]).unwrap();
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn save_protected_branches_rejects_invalid_name() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+
+        let err = save_protected_branches(&repo, &["with spaces".to_string()]).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // 不正な名前があると何も書き込まれない（既定値のまま）。
+        assert_eq!(
+            crate::repo::load_protected_branches(&repo).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn protected_branches_config_is_independent_per_repo() {
+        let fx_a = TestRepo::new();
+        let fx_b = TestRepo::new();
+
+        save_protected_branches(&fx_a.open(), &["develop".to_string()]).unwrap();
+
+        // fx_a にだけ設定したので、fx_b は既定値のまま。
+        assert_eq!(
+            crate::repo::load_protected_branches(&fx_a.open()).unwrap(),
+            vec!["develop".to_string()]
+        );
+        assert_eq!(
+            crate::repo::load_protected_branches(&fx_b.open()).unwrap(),
+            vec!["main".to_string(), "master".to_string()]
+        );
+    }
+
+    #[test]
+    fn custom_protected_branch_makes_delete_and_force_push_destructive() {
+        use crate::safety::{assess, OperationKind, RiskLevel, SafetyContext};
+
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        save_protected_branches(&repo, &["develop".to_string()]).unwrap();
+        let protected = crate::repo::load_protected_branches(&repo).unwrap();
+
+        let ctx = SafetyContext {
+            target_branch: Some("develop".to_string()),
+            protected_branches: protected,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            assess(OperationKind::DeleteBranch, &ctx).level,
+            RiskLevel::Destructive,
+            "カスタム保護ブランチの削除は Destructive のはず"
+        );
+        let fp = assess(OperationKind::ForcePush, &ctx);
+        assert_eq!(fp.level, RiskLevel::Destructive);
+        assert!(
+            fp.reasons.iter().any(|r| r.contains("保護ブランチ")),
+            "カスタム保護ブランチへの force push は保護ブランチである旨の理由を含むはず"
         );
     }
 
