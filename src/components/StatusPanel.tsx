@@ -88,6 +88,8 @@ interface Props {
   onDiscardPaths?: (paths: string[]) => void;
   // #125 hunk 単位ステージ: ファイルパスと hunk ヘッダーを受け取り App.tsx へ委譲する。
   onStageHunk?: (path: string, hunkHeader: string) => void;
+  // #158 hunk 単位アンステージ: ファイルパスと hunk ヘッダーを受け取り App.tsx へ委譲する。
+  onUnstageHunk?: (path: string, hunkHeader: string) => void;
   // #70 .gitignore 管理: このファイルを .gitignore に追加する（無視リストへ）。
   onIgnore?: (path: string) => void;
   // #70 .gitignore 管理: .gitignore の内容を閲覧するモーダルを開く。
@@ -223,6 +225,8 @@ function FileCard({
   onCheck,
   // #125 hunk 単位ステージ
   onStageHunk,
+  // #158 hunk 単位アンステージ
+  onUnstageHunk,
   // #203 サブモジュール検出
   isSubmodule,
   // #166 検索・絞り込み: 現在の検索語（マッチ部分のハイライトに使う）。
@@ -252,6 +256,8 @@ function FileCard({
   onCheck?: (checked: boolean) => void;
   // #125 hunk 単位ステージ: hunk ヘッダーを受け取り親へ委譲する。
   onStageHunk?: (hunkHeader: string) => void;
+  // #158 hunk 単位アンステージ: hunk ヘッダーを受け取り親へ委譲する。
+  onUnstageHunk?: (hunkHeader: string) => void;
   // #203 サブモジュール検出: このパスがサブモジュール（リポジトリの中の別リポジトリ）か。
   // アイコンとツールチップを差し替え、noobGit では中身を操作できないことを伝える。
   isSubmodule?: boolean;
@@ -454,6 +460,7 @@ function FileCard({
                 path={path}
                 source={inlineDiffSource}
                 onStageHunk={onStageHunk}
+                onUnstageHunk={onUnstageHunk}
               />
             </motion.div>
           )}
@@ -551,6 +558,8 @@ export function StatusPanel({
   onDiscardPaths,
   // #125 hunk 単位ステージ
   onStageHunk,
+  // #158 hunk 単位アンステージ
+  onUnstageHunk,
   // #70 .gitignore 管理
   onIgnore,
   onShowGitignore,
@@ -1004,6 +1013,12 @@ export function StatusPanel({
                       inlineDiffSource="staged"
                       checked={checkedPaths.has(f.path)}
                       onCheck={(c) => toggleCheck(f.path, c)}
+                      // #158 hunk 単位アンステージ: ファイルパスを束ねて親へ委譲する。
+                      onUnstageHunk={
+                        onUnstageHunk
+                          ? (h) => onUnstageHunk(f.path, h)
+                          : undefined
+                      }
                       isSubmodule={f.is_submodule}
                       searchQuery={searchQuery}
                       rowId={fileRowId(i)}
