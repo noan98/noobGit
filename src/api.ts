@@ -61,6 +61,16 @@ export interface LogFilter {
   until?: number;
 }
 
+// コミット履歴をカーソルベースでページングしたときの1ページ分の結果
+// （Issue #277）。`cursor` は「続きがあるときに次回の getLogPage へそのまま
+// 渡すオペークな ID」で、中身に意味は無い。`has_more` が true なら `cursor` は
+// 必ず non-null。
+export interface LogPage {
+  commits: CommitInfo[];
+  cursor: string | null;
+  has_more: boolean;
+}
+
 export type DiffLineKind = "context" | "addition" | "deletion" | "hunk";
 
 export interface DiffLine {
@@ -310,6 +320,29 @@ export const api = {
       max,
       filter: filter ?? null,
     }),
+  // カーソルベースのページング（Issue #277）。`cursor` を省略すると先頭ページ、
+  // 渡すとその続きを取得する。各回のコストは「すでに読んだ件数」に依存しない
+  // （詳しくは core 側の `LogCursorStore` を参照）。`fallbackSkip` は、渡した
+  // カーソルが失効していた場合にだけ使われる「現在表示済みの件数」。
+  getLogPage: (
+    repoPath: string,
+    max: number,
+    filter?: LogFilter,
+    cursor?: string,
+    fallbackSkip = 0,
+  ) =>
+    invoke<LogPage>("get_log_page", {
+      repoPath,
+      max,
+      filter: filter ?? null,
+      cursor: cursor ?? null,
+      fallbackSkip,
+    }),
+  // 使い終わったログカーソルを手放す（検索条件の変更・リフレッシュ・タブを
+  // 閉じる等）。呼び忘れてもキャッシュ側の上限超過で自動的に立ち退くが、
+  // すぐに手放したほうがリポジトリのハンドルを長く握り続けずに済む。
+  closeLogCursor: (cursor: string) =>
+    invoke<void>("close_log_cursor", { cursor }),
   getFileLog: (repoPath: string, path: string, max: number) =>
     invoke<CommitInfo[]>("get_file_log", { repoPath, path, max }),
   getDiffUnstaged: (repoPath: string, path: string) =>
