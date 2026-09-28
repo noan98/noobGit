@@ -16,6 +16,8 @@ import { InlineDiff } from "./InlineDiff";
 import type { InlineDiffSource } from "./InlineDiff";
 // #166 検索・絞り込み
 import { filterByQuery, highlightSegments } from "../lib/fileSearch";
+// #272 一覧の矢印キー行ナビゲーション
+import { useListNav } from "../hooks/useListNav";
 
 /*
  * StatusPanel — ファイル変更一覧（#91 カード UI リデザイン）。
@@ -90,6 +92,9 @@ interface Props {
   onIgnore?: (path: string) => void;
   // #70 .gitignore 管理: .gitignore の内容を閲覧するモーダルを開く。
   onShowGitignore?: () => void;
+  // #274 危険度カラー: 破棄（discard）ボタンに付与する強調クラス。
+  // 未取得の間は空文字（Safe相当の通常スタイル）。
+  discardRiskClass?: string;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -222,6 +227,12 @@ function FileCard({
   isSubmodule,
   // #166 検索・絞り込み: 現在の検索語（マッチ部分のハイライトに使う）。
   searchQuery,
+  // #272 一覧の矢印キー行ナビゲーション: aria-activedescendant の参照先 id と、
+  // 現在キーボードフォーカス中かどうか。マウスでの行操作時に親の活性行を
+  // 揃えるための onActivateRow も受け取る。
+  rowId,
+  isActive,
+  onActivateRow,
 }: {
   path: string;
   isSelected: boolean;
@@ -246,6 +257,12 @@ function FileCard({
   isSubmodule?: boolean;
   // #166 検索・絞り込み: 空文字列/未指定ならハイライトなし。
   searchQuery?: string;
+  // #272: 一覧全体（結合済み配列）でのこの行の id。
+  rowId?: string;
+  // #272: 現在キーボードでフォーカスしている行かどうか。
+  isActive?: boolean;
+  // #272: マウスでこの行を操作したとき、一覧コンテナの活性行をこの行に揃える。
+  onActivateRow?: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
   // #87 ドラッグ&ドロップ: ドラッグ中フラグ（pointerup をクリックと誤認しないため）。
@@ -295,6 +312,9 @@ function FileCard({
     >
       <Box
         as="div"
+        id={rowId}
+        role="option"
+        aria-selected={isSelected}
         bg={isSelected ? "accent.bg" : "neutral.surface"}
         border="1px solid"
         borderColor={isSelected ? "accent.border" : "neutral.border"}
@@ -304,13 +324,18 @@ function FileCard({
         mb="6px"
         cursor={draggable ? "grab" : "pointer"}
         transition="background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease"
-        boxShadow={hovered ? "var(--shadow)" : "none"}
+        // #272: キーボードでフォーカス中の行はフォーカスリング（--focus-ring）を
+        // 優先表示する。それ以外はホバー時の影のみ。
+        boxShadow={isActive ? "0 0 0 2px var(--focus-ring)" : hovered ? "var(--shadow)" : "none"}
         _hover={{
           bg: isSelected ? "accent.bg" : "neutral.bg",
           borderColor: isSelected ? "accent.border" : "neutral.border",
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        // #272: マウスでこの行を操作したときも、以後の矢印キーナビゲーションが
+        // この行から続くようにする。
+        onMouseDown={onActivateRow}
         // #88 右クリックメニュー: ブラウザのデフォルトメニューを抑制してコールバックを呼ぶ
         onContextMenu={onContextMenu}
       >
@@ -531,6 +556,8 @@ export function StatusPanel({
   // #70 .gitignore 管理
   onIgnore,
   onShowGitignore,
+  // #274 危険度カラー
+  discardRiskClass = "",
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -596,6 +623,46 @@ export function StatusPanel({
   const bulkScopeHint = isFiltering
     ? "（絞り込み中でも、表示されていないファイルを含む全件が対象です）"
     : "";
+
+  // #272: 一覧の矢印キー行ナビゲーション。
+  // ステージ済み→未ステージ→未追跡→コンフリクトの表示順で 1 本に結合した配列を
+  // 使う。あるセクションの末尾で ↓ すると、配列上は次の要素＝次セクションの
+  // 先頭になるため、ゾーンをまたいだ移動が特別なコードなしで自然に実現される
+  // （lib/listNav.ts 参照）。
+  const flatRows = useMemo(() => {
+    const rows: { path: string; source: DiffSource }[] = [];
+    for (const f of filteredStaged) rows.push({ path: f.path, source: "staged" });
+    for (const f of filteredUnstaged) rows.push({ path: f.path, source: "unstaged" });
+    for (const p of filteredUntracked) rows.push({ path: p, source: "unstaged" });
+    for (const p of filteredConflicted) rows.push({ path: p, source: "conflicted" });
+    return rows;
+  }, [filteredStaged, filteredUnstaged, filteredUntracked, filteredConflicted]);
+
+  // 各セクションの、結合済み配列内での開始オフセット。
+  const unstagedOffset = filteredStaged.length;
+  const untrackedOffset = unstagedOffset + filteredUnstaged.length;
+  const conflictedOffset = untrackedOffset + filteredUntracked.length;
+
+  // Enter/Space の主操作は、カード本体のクリックと同じ「差分を選択して表示する」
+  // （ステージ/アンステージは既存の「ステージ」「外す」ボタンで行う。破壊的な
+  // 「破棄」はここには割り当てない）。
+  const {
+    activeIndex: activeRowIndex,
+    setActiveIndex: setActiveRowIndex,
+    onKeyDown: onFileListKeyDown,
+  } = useListNav({
+    itemCount: flatRows.length,
+    onActivate: (index) => {
+      const row = flatRows[index];
+      if (row) onSelect(row.path, row.source);
+    },
+  });
+  // 一覧コンテナが実際にフォーカスされている間だけ現在行を視覚的に示す。
+  const [fileListFocused, setFileListFocused] = useState(false);
+
+  function fileRowId(index: number): string {
+    return `status-row-${index}`;
+  }
 
   // #88 右クリックメニュー: 表示中のメニュー状態（null = 非表示）。
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -904,6 +971,20 @@ export function StatusPanel({
         />
       )}
 
+      {/* #272: 一覧の矢印キー行ナビゲーション — aria-activedescendant パターン。
+          フォーカスはこのコンテナ自体に置き、現在行は aria-activedescendant で
+          示す。中の 3 セクション（ステージ済み／未ステージ＋未追跡／
+          コンフリクト）を表示順で結合した 1 本の配列が flatRows で、
+          セクションをまたいだ ↑/↓ もこの単一コンテナ・単一配列で自然に扱う。 */}
+      <div
+        role="listbox"
+        aria-label="変更ファイル一覧"
+        tabIndex={flatRows.length > 0 ? 0 : -1}
+        aria-activedescendant={activeRowIndex >= 0 ? fileRowId(activeRowIndex) : undefined}
+        onKeyDown={onFileListKeyDown}
+        onFocus={() => setFileListFocused(true)}
+        onBlur={() => setFileListFocused(false)}
+      >
       {/* ステージ済みセクション（#87 ドロップ先 + #78 アニメーション）*/}
       {(status.staged.length > 0 || (!status.is_clean && hasUnstaged)) && (
         <div>
@@ -944,7 +1025,7 @@ export function StatusPanel({
             ) : (
               <LayoutGroup id="staged">
                 <AnimatePresence initial={false}>
-                  {filteredStaged.map((f) => (
+                  {filteredStaged.map((f, i) => (
                     <FileCard
                       key={f.path}
                       path={f.path}
@@ -960,6 +1041,9 @@ export function StatusPanel({
                       onCheck={(c) => toggleCheck(f.path, c)}
                       isSubmodule={f.is_submodule}
                       searchQuery={searchQuery}
+                      rowId={fileRowId(i)}
+                      isActive={fileListFocused && activeRowIndex === i}
+                      onActivateRow={() => setActiveRowIndex(i)}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -1037,7 +1121,7 @@ export function StatusPanel({
               ) : (
               <LayoutGroup id="unstaged">
                 <AnimatePresence initial={false}>
-                  {filteredUnstaged.map((f) => (
+                  {filteredUnstaged.map((f, i) => (
                     <FileCard
                       key={f.path}
                       path={f.path}
@@ -1059,6 +1143,9 @@ export function StatusPanel({
                       }
                       isSubmodule={f.is_submodule}
                       searchQuery={searchQuery}
+                      rowId={fileRowId(unstagedOffset + i)}
+                      isActive={fileListFocused && activeRowIndex === unstagedOffset + i}
+                      onActivateRow={() => setActiveRowIndex(unstagedOffset + i)}
                       actions={
                         <>
                           <StatusBadge kind={f.kind} />
@@ -1101,7 +1188,7 @@ export function StatusPanel({
                             ステージ
                           </button>
                           <button
-                            className="link danger"
+                            className={`link ${discardRiskClass}`}
                             disabled={f.is_submodule}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1152,7 +1239,7 @@ export function StatusPanel({
               ) : (
               <LayoutGroup id="untracked">
                 <AnimatePresence initial={false}>
-                  {filteredUntracked.map((p) => (
+                  {filteredUntracked.map((p, i) => (
                     <FileCard
                       key={p}
                       path={p}
@@ -1167,6 +1254,9 @@ export function StatusPanel({
                       checked={checkedPaths.has(p)}
                       onCheck={(c) => toggleCheck(p, c)}
                       searchQuery={searchQuery}
+                      rowId={fileRowId(untrackedOffset + i)}
+                      isActive={fileListFocused && activeRowIndex === untrackedOffset + i}
+                      onActivateRow={() => setActiveRowIndex(untrackedOffset + i)}
                       actions={
                         <>
                           <StatusBadge kind="untracked" />
@@ -1195,7 +1285,7 @@ export function StatusPanel({
                             </button>
                           )}
                           <button
-                            className="link danger"
+                            className={`link ${discardRiskClass}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               onDiscard(p);
@@ -1234,22 +1324,29 @@ export function StatusPanel({
           ) : (
             <LayoutGroup id="conflicted">
               <AnimatePresence initial={false}>
-                {filteredConflicted.map((p) => (
-                  <FileCard
-                    key={p}
-                    path={p}
-                    isSelected={isSelected(p, "conflicted")}
-                    onSelect={() => onSelect(p, "conflicted")}
-                    onContextMenu={handleContextMenu(p, "conflicted")}
-                    searchQuery={searchQuery}
-                    actions={<StatusBadge kind="conflicted" />}
-                  />
-                ))}
+                {filteredConflicted.map((p, i) => {
+                  const rowIndex = conflictedOffset + i;
+                  return (
+                    <FileCard
+                      key={p}
+                      path={p}
+                      isSelected={isSelected(p, "conflicted")}
+                      onSelect={() => onSelect(p, "conflicted")}
+                      onContextMenu={handleContextMenu(p, "conflicted")}
+                      searchQuery={searchQuery}
+                      actions={<StatusBadge kind="conflicted" />}
+                      rowId={fileRowId(rowIndex)}
+                      isActive={fileListFocused && activeRowIndex === rowIndex}
+                      onActivateRow={() => setActiveRowIndex(rowIndex)}
+                    />
+                  );
+                })}
               </AnimatePresence>
             </LayoutGroup>
           )}
         </div>
       )}
+      </div>
 
       {/* #88 右クリックメニュー: ポータルなしで fixed 配置のメニューを AnimatePresence でマウント/アンマウント */}
       <AnimatePresence>
@@ -1319,13 +1416,13 @@ export function StatusPanel({
               {/* 未ステージ・未追跡の選択がある → 破棄ボタン（危険色）*/}
               {checkedUnstaged.length > 0 && onDiscardPaths && (
                 <button
-                  className="btn btn-small"
+                  // #274 危険度カラー: 個別の破棄ボタンと同じクラスで統一する。
+                  className={`btn btn-small ${discardRiskClass}`}
                   onClick={() => {
                     onDiscardPaths(checkedUnstaged);
                     clearChecked();
                   }}
                   title="選択した変更を破棄します（元に戻せません）"
-                  style={{ color: "var(--destructive)", borderColor: "var(--destructive-border)" }}
                 >
                   破棄（{checkedUnstaged.length} 件）
                 </button>

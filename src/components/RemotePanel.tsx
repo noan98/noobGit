@@ -6,10 +6,18 @@ interface Props {
   onAdd: (name: string, url: string) => void;
   onSetUrl: (name: string, url: string) => void;
   onRemove: (name: string) => void;
+  // #274 危険度カラー: 削除ボタンに付与する強調クラス（未取得の間は空文字）。
+  removeRiskClass?: string;
 }
 
 // リモートリポジトリ管理パネル。一覧表示・追加・URL変更・削除ができる。
-export function RemotePanel({ remotes, onAdd, onSetUrl, onRemove }: Props) {
+export function RemotePanel({
+  remotes,
+  onAdd,
+  onSetUrl,
+  onRemove,
+  removeRiskClass = "",
+}: Props) {
   const [newName, setNewName] = useState("");
   const [newUrl, setNewUrl] = useState("");
   // 編集中のリモート名（null = 非編集状態）。
@@ -136,7 +144,7 @@ export function RemotePanel({ remotes, onAdd, onSetUrl, onRemove }: Props) {
                       URL変更
                     </button>
                     <button
-                      className="link danger"
+                      className={`link ${removeRiskClass}`}
                       onClick={() => onRemove(r.name)}
                       title="このリモートの設定を削除します。コミットや作業ファイルには影響しません。"
                     >
