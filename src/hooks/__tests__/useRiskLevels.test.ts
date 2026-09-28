@@ -94,4 +94,24 @@ describe("useRiskLevels", () => {
     expect(result.current).toEqual({});
     expect(mockInvoke).not.toHaveBeenCalled();
   });
+  it("refreshToken が変わると（状態の再取得後）評価し直して新しい危険度に追従する", async () => {
+    let level: RiskAssessment["level"] = "destructive";
+    mockInvoke.mockImplementation(() => Promise.resolve(assessment(level)));
+
+    const { result, rerender } = renderHook(
+      ({ token }: { token: object }) =>
+        useRiskLevels("/repo", [{ op: "amend_commit" }], token),
+      { initialProps: { token: {} } },
+    );
+    await waitFor(() => {
+      expect(result.current).toEqual({ amend_commit: "destructive" });
+    });
+
+    // 例: コミットを取り消して未送信になった → core の判定が caution に変わる。
+    level = "caution";
+    rerender({ token: {} });
+    await waitFor(() => {
+      expect(result.current).toEqual({ amend_commit: "caution" });
+    });
+  });
 });

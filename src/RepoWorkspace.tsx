@@ -10,7 +10,7 @@
  * そのため window に登録するグローバルショートカット類は、active フラグで
  * アクティブなタブだけが反応するようにする。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
@@ -270,6 +270,9 @@ export function RepoWorkspace({
   const nonHeadLocalBranchNames = branches
     .filter((b) => !b.is_remote && !b.is_head)
     .map((b) => b.name);
+  // 状態（作業ツリー・履歴・ブランチ）を再取得するたびに危険度も評価し直す。
+  // 例: コミットを送信すると amend_commit が destructive → caution に変わる。
+  const riskRefreshToken = useMemo(() => ({}), [status, commits, branches]);
   const riskLevels = useRiskLevels(opened ? repoPath : null, [
     // 対象非依存（常に同じ判定になる操作）。
     { op: "discard" },
@@ -291,7 +294,7 @@ export function RepoWorkspace({
       op: "delete_branch" as const,
       target: name,
     })),
-  ]);
+  ], riskRefreshToken);
 
   // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
   const [logFilter, setLogFilter] = useState<LogFilter>({});
