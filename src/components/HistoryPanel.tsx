@@ -1,9 +1,10 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
-import { CommitGraph } from "./CommitGraph";
+import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
+import { computeCommitGraphLayout } from "../lib/commitGraph";
 // #272: 一覧の矢印キー行ナビゲーション（コミット一覧・reflog 一覧で使う）。
 import { useListNav } from "../hooks/useListNav";
 
@@ -37,6 +38,10 @@ interface Props {
   // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
   // 親（App）が guarded("reset_hard") に配線する。
   onResetTo: (newOid: string) => void;
+  // #274 危険度カラー: 各トリガーボタンに付与する強調クラス。
+  // 未取得の間は空文字（Safe相当の通常スタイル）。
+  resetRiskClass?: string;
+  cherryPickRiskClass?: string;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -141,8 +146,12 @@ export function HistoryPanel({
   onStartRebase,
   repoPath,
   onResetTo,
+  // #274 危険度カラー
+  resetRiskClass = "",
+  cherryPickRiskClass = "",
 }: Props) {
-  // #51 DAG グラフ — ON/OFF トグル状態。
+  // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
+  // グラフ列（レーン線・ノード）を表示する。
   const [showGraph, setShowGraph] = useState(false);
 
   // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
@@ -261,6 +270,18 @@ export function HistoryPanel({
   const [authorQuery, setAuthorQuery] = useState("");
   // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
   const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+
+  // #168: グラフ列を実際に描くか。検索中は一覧が飛び飛びのコミットになり、親が
+  // 一覧に無いためレーンが閉じずに増え続けて意味のないグラフになる（計算量も
+  // レーン数に比例して膨らむ）ので、検索中はグラフを出さない。
+  const graphVisible = showGraph && !isSearching;
+  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
+  // 表示するときだけ、commits 配列の参照が変わったとき（ページ追加など）に再計算する。
+  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
+  const graphLayout = useMemo(
+    () => computeCommitGraphLayout(graphVisible ? commits : []),
+    [graphVisible, commits],
+  );
   const selectedCount = selectedIds.size;
 
   // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
@@ -310,11 +331,17 @@ export function HistoryPanel({
         {/* コミットタブ専用のコントロール */}
         {activeTab === "commits" && (
           <>
-            {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+            {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル */}
             <button
               className={`btn btn-small${showGraph ? " active" : ""}`}
               onClick={() => setShowGraph((v) => !v)}
-              title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+              title={
+                showGraph && isSearching
+                  ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
+                  : showGraph
+                    ? "グラフ列を非表示にする"
+                    : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+              }
               aria-pressed={showGraph}
             >
               {showGraph ? "グラフ 非表示" : "グラフ 表示"}
@@ -368,11 +395,6 @@ export function HistoryPanel({
             />
           </div>
 
-          {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
-          {showGraph && commits.length > 0 && (
-            <CommitGraph commits={commits} />
-          )}
-
           {commits.length === 0 ? (
             isSearching ? (
               <EmptyState
@@ -422,6 +444,7 @@ export function HistoryPanel({
                   const palette = authorPalette(c.author_name);
                   const initials = authorInitials(c.author_name);
                   const isCompareBase = compareBaseId === c.id;
+                  const graphRow = graphLayout.rows[idx];
                   const isActive = idx === commitsActiveIndex;
                   return (
                     <li
@@ -443,6 +466,12 @@ export function HistoryPanel({
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
                     >
+                      {/* #168 DAG グラフ列 — ON のとき、このコミットが属するレーンと
+                          親コミットへの接続線を行の左端に表示する。 */}
+                      {graphVisible && graphRow && (
+                        <CommitGraphCell row={graphRow} laneCount={graphLayout.laneCount} />
+                      )}
+
                       {/* リベース対象の選択チェックボックス */}
                       <input
                         type="checkbox"
@@ -502,14 +531,14 @@ export function HistoryPanel({
                           {isCompareBase ? "基準" : "比較"}
                         </button>
                         <button
-                          className="link commit-cherry-pick-btn"
+                          className={`link commit-cherry-pick-btn ${cherryPickRiskClass}`}
                           title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
                           onClick={() => onCherryPick(c)}
                         >
                           コピー
                         </button>
                         <button
-                          className="link danger commit-reset-btn"
+                          className={`link commit-reset-btn ${resetRiskClass}`}
                           title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
                           onClick={() => onReset(c)}
                         >
@@ -634,7 +663,7 @@ export function HistoryPanel({
                       </div>
                       {/* 「この時点に戻す」ボタン */}
                       <button
-                        className="link danger reflog-reset-btn"
+                        className={`link reflog-reset-btn ${resetRiskClass}`}
                         title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
                         onClick={() => onResetTo(entry.new_oid)}
                       >

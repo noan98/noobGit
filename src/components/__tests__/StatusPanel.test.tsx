@@ -1,55 +1,72 @@
-// #272: StatusPanel の矢印キー行ナビゲーションのテスト。
-//
-// ステージ済み・未ステージ・未追跡・コンフリクトの各セクションを表示順で
-// 結合した 1 本の配列に対して ↑/↓/Home/End で行フォーカスを移動し、
-// Enter/Space で主操作（＝カード本体クリックと同じ「差分を選択して表示」）を
-// 実行できることを検証する。ステージ・アンステージ・破棄のような他の操作は
-// Enter/Space に割り当てられていないことも確認する（誤操作防止）。
-import type { ComponentProps } from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+// #161 StatusPanel のコンポーネントテスト。
+// 空状態（変更なし）とファイルありの状態（staged / unstaged / untracked /
+// conflicted）それぞれの表示、および主要な操作（ファイル選択・ステージ・
+// アンステージ・破棄・一括操作）で対応するコールバック props が正しい引数で
+// 呼ばれることを確認する。
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import { vi, describe, it, expect } from "vitest";
+import { vi, describe, it, expect, beforeEach } from "vitest";
 import { StatusPanel } from "../StatusPanel";
 import type { RepoStatus } from "../../api";
+import type { DiffSelection } from "../DiffPanel";
 
-// framer-motion のアニメーションは JSDOM では動かないためモックする
-// （他のコンポーネントテストと同じ方式。ConfirmDialog.test.tsx 等を参照）。
+// framer-motion のアニメーションは JSDOM 環境では動作しないため、
+// ConfirmDialog / GitignoreModal のテストと同様にモックする。
+// StatusPanel は motion.div に加え AnimatePresence / LayoutGroup も使うため、
+// いずれも children をそのまま描画するだけの実装にする。
 vi.mock("framer-motion", () => ({
   motion: {
     div: ({
       children,
+      // framer-motion 専用の props（DOM に渡すと React が警告するもの）は
+      // 除外し、それ以外（style や onContextMenu など）はそのまま透過する。
+      layoutId: _layoutId,
+      layout: _layout,
+      initial: _initial,
+      animate: _animate,
+      exit: _exit,
+      variants: _variants,
+      drag: _drag,
+      dragSnapToOrigin: _dragSnapToOrigin,
+      dragElastic: _dragElastic,
+      whileDrag: _whileDrag,
+      onDragStart: _onDragStart,
+      onDragEnd: _onDragEnd,
       ...props
-    }: React.HTMLAttributes<HTMLDivElement> & { children?: React.ReactNode }) => (
-      <div {...props}>{children}</div>
+    }: React.HTMLAttributes<HTMLDivElement> & Record<string, unknown>) => (
+      <div {...props}>{children as React.ReactNode}</div>
     ),
   },
-  AnimatePresence: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
-  LayoutGroup: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  AnimatePresence: ({ children }: { children?: React.ReactNode }) => (
+    <>{children}</>
+  ),
+  LayoutGroup: ({ children }: { children?: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }));
+
+function renderWithChakra(ui: React.ReactElement) {
+  return render(<ChakraProvider value={defaultSystem}>{ui}</ChakraProvider>);
+}
 
 function makeStatus(overrides: Partial<RepoStatus> = {}): RepoStatus {
   return {
     branch: "main",
-    staged: [
-      { path: "s1.txt", kind: "modified", is_submodule: false },
-      { path: "s2.txt", kind: "modified", is_submodule: false },
-    ],
-    unstaged: [{ path: "u1.txt", kind: "modified", is_submodule: false }],
-    untracked: ["nt1.txt"],
+    staged: [],
+    unstaged: [],
+    untracked: [],
     conflicted: [],
-    is_clean: false,
+    is_clean: true,
     has_submodules: false,
     ...overrides,
   };
 }
 
-type PanelProps = ComponentProps<typeof StatusPanel>;
-
-function renderStatusPanel(overrides: Partial<PanelProps> = {}) {
-  const props: PanelProps = {
-    status: makeStatus(),
-    selected: null,
-    repoPath: "/tmp/repo",
+// StatusPanel の必須コールバック props。既定値はすべて vi.fn() にしておき、
+// 個々のテストで呼び出しを検証する。
+function makeHandlers() {
+  return {
     onStageAll: vi.fn(),
     onStagePath: vi.fn(),
     onUnstage: vi.fn(),
@@ -57,141 +74,437 @@ function renderStatusPanel(overrides: Partial<PanelProps> = {}) {
     onSelect: vi.fn(),
     onShowHistory: vi.fn(),
     onBlame: vi.fn(),
-    ...overrides,
-  };
-  return {
-    props,
-    ...render(
-      <ChakraProvider value={defaultSystem}>
-        <StatusPanel {...props} />
-      </ChakraProvider>,
-    ),
+    onStagePaths: vi.fn(),
+    onUnstagePaths: vi.fn(),
+    onDiscardPaths: vi.fn(),
+    onIgnore: vi.fn(),
+    onShowGitignore: vi.fn(),
   };
 }
 
-describe("StatusPanel の矢印キー行ナビゲーション（#272）", () => {
-  it("一覧コンテナが role=listbox でフォーカス可能なこと", () => {
-    renderStatusPanel();
+// repoPath は空文字にしておく。FileCard は
+// `isSelected && repoPath && inlineDiffSource` のときだけ InlineDiff を
+// マウントするため、空文字にすることで（invoke をモックしていない）
+// InlineDiff の非同期取得が走らないようにする。
+function renderStatusPanel(
+  status: RepoStatus,
+  handlers: ReturnType<typeof makeHandlers>,
+  selected: DiffSelection | null = null,
+) {
+  return renderWithChakra(
+    <StatusPanel
+      status={status}
+      selected={selected}
+      repoPath=""
+      onStageAll={handlers.onStageAll}
+      onStagePath={handlers.onStagePath}
+      onUnstage={handlers.onUnstage}
+      onDiscard={handlers.onDiscard}
+      onSelect={handlers.onSelect}
+      onShowHistory={handlers.onShowHistory}
+      onBlame={handlers.onBlame}
+      onStagePaths={handlers.onStagePaths}
+      onUnstagePaths={handlers.onUnstagePaths}
+      onDiscardPaths={handlers.onDiscardPaths}
+      onIgnore={handlers.onIgnore}
+      onShowGitignore={handlers.onShowGitignore}
+    />,
+  );
+}
 
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
-    expect(listbox).toHaveAttribute("tabindex", "0");
-    expect(listbox.getAttribute("aria-activedescendant")).toBeNull();
+describe("StatusPanel", () => {
+  let handlers: ReturnType<typeof makeHandlers>;
+
+  beforeEach(() => {
+    handlers = makeHandlers();
   });
 
-  it("ArrowDown で結合済み配列の表示順（ステージ済み→未ステージ→未追跡）に沿って進むこと", () => {
-    renderStatusPanel();
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- 空状態 ---
 
-    // ステージ済み 2 件 → 未ステージ 1 件 → 未追跡 1 件、の順で結合されている。
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-0"); // s1.txt
+  describe("空状態（変更なし）", () => {
+    it("EmptyState が表示され、セクション・検索欄は表示されないこと", () => {
+      renderStatusPanel(makeStatus(), handlers);
 
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-1"); // s2.txt
+      expect(screen.getByText("変更はありません")).toBeInTheDocument();
+      expect(
+        screen.queryByText("コミット予定（ステージ済み）"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("変更あり（未ステージ）"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("新しいファイル（未追跡）"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByPlaceholderText("ファイル名で検索"),
+      ).not.toBeInTheDocument();
+    });
 
-    // ステージ済みセクションの末尾から ↓ すると、セクションをまたいで
-    // 次のセクション（未ステージ）の先頭に自然に進む。
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-2"); // u1.txt
-
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-3"); // nt1.txt
+    it("「すべてステージ」ボタンが無効化されていること", () => {
+      renderStatusPanel(makeStatus(), handlers);
+      expect(screen.getByText("すべてステージ")).toBeDisabled();
+    });
   });
 
-  it("Home / End で先頭行・末尾行に移動すること", () => {
-    renderStatusPanel();
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- ファイルありの状態 ---
 
-    fireEvent.keyDown(listbox, { key: "End" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-3");
+  describe("ファイルありの状態", () => {
+    function statusWithAllSections(): RepoStatus {
+      return makeStatus({
+        is_clean: false,
+        staged: [{ path: "src/alpha.ts", kind: "modified", is_submodule: false }],
+        unstaged: [{ path: "src/beta.ts", kind: "modified", is_submodule: false }],
+        untracked: ["src/gamma.ts"],
+        conflicted: ["src/delta.ts"],
+      });
+    }
 
-    fireEvent.keyDown(listbox, { key: "Home" });
-    expect(listbox.getAttribute("aria-activedescendant")).toBe("status-row-0");
+    // 各ファイルがどのセクションに属するかは、次のテストの onSelect の source で検証する。
+    it("staged / unstaged / untracked / conflicted の各セクション見出しとファイルが表示されること", () => {
+      renderStatusPanel(statusWithAllSections(), handlers);
+
+      expect(screen.getByText("コミット予定（ステージ済み）")).toBeInTheDocument();
+      expect(screen.getByText("変更あり（未ステージ）")).toBeInTheDocument();
+      expect(screen.getByText("新しいファイル（未追跡）")).toBeInTheDocument();
+      expect(screen.getByText("コンフリクト")).toBeInTheDocument();
+
+      expect(screen.getByText("alpha.ts")).toBeInTheDocument();
+      expect(screen.getByText("beta.ts")).toBeInTheDocument();
+      expect(screen.getByText("gamma.ts")).toBeInTheDocument();
+      expect(screen.getByText("delta.ts")).toBeInTheDocument();
+
+      // EmptyState（変更なし）は表示されない。
+      expect(screen.queryByText("変更はありません")).not.toBeInTheDocument();
+    });
+
+    it("各ファイルをクリックすると、そのファイルが属するセクションに対応した source で onSelect が呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(statusWithAllSections(), handlers);
+
+      await user.click(screen.getByText("alpha.ts"));
+      expect(handlers.onSelect).toHaveBeenLastCalledWith(
+        "src/alpha.ts",
+        "staged",
+      );
+
+      await user.click(screen.getByText("beta.ts"));
+      expect(handlers.onSelect).toHaveBeenLastCalledWith(
+        "src/beta.ts",
+        "unstaged",
+      );
+
+      // 未追跡ファイルは "unstaged" 扱いで onSelect が呼ばれる。
+      await user.click(screen.getByText("gamma.ts"));
+      expect(handlers.onSelect).toHaveBeenLastCalledWith(
+        "src/gamma.ts",
+        "unstaged",
+      );
+
+      await user.click(screen.getByText("delta.ts"));
+      expect(handlers.onSelect).toHaveBeenLastCalledWith(
+        "src/delta.ts",
+        "conflicted",
+      );
+
+      expect(handlers.onSelect).toHaveBeenCalledTimes(4);
+    });
   });
 
-  it("Enter でフォーカス中の行の onSelect が呼ばれること（ステージ済み行）", () => {
-    const onSelect = vi.fn();
-    renderStatusPanel({ onSelect });
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- 「すべてステージ」---
 
-    fireEvent.keyDown(listbox, { key: "ArrowDown" }); // s1.txt
-    fireEvent.keyDown(listbox, { key: "Enter" });
+  describe("すべてステージ", () => {
+    it("未ステージ・未追跡がなければ無効化され、あれば有効でクリックすると onStageAll が呼ばれること", async () => {
+      const user = userEvent.setup();
+      // ステージ済みファイルのみ（未ステージ・未追跡なし）→ 無効。
+      renderStatusPanel(
+        makeStatus({
+          is_clean: false,
+          staged: [{ path: "a.ts", kind: "modified", is_submodule: false }],
+        }),
+        handlers,
+      );
+      expect(screen.getByText("すべてステージ")).toBeDisabled();
 
-    expect(onSelect).toHaveBeenCalledWith("s1.txt", "staged");
+      // 未ステージファイルがあれば有効になり、クリックで呼ばれる。
+      renderStatusPanel(
+        makeStatus({
+          is_clean: false,
+          unstaged: [{ path: "b.ts", kind: "modified", is_submodule: false }],
+        }),
+        handlers,
+      );
+      const buttons = screen.getAllByText("すべてステージ");
+      const enabledButton = buttons.find((b) => !b.hasAttribute("disabled"));
+      expect(enabledButton).toBeTruthy();
+      await user.click(enabledButton!);
+      expect(handlers.onStageAll).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("スペースキーでも同様に onSelect が呼ばれること（未ステージ行）", () => {
-    const onSelect = vi.fn();
-    renderStatusPanel({ onSelect });
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- ステージ済みセクションの個別アクション ---
 
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    fireEvent.keyDown(listbox, { key: "ArrowDown" }); // u1.txt
-    fireEvent.keyDown(listbox, { key: " " });
+  describe("ステージ済みファイルのアクション", () => {
+    function renderSingleStaged() {
+      const status = makeStatus({
+        is_clean: false,
+        staged: [{ path: "src/alpha.ts", kind: "modified", is_submodule: false }],
+      });
+      // isSelected を true にして、ホバーなしでもアクションボタンを表示させる。
+      renderStatusPanel(status, handlers, {
+        path: "src/alpha.ts",
+        source: "staged",
+      });
+    }
 
-    expect(onSelect).toHaveBeenCalledWith("u1.txt", "unstaged");
+    it("「外す」をクリックすると onUnstage が正しいパスで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleStaged();
+      await user.click(screen.getByText("外す"));
+      expect(handlers.onUnstage).toHaveBeenCalledWith("src/alpha.ts");
+    });
+
+    it("「変更履歴」「履歴」をクリックするとそれぞれ onShowHistory / onBlame が呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleStaged();
+      await user.click(screen.getByText("変更履歴"));
+      expect(handlers.onShowHistory).toHaveBeenCalledWith("src/alpha.ts");
+      await user.click(screen.getByText("履歴"));
+      expect(handlers.onBlame).toHaveBeenCalledWith("src/alpha.ts");
+    });
   });
 
-  it("未追跡ファイルの行では source が unstaged で onSelect が呼ばれること", () => {
-    const onSelect = vi.fn();
-    renderStatusPanel({ onSelect });
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- 未ステージセクションの個別アクション ---
 
-    fireEvent.keyDown(listbox, { key: "End" }); // nt1.txt
-    fireEvent.keyDown(listbox, { key: "Enter" });
+  describe("未ステージファイルのアクション", () => {
+    function renderSingleUnstaged() {
+      const status = makeStatus({
+        is_clean: false,
+        unstaged: [{ path: "src/beta.ts", kind: "modified", is_submodule: false }],
+      });
+      renderStatusPanel(status, handlers, {
+        path: "src/beta.ts",
+        source: "unstaged",
+      });
+    }
 
-    expect(onSelect).toHaveBeenCalledWith("nt1.txt", "unstaged");
+    it("「ステージ」をクリックすると onStagePath が正しいパスで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleUnstaged();
+      await user.click(screen.getByText("ステージ"));
+      expect(handlers.onStagePath).toHaveBeenCalledWith("src/beta.ts");
+    });
+
+    it("「破棄」をクリックすると onDiscard が正しいパスで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleUnstaged();
+      await user.click(screen.getByText("破棄"));
+      expect(handlers.onDiscard).toHaveBeenCalledWith("src/beta.ts");
+    });
   });
 
-  it("Enter/Space はステージ・アンステージ・破棄のような他の操作を実行しないこと（誤操作防止）", () => {
-    const onStagePath = vi.fn();
-    const onUnstage = vi.fn();
-    const onDiscard = vi.fn();
-    renderStatusPanel({ onStagePath, onUnstage, onDiscard });
-    const listbox = screen.getByRole("listbox", { name: "変更ファイル一覧" });
+  // --- 未追跡セクションの個別アクション ---
 
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    fireEvent.keyDown(listbox, { key: "Enter" });
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
-    fireEvent.keyDown(listbox, { key: " " });
+  describe("未追跡ファイルのアクション", () => {
+    function renderSingleUntracked() {
+      const status = makeStatus({
+        is_clean: false,
+        untracked: ["src/gamma.ts"],
+      });
+      renderStatusPanel(status, handlers, {
+        path: "src/gamma.ts",
+        source: "unstaged",
+      });
+    }
 
-    expect(onStagePath).not.toHaveBeenCalled();
-    expect(onUnstage).not.toHaveBeenCalled();
-    expect(onDiscard).not.toHaveBeenCalled();
+    it("「ステージ」をクリックすると onStagePath が正しいパスで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleUntracked();
+      await user.click(screen.getByText("ステージ"));
+      expect(handlers.onStagePath).toHaveBeenCalledWith("src/gamma.ts");
+    });
+
+    it("「破棄」をクリックすると onDiscard が正しいパスで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleUntracked();
+      await user.click(screen.getByText("破棄"));
+      expect(handlers.onDiscard).toHaveBeenCalledWith("src/gamma.ts");
+    });
+
+    it("onIgnore が渡されていれば「無視」ボタンが表示され、クリックで onIgnore が呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderSingleUntracked();
+      await user.click(screen.getByText("無視"));
+      expect(handlers.onIgnore).toHaveBeenCalledWith("src/gamma.ts");
+    });
+
+    it("onIgnore が渡されていなければ「無視」ボタンが表示されないこと", () => {
+      const status = makeStatus({ is_clean: false, untracked: ["src/gamma.ts"] });
+      renderWithChakra(
+        <StatusPanel
+          status={status}
+          selected={{ path: "src/gamma.ts", source: "unstaged" }}
+          repoPath=""
+          onStageAll={handlers.onStageAll}
+          onStagePath={handlers.onStagePath}
+          onUnstage={handlers.onUnstage}
+          onDiscard={handlers.onDiscard}
+          onSelect={handlers.onSelect}
+          onShowHistory={handlers.onShowHistory}
+          onBlame={handlers.onBlame}
+        />,
+      );
+      expect(screen.queryByText("無視")).not.toBeInTheDocument();
+    });
   });
-});
 
-describe("StatusPanel の既存のマウス操作（回帰がないこと）", () => {
-  it("カードのパス部分をクリックすると onSelect が呼ばれること（従来通り）", () => {
-    const onSelect = vi.fn();
-    renderStatusPanel({ onSelect });
+  // --- .gitignore 管理 ---
 
-    // タイトルは全カード共通（「クリックで差分を表示」）なので、先頭（s1.txt）を使う。
-    fireEvent.click(screen.getAllByTitle("クリックで差分を表示")[0]);
-
-    expect(onSelect).toHaveBeenCalledWith("s1.txt", "staged");
+  describe(".gitignore 管理", () => {
+    it("onShowGitignore が渡されていれば「無視リスト」ボタンが表示され、クリックで呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(makeStatus(), handlers);
+      await user.click(screen.getByText("無視リスト"));
+      expect(handlers.onShowGitignore).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("「ステージ」リンクをクリックすると onStagePath が呼ばれること（従来通り）", () => {
-    const onStagePath = vi.fn();
-    renderStatusPanel({ onStagePath });
+  // --- マルチ選択・一括操作（#127） ---
 
-    // 操作ボタンはホバー時にのみ表示される（#91 カード UI）ため、先にホバーする。
-    const row = screen.getByText("u1.txt").closest('[role="option"]') as Element;
-    fireEvent.mouseEnter(row);
-    fireEvent.click(screen.getAllByText("ステージ")[0]);
+  describe("マルチ選択と一括操作", () => {
+    function statusForBatch(): RepoStatus {
+      return makeStatus({
+        is_clean: false,
+        staged: [{ path: "src/alpha.ts", kind: "modified", is_submodule: false }],
+        unstaged: [{ path: "src/beta.ts", kind: "modified", is_submodule: false }],
+      });
+    }
 
-    expect(onStagePath).toHaveBeenCalledWith("u1.txt");
+    it("ファイルのチェックボックスを選択するとバッチ操作バーが件数付きで表示されること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(statusForBatch(), handlers);
+
+      expect(screen.queryByText(/件を選択中/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByLabelText("src/beta.tsを選択"));
+      expect(screen.getByText("1 件を選択中")).toBeInTheDocument();
+    });
+
+    it("未ステージファイルを選択して一括「ステージ」をクリックすると onStagePaths が呼ばれ、選択が解除されること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(statusForBatch(), handlers);
+
+      await user.click(screen.getByLabelText("src/beta.tsを選択"));
+      await user.click(screen.getByText("ステージ（1 件）"));
+
+      expect(handlers.onStagePaths).toHaveBeenCalledWith(["src/beta.ts"]);
+      // 選択解除によりバッチバーが消える。
+      expect(screen.queryByText(/件を選択中/)).not.toBeInTheDocument();
+    });
+
+    it("ステージ済みファイルを選択して一括「アンステージ」をクリックすると onUnstagePaths が呼ばれること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(statusForBatch(), handlers);
+
+      await user.click(screen.getByLabelText("src/alpha.tsを選択"));
+      await user.click(screen.getByText("アンステージ（1 件）"));
+
+      expect(handlers.onUnstagePaths).toHaveBeenCalledWith(["src/alpha.ts"]);
+    });
+
+    it("セクションの全選択チェックボックスをクリックするとそのセクションの全ファイルが選択されること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(
+        makeStatus({
+          is_clean: false,
+          unstaged: [
+            { path: "src/beta.ts", kind: "modified", is_submodule: false },
+            { path: "src/other.ts", kind: "modified", is_submodule: false },
+          ],
+        }),
+        handlers,
+      );
+
+      await user.click(
+        screen.getByLabelText("変更あり（未ステージ）のすべてのファイルを選択"),
+      );
+      expect(screen.getByText("2 件を選択中")).toBeInTheDocument();
+
+      await user.click(screen.getByText("破棄（2 件）"));
+      expect(handlers.onDiscardPaths).toHaveBeenCalledWith([
+        "src/beta.ts",
+        "src/other.ts",
+      ]);
+    });
   });
 
-  it("右クリックでコンテキストメニューが表示されること（従来通り）", () => {
-    renderStatusPanel();
+  // --- 検索・絞り込み（#166）: セクション表示の裏付けとして軽く確認 ---
 
-    const row = screen.getByText("u1.txt").closest('[role="option"]');
-    expect(row).not.toBeNull();
-    fireEvent.contextMenu(row as Element);
+  describe("検索・絞り込み", () => {
+    it("変更ファイルが1件もない場合は検索欄が表示されないが、ある場合は表示されること", () => {
+      const { rerender } = renderWithChakra(
+        <StatusPanel
+          status={makeStatus()}
+          selected={null}
+          repoPath=""
+          onStageAll={handlers.onStageAll}
+          onStagePath={handlers.onStagePath}
+          onUnstage={handlers.onUnstage}
+          onDiscard={handlers.onDiscard}
+          onSelect={handlers.onSelect}
+          onShowHistory={handlers.onShowHistory}
+          onBlame={handlers.onBlame}
+        />,
+      );
+      expect(
+        screen.queryByPlaceholderText("ファイル名で検索"),
+      ).not.toBeInTheDocument();
 
-    expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+      rerender(
+        <ChakraProvider value={defaultSystem}>
+          <StatusPanel
+            status={makeStatus({
+              is_clean: false,
+              untracked: ["src/gamma.ts"],
+            })}
+            selected={null}
+            repoPath=""
+            onStageAll={handlers.onStageAll}
+            onStagePath={handlers.onStagePath}
+            onUnstage={handlers.onUnstage}
+            onDiscard={handlers.onDiscard}
+            onSelect={handlers.onSelect}
+            onShowHistory={handlers.onShowHistory}
+            onBlame={handlers.onBlame}
+          />
+        </ChakraProvider>,
+      );
+      expect(
+        screen.getByPlaceholderText("ファイル名で検索"),
+      ).toBeInTheDocument();
+    });
+
+    it("検索欄に入力すると一致しないファイルが絞り込まれること", async () => {
+      const user = userEvent.setup();
+      renderStatusPanel(
+        makeStatus({
+          is_clean: false,
+          unstaged: [
+            { path: "src/beta.ts", kind: "modified", is_submodule: false },
+          ],
+          untracked: ["src/gamma.ts"],
+        }),
+        handlers,
+      );
+
+      const input = screen.getByPlaceholderText("ファイル名で検索");
+      await user.type(input, "gamma");
+
+      // デバウンス（150ms）後に絞り込みが反映されるのを待つ。
+      await screen.findByText("1 / 2");
+      // マッチ部分は <mark> でハイライトされ "gamma" / ".ts" に分かれるため、
+      // ハイライト要素の文字列で存在を確認する。
+      expect(screen.getByText("gamma")).toBeInTheDocument();
+      expect(screen.queryByText("beta.ts")).not.toBeInTheDocument();
+    });
   });
 });

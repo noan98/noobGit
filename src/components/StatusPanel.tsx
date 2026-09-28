@@ -92,6 +92,9 @@ interface Props {
   onIgnore?: (path: string) => void;
   // #70 .gitignore 管理: .gitignore の内容を閲覧するモーダルを開く。
   onShowGitignore?: () => void;
+  // #274 危険度カラー: 破棄（discard）ボタンに付与する強調クラス。
+  // 未取得の間は空文字（Safe相当の通常スタイル）。
+  discardRiskClass?: string;
 }
 
 // ファイルパスを親ディレクトリとファイル名に分割する。
@@ -551,6 +554,8 @@ export function StatusPanel({
   // #70 .gitignore 管理
   onIgnore,
   onShowGitignore,
+  // #274 危険度カラー
+  discardRiskClass = "",
 }: Props) {
   const hasUnstaged =
     status.unstaged.length > 0 || status.untracked.length > 0;
@@ -1148,7 +1153,7 @@ export function StatusPanel({
                             ステージ
                           </button>
                           <button
-                            className="link danger"
+                            className={`link ${discardRiskClass}`}
                             disabled={f.is_submodule}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1245,7 +1250,7 @@ export function StatusPanel({
                             </button>
                           )}
                           <button
-                            className="link danger"
+                            className={`link ${discardRiskClass}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               onDiscard(p);
@@ -1376,13 +1381,13 @@ export function StatusPanel({
               {/* 未ステージ・未追跡の選択がある → 破棄ボタン（危険色）*/}
               {checkedUnstaged.length > 0 && onDiscardPaths && (
                 <button
-                  className="btn btn-small"
+                  // #274 危険度カラー: 個別の破棄ボタンと同じクラスで統一する。
+                  className={`btn btn-small ${discardRiskClass}`}
                   onClick={() => {
                     onDiscardPaths(checkedUnstaged);
                     clearChecked();
                   }}
                   title="選択した変更を破棄します（元に戻せません）"
-                  style={{ color: "var(--destructive)", borderColor: "var(--destructive-border)" }}
                 >
                   破棄（{checkedUnstaged.length} 件）
                 </button>

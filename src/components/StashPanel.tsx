@@ -11,6 +11,9 @@ interface Props {
   onPop: (index: number) => void;
   // 指定退避の変更ファイル一覧を取得する（退避は適用しない安全な操作）。
   onLoadDiff: (index: number) => Promise<FileChange[]>;
+  // #274 危険度カラー: 適用・取り出しボタンに付与する強調クラス（未取得の間は空文字）。
+  applyRiskClass?: string;
+  popRiskClass?: string;
 }
 
 // 退避（stash）パネル。変更を一時的にしまい、あとから取り出す。
@@ -21,6 +24,8 @@ export function StashPanel({
   onApply,
   onPop,
   onLoadDiff,
+  applyRiskClass = "",
+  popRiskClass = "",
 }: Props) {
   const [message, setMessage] = useState("");
   // 展開中の退避 id → その差分（読み込み中は undefined）。
@@ -115,14 +120,14 @@ export function StashPanel({
                     {isOpen ? "差分を隠す" : "差分を見る"}
                   </button>
                   <button
-                    className="link"
+                    className={`link ${applyRiskClass}`}
                     onClick={() => onApply(s.index)}
                     title="取り出して戻します（退避は一覧に残します）"
                   >
                     適用
                   </button>
                   <button
-                    className="link"
+                    className={`link ${popRiskClass}`}
                     onClick={() => onPop(s.index)}
                     title="取り出して戻し、この退避を一覧から取り除きます"
                   >

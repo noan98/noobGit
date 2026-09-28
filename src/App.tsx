@@ -12,11 +12,17 @@
  * セッション（開いているリポジトリのパス一覧とアクティブタブ）は localStorage に
  * 保存し、次回起動時に復元する。保存済みセッションが無い場合は、最近使った
  * リポジトリの先頭を 1 タブだけ自動で開く（#262 の挙動を引き継ぐ）。
+ *
+ * Ctrl+Tab / Ctrl+Shift+Tab によるタブの巡回と、ドラッグによるタブの並べ替え
+ * （#270）もここで扱う。並べ替えは tabs 配列そのものの順序を変えるだけなので、
+ * 既存のセッション保存（paths の並び順）にそのまま反映される。
  */
 import { useEffect, useState } from "react";
 import { RepoWorkspace } from "./RepoWorkspace";
 import { TabBar, type TabItem } from "./components/TabBar";
+import { TitleBar } from "./components/TitleBar";
 import { loadRecentRepos } from "./components/WelcomeScreen";
+import { cycleActiveTabId, reorderByIds, tabCycleDirection } from "./lib/tabOrder";
 
 // タブセッションの localStorage キー。
 const TAB_SESSION_KEY = "noobgit_tab_session";
@@ -124,6 +130,37 @@ export default function App() {
     });
   }, [tabs, activeId]);
 
+  // #270 Ctrl+Tab / Ctrl+Shift+Tab: アクティブタブを巡回する（末尾→先頭に
+  // ラップ）。テキスト入力欄にフォーカスがあっても奪ってよい仕様のため、
+  // useGlobalShortcuts（RepoWorkspace 側）のようなテキスト入力中の除外は
+  // 行わない。タブが 1 つ以下のときは何もしない（既存の Tab キーの挙動を
+  // 邪魔しないよう、preventDefault もしない）。
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      const direction = tabCycleDirection(e);
+      if (direction === null) return;
+      if (tabs.length <= 1) return;
+      // アクティブなタブでモーダル（確認ダイアログ等）が開いている間は切り替え
+      // ない。確認の途中で別リポジトリへ移ると、どのリポジトリへの操作かを
+      // 見失ったり、モーダルのフォーカストラップを抜けてしまうため。
+      if (document.querySelector('.tab-pane:not([hidden]) [aria-modal="true"]')) return;
+      e.preventDefault();
+      const ids = tabs.map((t) => t.id);
+      setActiveId((prev) => cycleActiveTabId(ids, prev, direction));
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [tabs]);
+
+  // #270 ドラッグ並べ替え。framer-motion の Reorder.Group から渡される新しい
+  // id 順に合わせて tabs 配列そのものを並べ替える ― セッション保存（paths の
+  // 並び順）に自動で反映される。
+  function reorderTabs(orderedIds: string[]) {
+    setTabs((prev) => reorderByIds(prev, orderedIds));
+  }
+
   // RepoWorkspace からの「開いているリポジトリが変わった」通知。
   // タブのラベルとセッション保存へ反映する。
   function handleOpenedRepoChange(tabId: string, path: string | null) {
@@ -173,12 +210,14 @@ export default function App() {
 
   return (
     <div className="tabs-root">
+      <TitleBar />
       <TabBar
         tabs={tabItems}
         activeId={activeId}
         onSelect={setActiveId}
         onClose={closeTab}
         onAdd={addTab}
+        onReorder={reorderTabs}
       />
       <div className="tabs-content">
         {tabs.map((t) => (
