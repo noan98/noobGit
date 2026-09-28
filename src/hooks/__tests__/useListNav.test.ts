@@ -112,4 +112,34 @@ describe("useListNav", () => {
 
     expect(result.current.activeIndex).toBe(3);
   });
+  it("行の中のボタン等から届いたキー入力（バブリング）は扱わず、preventDefault もしない", () => {
+    const onActivate = vi.fn();
+    const { result } = renderHook(() => useListNav({ itemCount: 3, onActivate }));
+    act(() => result.current.setActiveIndex(1));
+
+    const container = {};
+    const childButton = {};
+    const e = {
+      key: "Enter",
+      target: childButton,
+      currentTarget: container,
+      preventDefault: vi.fn(),
+    } as unknown as React.KeyboardEvent;
+    act(() => result.current.onKeyDown(e));
+
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("修飾キー付き（Ctrl+Enter など）は横取りしない", () => {
+    const onActivate = vi.fn();
+    const { result } = renderHook(() => useListNav({ itemCount: 3, onActivate }));
+    act(() => result.current.setActiveIndex(0));
+
+    const e = { key: "Enter", ctrlKey: true, preventDefault: vi.fn() } as unknown as React.KeyboardEvent;
+    act(() => result.current.onKeyDown(e));
+
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
 });

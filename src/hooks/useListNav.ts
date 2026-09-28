@@ -77,6 +77,12 @@ export function useListNav({ itemCount, onActivate }: UseListNavOptions): UseLis
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // 行の中のボタン・チェックボックス等にフォーカスがあるときのキー入力は、
+      // バブリングしてここへ届いても扱わない。扱ってしまうと preventDefault で
+      // そのボタン本来の Enter/Space 操作（ステージ・外す等）を潰してしまう。
+      if (e.target !== e.currentTarget) return;
+      // Ctrl+Enter（コミット）など修飾キー付きのショートカットは横取りしない。
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
