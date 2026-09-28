@@ -158,7 +158,7 @@ export function BranchPanel({
                     />
                     <span className="branch-cleanup-name">{m.name}</span>
                     <span className="branch-cleanup-meta">
-                      → {m.merged_into}（{m.short_id}）に取り込み済み
+                      （先端 {m.short_id}）→ {m.merged_into} に取り込み済み
                     </span>
                   </label>
                 </li>
