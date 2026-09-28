@@ -11,6 +11,7 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     ChangeKind, CommitInfo, FetchOutcome, FileChange, GitignorePatternCheck, GitignoreSuggestion,
     MergeOutcome, NetworkProgress, NetworkProgressStage, PullOutcome, StashInfo,
+    StashRestoreOutcome,
 };
 use crate::repo::{current_branch, is_submodule_path, read_gitignore};
 use crate::safety::OperationKind;
@@ -1055,14 +1056,78 @@ pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
     Ok(())
 }
 
-/// 退避を作業ツリーに取り出す（一覧には残す）。コンフリクトが起きることがある。
-pub fn stash_apply(repo: &mut Repository, index: usize) -> Result<()> {
-    repo.stash_apply(index, None).map_err(map_stash_restore_err)
+/// 退避を作業ツリーに取り出す（一覧には残す）。
+///
+/// 作業ツリーに、退避内容と同じ箇所への未コミットの変更があり、それを上書きして
+/// しまう場合は、何も変えずに [`CoreError::Blocked`] で中断する（従来どおり）。
+/// 一方、作業ツリーはクリーンだが退避内容と HEAD 側の変更が中身で競合する場合、
+/// libgit2 はエラーにせず、コンフリクトの目印（`<<<<<<<` 等）を作業ツリーへ書き込み、
+/// index にコンフリクトエントリを残して成功する。この場合は
+/// [`StashRestoreOutcome::conflicted`] を true にして返し、呼び出し側（フロント）が
+/// 既存のコンフリクト解消ウィザードへ自然につなげられるようにする。
+/// 退避は成功・コンフリクトいずれの場合も一覧に残る（apply はそういう操作）。
+pub fn stash_apply(repo: &mut Repository, index: usize) -> Result<StashRestoreOutcome> {
+    repo.stash_apply(index, None)
+        .map_err(map_stash_restore_err)?;
+    Ok(StashRestoreOutcome {
+        conflicted: repo.index()?.has_conflicts(),
+    })
 }
 
-/// 退避を作業ツリーに取り出し、一覧から取り除く（pop）。コンフリクトが起きることがある。
-pub fn stash_pop(repo: &mut Repository, index: usize) -> Result<()> {
-    repo.stash_pop(index, None).map_err(map_stash_restore_err)
+/// 退避を作業ツリーに取り出し、コンフリクトが無ければ一覧から取り除く（pop）。
+///
+/// [`stash_apply`] と同じ理由で、中身が競合する場合はエラーにせずコンフリクトの
+/// 目印を書き込んで成功を返す。ただし libgit2 の生の `stash_pop`（`git_stash_pop`）は
+/// 「apply がエラーにならなければ」退避を drop してしまうため、コンフリクトが
+/// 残ったまま退避が一覧から消えてしまう（`git stash pop` の「コンフリクト時は退避を
+/// 残す」という挙動と食い違う）。そのため、ここでは `apply` → コンフリクト確認 →
+/// 問題なければ `drop` という手順に分解し、コンフリクト発生時は退避を一覧に残す
+/// （解消後、ユーザーが改めて「退避を削除する」を選べるようにするため）。
+pub fn stash_pop(repo: &mut Repository, index: usize) -> Result<StashRestoreOutcome> {
+    repo.stash_apply(index, None)
+        .map_err(map_stash_restore_err)?;
+    let conflicted = repo.index()?.has_conflicts();
+    if !conflicted {
+        repo.stash_drop(index)?;
+    }
+    Ok(StashRestoreOutcome { conflicted })
+}
+
+/// 退避を一覧から取り除く（内容は破棄する）。
+///
+/// おもに `stash_pop` がコンフリクトで退避を一覧に残したあと、コンフリクトを
+/// 手で解消し終えたユーザーが「もう要らないので消す」ために使う（もちろん、
+/// 単に不要になった退避を消す用途にも使える）。
+///
+/// 破棄した退避の中身（元のコミット・作業ツリー・未追跡ファイルへのスナップショット）
+/// を復元する簡単な方法が libgit2 には無いため、**undo は記録しない**（他の破壊的操作と
+/// 違い、直後の「取り消し」ボタンでは戻せない）。呼び出し側は必ず確認ダイアログ
+/// （`guarded()`）を経由すること。
+///
+/// 退避は番号（index）ではなく ID（退避コミットの oid。[`StashInfo::id`]）で指定する。
+/// 番号は新しい退避を作るたびにずれるため、画面を開いたあとに別の退避が作られていると
+/// 「別の退避を消してしまう」事故になる。ID が一覧に見つからなければ何もせず
+/// [`CoreError::InvalidInput`] を返す。
+pub fn stash_drop(repo: &mut Repository, stash_id: &str) -> Result<()> {
+    let target = git2::Oid::from_str(stash_id.trim())
+        .map_err(|_| CoreError::InvalidInput("退避の指定が正しくありません。".to_string()))?;
+    let mut found = None;
+    repo.stash_foreach(|index, _message, id| {
+        if *id == target {
+            found = Some(index);
+            false
+        } else {
+            true
+        }
+    })?;
+    let index = found.ok_or_else(|| {
+        CoreError::InvalidInput(
+            "指定した退避が見つかりませんでした（すでに削除されている可能性があります）。"
+                .to_string(),
+        )
+    })?;
+    repo.stash_drop(index)
+        .map_err(|e| CoreError::Git(format!("退避の削除に失敗しました: {}", e.message())))
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。各退避の変更ファイル数も付ける。
@@ -3395,6 +3460,124 @@ mod tests {
         );
     }
 
+    // stash_apply が「中身の競合」（作業ツリーはクリーンだが、退避内容と HEAD 側の
+    // 変更が同じ箇所を触っている）の場合は、Blocked で中断せず、コンフリクトの目印
+    // （<<<<<<< 等）を作業ツリーへ書き込んで成功を返すこと（#156）。
+    //
+    // これは libgit2 の実際の挙動を確認した結果に基づく: 作業ツリーが index/HEAD と
+    // 一致している（＝上書きで消える未コミット変更が無い）限り、たとえ退避内容と
+    // HEAD 側の変更が中身で競合していても、checkout はコンフリクトマーカー付きの
+    // 内容を書き込んで成功する。`repo.state()` は（マージと違い）`Clean` のまま。
+    #[test]
+    fn stash_apply_content_conflict_succeeds_and_leaves_index_conflicted() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base");
+        fx.stage_all();
+        fx.commit("c1");
+
+        // 退避: base -> stash_change。
+        fx.write_file("a.txt", "stash_change");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+        // 退避後の作業ツリーは HEAD と一致（"base"）。
+
+        // 退避とは別に、HEAD 側でも同じファイルを変更するコミットを積む（中身の競合を作る）。
+        fx.write_file("a.txt", "head_change");
+        fx.stage_all();
+        fx.commit("c2");
+        // 作業ツリーはクリーン（HEAD の "head_change" と一致）。
+
+        let outcome = {
+            let mut repo = fx.open();
+            stash_apply(&mut repo, 0).unwrap()
+        };
+        assert!(
+            outcome.conflicted,
+            "中身が競合しているのでコンフリクトになるはず"
+        );
+
+        let repo = fx.open();
+        assert_eq!(
+            repo.state(),
+            git2::RepositoryState::Clean,
+            "stash には MERGE_HEAD 相当の状態は無く、Clean のままのはず"
+        );
+        assert!(repo.index().unwrap().has_conflicts());
+        // apply は常に退避を一覧に残す。
+        let mut repo2 = fx.open();
+        assert_eq!(stash_list(&mut repo2).unwrap().len(), 1);
+    }
+
+    // stash_pop が「中身の競合」の場合、libgit2 の素の stash_pop と違い、
+    // 退避を一覧から取り除かないこと（#156）。
+    //
+    // libgit2 の `git_stash_pop` は apply が成功したとみなせば（＝Blocked にならなければ、
+    // コンフリクトが起きていても）退避を drop してしまう。これは `git stash pop` が
+    // コンフリクト時に退避を残す（"The stash entry is kept in case you need it again."）
+    // という挙動と食い違うため、noobGit では apply → コンフリクト確認 → 問題なければ
+    // drop、という手順に分解して安全側に倒す。
+    #[test]
+    fn stash_pop_content_conflict_keeps_stash_in_list() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "stash_change");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        fx.write_file("a.txt", "head_change");
+        fx.stage_all();
+        fx.commit("c2");
+
+        let outcome = {
+            let mut repo = fx.open();
+            stash_pop(&mut repo, 0).unwrap()
+        };
+        assert!(outcome.conflicted);
+
+        let repo = fx.open();
+        assert!(repo.index().unwrap().has_conflicts());
+        let mut repo2 = fx.open();
+        assert_eq!(
+            stash_list(&mut repo2).unwrap().len(),
+            1,
+            "コンフリクト時は退避を一覧から取り除かないこと"
+        );
+    }
+
+    // stash_pop がコンフリクトなく成功する通常時は、従来どおり退避を一覧から
+    // 取り除くこと（#156 のリグレッション防止）。
+    #[test]
+    fn stash_pop_without_conflict_drops_stash_and_reports_not_conflicted() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        let outcome = {
+            let mut repo = fx.open();
+            stash_pop(&mut repo, 0).unwrap()
+        };
+        assert!(!outcome.conflicted);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "2"
+        );
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
     // stash_apply がコンフリクト時にエラーを返し、作業ツリーの状態を保全すること（#73）。
     #[test]
     fn stash_apply_conflict_returns_error() {
@@ -3560,6 +3743,73 @@ mod tests {
         let mut repo = fx.open();
         assert!(matches!(
             stash_diff(&mut repo, 0).unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    // stash_drop が退避を一覧から取り除くこと（#156: stash_pop がコンフリクトで
+    // 退避を残したあと、ユーザーが手動で削除する用途を想定）。
+    #[test]
+    fn stash_drop_removes_stash_from_list() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "wip").unwrap();
+        }
+
+        let mut repo = fx.open();
+        let list = stash_list(&mut repo).unwrap();
+        assert_eq!(list.len(), 1);
+        stash_drop(&mut repo, &list[0].id).unwrap();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
+    // 番号がずれても（あとから別の退避が作られても）、ID で指定した退避だけを消すこと。
+    #[test]
+    fn stash_drop_by_id_is_not_confused_by_shifted_index() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "first");
+        let first_id = {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "first").unwrap();
+            stash_list(&mut repo).unwrap()[0].id.clone()
+        };
+        // 新しい退避を作ると、first の番号は 0 → 1 にずれる。
+        fx.write_file("a.txt", "second");
+        {
+            let mut repo = fx.open();
+            stash_save(&mut repo, "second").unwrap();
+        }
+
+        let mut repo = fx.open();
+        stash_drop(&mut repo, &first_id).unwrap();
+        let rest = stash_list(&mut repo).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert!(rest[0].message.contains("second"), "{rest:?}");
+    }
+
+    // 存在しない ID・不正な ID への stash_drop は入力エラーになること。
+    #[test]
+    fn stash_drop_unknown_id_is_rejected() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let mut repo = fx.open();
+        assert!(matches!(
+            stash_drop(&mut repo, "0123456789012345678901234567890123456789").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            stash_drop(&mut repo, "not-an-id").unwrap_err(),
             CoreError::InvalidInput(_)
         ));
     }
