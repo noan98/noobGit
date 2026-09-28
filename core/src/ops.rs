@@ -1924,6 +1924,93 @@ mod tests {
         assert_eq!(st.staged.len(), 1);
     }
 
+    /// undo ジャーナルの tmp 書き込み先（`noobgit_undo.json.tmp`）にディレクトリを
+    /// 作っておくと、`fs::write` が「ディレクトリには書き込めない」で必ず失敗する。
+    /// これはパーミッションではなくファイルシステムの制約なので、root で実行される
+    /// このコンテナでも、Windows でも確実に失敗する（chmod と違って環境に左右されない）。
+    fn make_undo_journal_write_fail(repo: &Repository) {
+        let tmp = repo.path().join("noobgit_undo.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+    }
+
+    // CLAUDE.md: 「undo の記録（record_undo）は、根底の Git 操作を絶対に失敗させては
+    // ならない」。ジャーナル書き込みが実際に失敗する状況を作ったうえで、それでも
+    // commit が成功しリポジトリ状態が変わることを検証する（常に通るだけの
+    // テストにしないため、undo::push を直接呼んで失敗パスに到達することも確認する）。
+    #[test]
+    fn commit_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        fx.write_file("a.txt", "2");
+        let repo = fx.open();
+        stage_all(&repo).unwrap();
+
+        make_undo_journal_write_fail(&repo);
+
+        // 前提の確認: この状態で undo::push を直接呼ぶと本当に失敗する
+        // （＝以降の commit で失敗パスに実際に到達することの裏付け）。
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::Commit,
+                description: "probe".into(),
+                action: UndoAction::SoftResetTo {
+                    previous: fx.head_oid().to_string(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        // ジャーナル本体（rename 先）はまだ作られていない。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        // ジャーナルへの記録が失敗しても、コミット自体は成功しリポジトリ状態は変わる。
+        let info = commit(&repo, "c2").unwrap();
+        assert_eq!(info.summary, "c2");
+        assert_eq!(log(&repo, 10).unwrap().len(), 2);
+
+        // 記録は失敗し続けているので、ジャーナルは依然として作られていない
+        // （＝ record_undo が失敗を握りつぶしていることの確認）。
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+    }
+
+    // create_branch でも同様に、undo 記録の失敗が操作の成功を妨げないこと。
+    #[test]
+    fn create_branch_succeeds_even_if_undo_journal_write_fails() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+
+        let repo = fx.open();
+        make_undo_journal_write_fail(&repo);
+
+        let probe = undo::push(
+            &repo,
+            UndoEntry {
+                op: OperationKind::CreateBranch,
+                description: "probe".into(),
+                action: UndoAction::DeleteBranch {
+                    name: "probe-branch".into(),
+                },
+            },
+        );
+        assert!(
+            probe.is_err(),
+            "テスト前提が崩れている: この状態では journal 書き込みが失敗するはずだった"
+        );
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+
+        create_branch(&repo, "feature").unwrap();
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+        assert!(!repo.path().join("noobgit_undo.json").exists());
+    }
+
     #[test]
     fn empty_commit_is_rejected() {
         let fx = TestRepo::new();
