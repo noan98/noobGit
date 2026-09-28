@@ -167,8 +167,47 @@ npm run build                 # フロントエンドがコンパイルできる
 
 Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実行すること。
 フロントエンドの変更を完了と報告する前に `npm run typecheck` を実行すること。
-UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
-ので、UI が動くと主張するのではなく、その旨を明示すること。
+
+### E2E テスト（tauri-driver + WebdriverIO, #177）
+
+`e2e/` に、実際にビルドしたデスクトップアプリを操作する E2E テストがある
+（リポジトリを開く・ステージ・コミット・ブランチ作成の主要 4 シナリオ、
+`e2e/specs/main-flow.e2e.ts`）。ネイティブのフォルダ選択ダイアログ
+（plugin-dialog）は WebDriver から操作できないため、`src/App.tsx` が
+localStorage に保存するタブセッション（`noobgit_tab_session`）へテスト側
+から直接パスを書き込み、リロードしてリポジトリを自動オープンさせている
+（本番コードへの E2E 専用分岐は追加していない）。テスト用の一時 Git
+リポジトリは Node 側で `git` CLI を使って作る（`e2e/support/fixture.ts`。
+noobGit 本体が git2 のみを使う規約はアプリ本体の話であり、E2E フィクス
+チャ作成には適用しない）。
+
+```bash
+npm run test:e2e   # e2e/wdio.conf.ts を実行（デバッグビルド → tauri-driver 起動 → 4シナリオ）
+```
+
+- **Linux（CI と同じ）**: `webkit2gtk-driver`（apt）と実ウィンドウ用の
+  `xvfb` が必要。ヘッドレスに動かすには
+  `xvfb-run npm run test:e2e` のように実行する。
+- **Windows でローカル実行する場合**: tauri-driver は Windows でも動くが、
+  別途インストール済みの Edge と同じバージョンの `msedgedriver` が必要
+  （`msedgedriver-tool` などで取得し、PATH に通す）。
+- **macOS**: tauri-driver は Linux / Windows のみ対応のため、このコマンドは
+  macOS では動かない。
+- `e2e/wdio.conf.ts` の `onPrepare` が `npm run tauri -- build --debug
+  --no-bundle` を自動実行してデバッグビルドを用意する。ビルド成果物の場所は
+  `CARGO_TARGET_DIR` が設定されていればそれを優先し、無ければ
+  `<repo>/target/debug` を使う。
+- `e2e/` は独立した TypeScript プロジェクト（`e2e/tsconfig.json`、`tsx` で
+  実行、型チェックはしない）で、ルートの `tsconfig.json`（`include:
+  ["src"]`）には含めないため `npm run typecheck` に影響しない。同様に
+  `vite.config.ts` の `test.exclude` で `e2e/**` を vitest の対象からも
+  除外している。
+
+UI/機能の正しさは、上記 4 シナリオの範囲では CI（Linux, `.github/workflows/
+e2e.yml`）でヘッドレスに検証できるが、それ以外（ネイティブファイルダイアログ
+そのものの見た目、Windows 固有の挙動、NSIS/MSI インストーラの生成物）は
+ここでは検証できないので、UI 全体が動くと主張するのではなく、その旨を
+明示すること。
 
 ### スナップショットテスト（insta）
 
@@ -310,6 +349,29 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     トリガー: `core/**`, `src-tauri/**`, `Cargo.toml`, `Cargo.lock`。
     フロントエンドのみの変更では Rust ジョブは**実行されない**（Rust のソース/
     テストは影響を受けず、frontend ジョブがすでにビルドを検証している）。
+- **`workflows/e2e.yml`**（#177）— tauri-driver + WebdriverIO による E2E
+  テスト（`e2e/`、リポジトリを開く・ステージ・コミット・ブランチ作成の主要
+  4 シナリオ）を実データのデスクトップアプリ上で検証する。`main` への
+  push（`paths-ignore` でドキュメントのみの変更はスキップ）と手動
+  ディスパッチでのみ実行し、**PR では実行しない**（`ci.yml` は変更していない）。
+  デバッグビルドのコンパイル + 実ウィンドウ操作を伴い PR ごとに走らせるには
+  重く、また `ci.yml` に混ぜると automerge が見る「ci.yml の結論」に影響
+  してしまうため、独立したワークフローに分離した。`ubuntu-latest` 上の
+  単一ジョブで、`ci.yml` の rust ジョブと同じ Tauri Linux 依存
+  （`TAURI_APT_PACKAGES`）に加えて tauri-driver を動かすための
+  `webkit2gtk-driver`（Linux 版 `WebKitWebDriver` 本体）と `xvfb`
+  （ヘッドレス実行用の仮想ディスプレイ）をインストールし（`ci.yml` と同じ
+  apt キャッシュ復元漏れの自己修復ステップも踏襲）、`cargo install
+  tauri-driver --locked` で tauri-driver 自体を用意してから
+  `xvfb-run npm run test:e2e` を実行する。`npm run test:e2e` 自体（内部の
+  `e2e/wdio.conf.ts`）がデバッグビルド（`tauri build --debug --no-bundle`）
+  を `onPrepare` で用意し、`beforeSession` / `afterSession` で tauri-driver
+  プロセスを起動・停止する。Rust のビルドは `ci.yml` と同じく `sccache` +
+  `Swatinem/rust-cache` でキャッシュする。失敗したテストのスクリーンショット
+  は `e2e/wdio.conf.ts` の `afterTest` フックが `e2e/screenshots/` に保存し、
+  ジョブが失敗した場合だけ `actions/upload-artifact` で成果物として残す
+  （`if-no-files-found: ignore` なので、全テスト成功時は何もアップロード
+  しない）。権限は最小限（`contents: read`）。
 - **`workflows/release.yml`** — `v*` タグの push（または手動ディスパッチ）で実行。
   `windows-latest` 上で `tauri-apps/tauri-action` により Windows インストーラを
   ビルドし、**ドラフト**の GitHub Release を公開する。リリースを切る = `vX.Y.Z`
