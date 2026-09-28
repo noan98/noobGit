@@ -376,6 +376,36 @@ pub struct ReflogEntry {
     pub timestamp: i64,
 }
 
+/// `.gitignore` の 1 パターンを検証した結果（#173 バリデーション・重複検知）。
+///
+/// `valid` が false のときは `error` に初心者向けの平易な日本語の理由が入る。
+/// `duplicate` は「構文としては正しいが、既存の `.gitignore` に同じパターンが
+/// すでにある」ことを示す（この場合も `valid` は true のまま。追加操作は
+/// 冪等にスキップできるので、これはエラーではなく警告として扱う）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitignorePatternCheck {
+    /// glob 構文として正しいか。
+    pub valid: bool,
+    /// 不正な場合の理由（平易な日本語）。正しい場合は None。
+    pub error: Option<String>,
+    /// 構文は正しいが、既存の `.gitignore` に同じ行がすでにあるか。
+    pub duplicate: bool,
+}
+
+/// ファイルパスから生成した `.gitignore` パターンの提案1件（#173 提案生成）。
+///
+/// 「このファイルのみ」「同じ拡張子すべて」「このディレクトリ全体」のような
+/// 候補を、初心者にも分かるラベルと説明つきで提示するための情報。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitignoreSuggestion {
+    /// `.gitignore` に実際に追記するパターン文字列。
+    pub pattern: String,
+    /// 選択肢の短いラベル（例:「このファイルだけを無視」）。
+    pub label: String,
+    /// 何が起きるかの平易な日本語の説明。
+    pub description: String,
+}
+
 /// merge（ブランチ統合）の結果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

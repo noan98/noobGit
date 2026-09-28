@@ -9,10 +9,10 @@ use git2::{
 
 use crate::error::{CoreError, Result};
 use crate::model::{
-    ChangeKind, CommitInfo, FetchOutcome, FileChange, MergeOutcome, NetworkProgress,
-    NetworkProgressStage, PullOutcome, StashInfo,
+    ChangeKind, CommitInfo, FetchOutcome, FileChange, GitignorePatternCheck, GitignoreSuggestion,
+    MergeOutcome, NetworkProgress, NetworkProgressStage, PullOutcome, StashInfo,
 };
-use crate::repo::{current_branch, is_submodule_path};
+use crate::repo::{current_branch, is_submodule_path, read_gitignore};
 use crate::safety::OperationKind;
 use crate::undo::{self, UndoAction, UndoEntry};
 
@@ -633,21 +633,19 @@ pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
 /// ファイル編集として status に現れ、ユーザー自身が確認・コミットできる）。
 ///
 /// 安全とおせっかい防止のための約束:
-/// - 前後の空白を取り除いた `pattern` が空なら [`CoreError::InvalidInput`]。
-/// - 改行を含む `pattern` は複数行を書き込んでしまうので拒否する。
-/// - すでに同じパターンが（行として）書かれていれば何もしない（冪等・重複防止）。
+/// - `pattern` が glob 構文として不正なら（[`validate_gitignore_pattern`] 参照）
+///   [`CoreError::InvalidInput`]。
+/// - すでに同じパターンが（コメント・空行を除く行として）書かれていれば何もしない
+///   （冪等・重複防止）。
 /// - 既存内容の末尾に改行が無ければ補ってから追記し、行が混ざらないようにする。
 pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
     let pattern = pattern.trim();
-    if pattern.is_empty() {
+    let check = validate_gitignore_pattern(pattern);
+    if !check.valid {
         return Err(CoreError::InvalidInput(
-            "無視するパターンが空です。".to_string(),
-        ));
-    }
-    // 改行を含むと複数行を書き込んでしまうため拒否する。
-    if pattern.contains('\n') || pattern.contains('\r') {
-        return Err(CoreError::InvalidInput(
-            "無視するパターンに改行を含めることはできません。".to_string(),
+            check
+                .error
+                .unwrap_or_else(|| "無視するパターンが不正です。".to_string()),
         ));
     }
 
@@ -668,7 +666,7 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
     };
 
     // すでに同じパターンが行として存在すれば重複追記を避ける。
-    if existing.lines().any(|line| line.trim() == pattern) {
+    if gitignore_has_pattern(&existing, pattern) {
         return Ok(());
     }
 
@@ -683,6 +681,185 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
     std::fs::write(&path, next)
         .map_err(|e| CoreError::Git(format!(".gitignore に書き込めませんでした: {e}")))?;
     Ok(())
+}
+
+/// `existing`（`.gitignore` の全内容）の中に、`pattern` と同じ行がすでにあるかを判定する。
+///
+/// コメント行（`#` で始まる）と空行は比較対象から除く。各行・`pattern` とも
+/// 前後の空白を取り除いてから比較する（正規化）。
+fn gitignore_has_pattern(existing: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    existing.lines().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && !line.starts_with('#') && line == pattern
+    })
+}
+
+/// `.gitignore` の 1 パターンが glob 構文として意味をなすかを検証する（#173）。
+///
+/// `git2` やファイルシステムには依存しない純粋な関数で、フロントエンドの入力中
+/// リアルタイムバリデーションにも使える。ここでの「不正」は Git 自体が
+/// エラーにするわけではない書き方（Git は不正な行があっても他の行は無視しつつ
+/// 動き続けてしまう）を、初心者に分かるよう先回りして拒否するもの。
+///
+/// チェックする内容:
+/// - 空文字列（前後の空白のみ・否定 `!` の後が空、を含む）
+/// - 改行を含む（1行に複数パターンを書こうとしている）
+/// - `#` から始まる（コメント行になり、無視パターンとして機能しない）
+/// - 末尾が単独の `\`（エスケープする文字が続いていない）
+/// - `[` が閉じられていない（文字クラスの表記が壊れている）
+/// - `**` がディレクトリ区切り以外の位置にある（例: `foo**bar` は無効。
+///   `**/foo` `foo/**` `a/**/b` は有効）
+pub fn validate_gitignore_pattern(pattern: &str) -> GitignorePatternCheck {
+    fn invalid(msg: impl Into<String>) -> GitignorePatternCheck {
+        GitignorePatternCheck {
+            valid: false,
+            error: Some(msg.into()),
+            duplicate: false,
+        }
+    }
+
+    if pattern.contains('\n') || pattern.contains('\r') {
+        return invalid("パターンに改行を含めることはできません（1行に1パターンです）。");
+    }
+    if pattern.starts_with('#') {
+        return invalid("「#」で始まる行はコメントとして扱われ、無視パターンとして機能しません。");
+    }
+
+    // 否定パターン（"!foo" = foo を無視対象から除外する）の "!" の後が空でないか。
+    let negated = pattern.starts_with('!');
+    let body = if negated { &pattern[1..] } else { pattern };
+    // 末尾の（エスケープされていない）空白は Git 側で無視されるので、実質空なら拒否する。
+    if body.trim_end_matches(' ').is_empty() {
+        return invalid(if negated {
+            "「!」の後にパターンを入力してください。"
+        } else {
+            "無視するパターンを入力してください。"
+        });
+    }
+
+    // 末尾が単独の "\"（エスケープ対象の文字が続いていない）。
+    let trailing_backslashes = pattern.chars().rev().take_while(|&c| c == '\\').count();
+    if trailing_backslashes % 2 == 1 {
+        return invalid(
+            "末尾の「\\」でエスケープする文字が続いていません。「\\」を削除するか、続けて文字を入力してください。",
+        );
+    }
+
+    // 閉じていない "[" （文字クラスの表記）。
+    let mut in_bracket = false;
+    let mut escaped = false;
+    for c in pattern.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '[' if !in_bracket => in_bracket = true,
+            ']' if in_bracket => in_bracket = false,
+            _ => {}
+        }
+    }
+    if in_bracket {
+        return invalid(
+            "「[」が閉じられていません。文字クラスを使うときは「]」で閉じてください（例: 「*.[oa]」）。",
+        );
+    }
+
+    // "**" はディレクトリ区切り（"/"）で囲まれた位置でだけ特別な意味を持つ。
+    // それ以外（例: "foo**", "**bar", "foo**bar"）は Git の仕様上「無効」とされる。
+    for segment in pattern.split('/') {
+        if segment.contains("**") && segment != "**" {
+            return invalid(
+                "「**」は他の文字と組み合わせて使えません（例: 「**/foo」「foo/**」「a/**/b」は OK、「foo**」は NG）。",
+            );
+        }
+    }
+
+    GitignorePatternCheck {
+        valid: true,
+        error: None,
+        duplicate: false,
+    }
+}
+
+/// `.gitignore` の 1 パターンを、構文チェックと重複チェックの両方込みで検証する（#173）。
+///
+/// [`validate_gitignore_pattern`] に加えて、既存の `.gitignore`（あれば）と同じ行が
+/// すでにあるかを見る。構文が不正な場合は `duplicate` は常に false（構文チェックが
+/// 先に失敗するので重複の判定に意味が無いため）。
+pub fn check_gitignore_pattern(repo: &Repository, pattern: &str) -> Result<GitignorePatternCheck> {
+    let pattern = pattern.trim();
+    let check = validate_gitignore_pattern(pattern);
+    if !check.valid {
+        return Ok(check);
+    }
+
+    let existing = read_gitignore(repo)?.unwrap_or_default();
+    Ok(GitignorePatternCheck {
+        duplicate: gitignore_has_pattern(&existing, pattern),
+        ..check
+    })
+}
+
+/// ファイルパスから `.gitignore` パターンの候補を生成する（#173）。
+///
+/// 3 種類の候補を、可能な範囲で生成する:
+/// 1. このファイルのみ（ルートからの絶対パスで固定するので、同名の別ファイルには
+///    影響しない）。
+/// 2. 同じ拡張子のファイルをすべて無視（拡張子が無いファイル・ドットファイル
+///    （`.env` など）では意味が無いので省く）。
+/// 3. このファイルが入っているディレクトリ全体を無視（リポジトリ直下のファイルには
+///    親ディレクトリが無いので省く）。
+///
+/// `path` はリポジトリルートからの相対パス（先頭の `/` は取り除いてから使う）。
+/// 空文字列を渡した場合は空の一覧を返す。
+pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
+    let mut out = Vec::new();
+    let normalized = path.trim().trim_start_matches('/');
+    if normalized.is_empty() {
+        return out;
+    }
+    let p = Path::new(normalized);
+
+    // 1. このファイルのみ。
+    out.push(GitignoreSuggestion {
+        pattern: format!("/{normalized}"),
+        label: "このファイルだけを無視".to_string(),
+        description: format!(
+            "「/{normalized}」を .gitignore に追加します。同じ名前の別の場所にあるファイルには影響しません。"
+        ),
+    });
+
+    // 2. 同じ拡張子のファイルをすべて無視（拡張子が無い・ドットファイルは省く）。
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        let pattern = format!("*.{ext}");
+        out.push(GitignoreSuggestion {
+            label: "同じ拡張子のファイルをすべて無視".to_string(),
+            description: format!(
+                "「{pattern}」を .gitignore に追加します。拡張子が .{ext} のファイルは、リポジトリ内のどこにあっても無視されます。"
+            ),
+            pattern,
+        });
+    }
+
+    // 3. このディレクトリ全体を無視（ルート直下のファイルは親ディレクトリが無いので省く）。
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            let dir = parent.to_string_lossy().replace('\\', "/");
+            let pattern = format!("{dir}/");
+            out.push(GitignoreSuggestion {
+                label: "このディレクトリ全体を無視".to_string(),
+                description: format!(
+                    "「{pattern}」を .gitignore に追加します。「{dir}」ディレクトリの中身がすべて無視されます。"
+                ),
+                pattern,
+            });
+        }
+    }
+
+    out
 }
 
 /// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避し、作業ツリーを
@@ -3541,6 +3718,146 @@ mod tests {
         ));
         // どちらの失敗でも .gitignore は作られない。
         assert!(crate::repo::read_gitignore(&repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn add_to_gitignore_rejects_invalid_glob_syntax() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        // 閉じていない "[" は不正な glob として拒否される。
+        assert!(matches!(
+            add_to_gitignore(&repo, "*.[oa").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+        assert!(crate::repo::read_gitignore(&repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn validate_gitignore_pattern_accepts_common_patterns() {
+        // 通常のパターン。
+        assert!(validate_gitignore_pattern("*.log").valid);
+        assert!(validate_gitignore_pattern("build/").valid);
+        assert!(validate_gitignore_pattern("/build/output.log").valid);
+        // 否定パターン（除外）。
+        assert!(validate_gitignore_pattern("!important.log").valid);
+        // 文字クラス（きちんと閉じている）。
+        assert!(validate_gitignore_pattern("*.[oa]").valid);
+        // "**" の正しい使い方。
+        assert!(validate_gitignore_pattern("**/foo").valid);
+        assert!(validate_gitignore_pattern("foo/**").valid);
+        assert!(validate_gitignore_pattern("a/**/b").valid);
+        assert!(validate_gitignore_pattern("**").valid);
+        // エスケープされた末尾の "\\"（偶数個）は問題ない。
+        assert!(validate_gitignore_pattern("foo\\\\").valid);
+    }
+
+    #[test]
+    fn validate_gitignore_pattern_rejects_empty_and_comment() {
+        let empty = validate_gitignore_pattern("");
+        assert!(!empty.valid);
+        assert!(empty.error.is_some());
+
+        let spaces = validate_gitignore_pattern("   ");
+        assert!(!spaces.valid);
+
+        let negated_empty = validate_gitignore_pattern("!");
+        assert!(!negated_empty.valid);
+
+        let comment = validate_gitignore_pattern("# コメント");
+        assert!(!comment.valid);
+
+        let multiline = validate_gitignore_pattern("a\nb");
+        assert!(!multiline.valid);
+    }
+
+    #[test]
+    fn validate_gitignore_pattern_rejects_unclosed_bracket() {
+        let check = validate_gitignore_pattern("*.[oa");
+        assert!(!check.valid);
+        assert!(check.error.unwrap().contains('['));
+    }
+
+    #[test]
+    fn validate_gitignore_pattern_rejects_dangling_trailing_backslash() {
+        // 末尾が奇数個の "\\" はエスケープ対象の文字が続いていないため不正。
+        let check = validate_gitignore_pattern("foo\\");
+        assert!(!check.valid);
+    }
+
+    #[test]
+    fn validate_gitignore_pattern_rejects_misplaced_double_asterisk() {
+        assert!(!validate_gitignore_pattern("foo**").valid);
+        assert!(!validate_gitignore_pattern("**foo").valid);
+        assert!(!validate_gitignore_pattern("foo**bar").valid);
+        assert!(!validate_gitignore_pattern("foo***").valid);
+    }
+
+    #[test]
+    fn check_gitignore_pattern_detects_duplicate_ignoring_comments_and_blank_lines() {
+        let fx = TestRepo::new();
+        fx.write_file(".gitignore", "# コメント\n\nnode_modules/\n  .env  \n");
+        let repo = fx.open();
+
+        // 完全一致（前後空白の正規化込み）は重複扱い。
+        let dup = check_gitignore_pattern(&repo, ".env").unwrap();
+        assert!(dup.valid);
+        assert!(dup.duplicate);
+
+        // 新規パターンは重複ではない。
+        let fresh = check_gitignore_pattern(&repo, "*.log").unwrap();
+        assert!(fresh.valid);
+        assert!(!fresh.duplicate);
+
+        // コメント行の文字列そのものは重複と誤認しない。
+        let comment_like = check_gitignore_pattern(&repo, "コメント").unwrap();
+        assert!(comment_like.valid);
+        assert!(!comment_like.duplicate);
+
+        // 構文が不正なら重複判定は行わず valid=false のみ返す。
+        let invalid = check_gitignore_pattern(&repo, "*.[oa").unwrap();
+        assert!(!invalid.valid);
+        assert!(!invalid.duplicate);
+    }
+
+    #[test]
+    fn check_gitignore_pattern_no_duplicate_when_file_missing() {
+        let fx = TestRepo::new();
+        let repo = fx.open();
+        let check = check_gitignore_pattern(&repo, "*.log").unwrap();
+        assert!(check.valid);
+        assert!(!check.duplicate);
+    }
+
+    #[test]
+    fn suggest_gitignore_patterns_nested_file_with_extension() {
+        let suggestions = suggest_gitignore_patterns("build/output.log");
+        assert_eq!(suggestions.len(), 3);
+        assert_eq!(suggestions[0].pattern, "/build/output.log");
+        assert_eq!(suggestions[1].pattern, "*.log");
+        assert_eq!(suggestions[2].pattern, "build/");
+    }
+
+    #[test]
+    fn suggest_gitignore_patterns_root_file_without_extension_skips_extras() {
+        // ルート直下・拡張子なしのファイルは「このファイルのみ」しか出せない。
+        let suggestions = suggest_gitignore_patterns("Makefile");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].pattern, "/Makefile");
+    }
+
+    #[test]
+    fn suggest_gitignore_patterns_dotfile_at_root_skips_extension_suggestion() {
+        // ".env" のようなドットファイルは Rust の Path::extension() 上「拡張子なし」
+        // 扱いになるため、拡張子まとめ候補は出さない。ルート直下でもある。
+        let suggestions = suggest_gitignore_patterns(".env");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].pattern, "/.env");
+    }
+
+    #[test]
+    fn suggest_gitignore_patterns_empty_path_returns_empty() {
+        assert!(suggest_gitignore_patterns("").is_empty());
+        assert!(suggest_gitignore_patterns("   ").is_empty());
     }
 
     // --- リモート操作テスト ---
