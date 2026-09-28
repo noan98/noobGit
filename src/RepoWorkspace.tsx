@@ -58,6 +58,7 @@ import { useRiskLevels } from "./hooks/useRiskLevels"; // #274 操作トリガ�
 import { riskTriggerClassFor } from "./lib/risk"; // #274 操作トリガーボタンの危険度カラー
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConflictWizard } from "./components/ConflictWizard";
+import { StashPopFollowUp } from "./components/StashPopFollowUp";
 import { RebaseWizard } from "./components/RebaseWizard";
 import { BisectWizard } from "./components/BisectWizard"; // #184 Bisect
 import {
@@ -183,10 +184,14 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   discard: { status: true },
   // 退避は作業ツリーがクリーンになり、退避一覧と undo が変わる。
   stash_save: { status: true, undo: true, stash: true },
-  // 適用は作業ツリーへ取り出すだけ（退避は一覧に残る）。
+  // 適用は作業ツリーへ取り出すだけ（退避は一覧に残る）。コンフリクト時も
+  // status を取り直して ConflictWizard を検出できるようにする。
   stash_apply: { status: true },
-  // 取り出し（pop）は作業ツリーに戻し、退避一覧から消える。
+  // 取り出し（pop）は作業ツリーに戻す。コンフリクトが無ければ退避一覧からも消える
+  // （コンフリクト時は退避を残すので stash も取り直して一覧の状態を反映する）。
   stash_pop: { status: true, stash: true },
+  // 退避の削除は一覧だけが変わる。
+  stash_drop: { stash: true },
   // 作成はブランチ一覧だけ。HEAD も作業ツリーも動かさない。
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
@@ -540,6 +545,28 @@ export function RepoWorkspace({
   // コンフリクト中ファイルの詳細（解消ウィザード用）。status.conflicted を補う形で
   // has_ancestor 等の情報を持つ。status の再取得に合わせて取り直す。
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+
+  // #156 stash_pop がコンフリクトで退避を一覧に残したときの追跡情報。
+  // コンフリクトウィザードで全ファイルを解消し終えたタイミングで、
+  // 「退避を削除する / 残す」を選べる案内を出すために使う。
+  // id は退避の ID（番号は新しい退避でずれるため、削除は ID で指定する）。
+  // seenConflicts は、pop 後にコンフリクト一覧を実際に取得できたか。取得前の
+  // 一瞬（conflicts がまだ空）に「解消しました」を出さないために使う。
+  const [stashPopConflict, setStashPopConflict] = useState<{
+    id: string;
+    message: string;
+    seenConflicts: boolean;
+  } | null>(null);
+
+  // pop 後にコンフリクト一覧が実際に届いたら「観測済み」にする。これ以降に一覧が
+  // 空になったときだけ、解消完了として後片付けの案内を出す。
+  useEffect(() => {
+    if (conflicts.length > 0) {
+      setStashPopConflict((prev) =>
+        prev && !prev.seenConflicts ? { ...prev, seenConflicts: true } : prev,
+      );
+    }
+  }, [conflicts]);
 
   // リベース（squash / reword）で選択中のコミット id 集合と、ウィザードの表示状態。
   const [selectedCommitIds, setSelectedCommitIds] = useState<Set<string>>(
@@ -1479,18 +1506,51 @@ export function RepoWorkspace({
   }
 
   // 退避の適用（一覧に残す）。コンフリクトの可能性があるため guarded を通す。
+  // コンフリクトが起きた場合は success トーストを出さず、warning でウィザードへの
+  // 誘導を伝える（status の再取得は REFRESH_BY_OP.stash_apply が担うので、
+  // conflicts が検出されると ConflictWizard が自動表示される）。
   function doStashApply(index: number) {
     void guarded("退避を適用", "stash_apply", async () => {
-      await api.stashApply(repoPath, index);
-      showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
+      const outcome = await api.stashApply(repoPath, index);
+      if (outcome.conflicted) {
+        showToast(
+          "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください。",
+          "warning",
+        );
+      } else {
+        showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
+      }
     });
   }
 
-  // 退避の取り出し（pop・一覧から削除）。コンフリクトの可能性があるため guarded を通す。
+  // 退避の取り出し（pop・コンフリクトが無ければ一覧から削除）。
+  // コンフリクトの可能性があるため guarded を通す。コンフリクト時は退避を
+  // 一覧に残すので、解消し終えたら「退避を削除する / 残す」を選べるように
+  // stashPopConflict へ記録する（#156）。
   function doStashPop(index: number) {
+    const target = stashes.find((s) => s.index === index);
+    const message = target?.message ?? "";
     void guarded("退避を取り出す", "stash_pop", async () => {
-      await api.stashPop(repoPath, index);
-      showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
+      const outcome = await api.stashPop(repoPath, index);
+      if (outcome.conflicted && target) {
+        setStashPopConflict({ id: target.id, message, seenConflicts: false });
+        showToast(
+          "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避はいったん一覧に残しています）。",
+          "warning",
+        );
+      } else {
+        showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
+      }
+    });
+  }
+
+  // #156 stash_pop のコンフリクトを解消し終えたあと、不要になった退避を削除する。
+  // 破壊的（元に戻せない）ので guarded を通す（stash_drop は Caution）。
+  function doStashDrop(stashId: string) {
+    void guarded("退避を削除", "stash_drop", async () => {
+      await api.stashDrop(repoPath, stashId);
+      showToast("退避を削除しました。", "success");
+      setStashPopConflict(null);
     });
   }
 
@@ -2088,6 +2148,16 @@ export function RepoWorkspace({
               }
               onSelect={(p) => selectFile(p, "conflicted")}
               onMarkResolved={doMarkResolved}
+            />
+          )}
+
+          {/* #156 stash_pop がコンフリクトで残した退避の後片付け。
+              コンフリクトが（このタブで）すべて解消された時点でだけ表示する。 */}
+          {stashPopConflict?.seenConflicts && conflicts.length === 0 && (
+            <StashPopFollowUp
+              message={stashPopConflict.message}
+              onDelete={() => doStashDrop(stashPopConflict.id)}
+              onKeep={() => setStashPopConflict(null)}
             />
           )}
 
