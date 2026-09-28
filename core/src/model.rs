@@ -197,7 +197,7 @@ pub struct CommitInfo {
 
 /// コミット履歴をカーソルベースでページングしたときの1ページ分の結果。
 ///
-/// `repo::log_cursor_first_page` / `repo::log_cursor_next_page`（Issue #277）が返す。
+/// `repo::LogCursorStore::first_page` / `LogCursorStore::next_page`（Issue #277）が返す。
 /// `cursor` は「続きがあるときに次回呼び出しへそのまま渡すオペークな ID」で、
 /// 中身（どのリポジトリのどこまで読んだか）は一切意味を持たせない。`None` は
 /// 「もう続きが無い」か「カーソルが失効した」のどちらか（`has_more` が false なら
