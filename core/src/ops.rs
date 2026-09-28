@@ -1716,6 +1716,13 @@ pub fn clone_with_progress(
             "保存先のフォルダを指定してください。".to_string(),
         ));
     }
+    // 相対パスだとアプリの作業フォルダ基準になり、意図しない場所に作られてしまう。
+    if !dest_path.is_absolute() {
+        return Err(CoreError::InvalidInput(format!(
+            "保存先「{}」は完全なパスで指定してください（例: C:\\Users\\you\\projects\\repo）。「参照…」からフォルダを選ぶと確実です。",
+            dest_path.display()
+        )));
+    }
 
     // 保存先の既存状態を確認する。既に存在して中身があれば、既存データを守るため
     // 何もせず拒否する。
@@ -2223,6 +2230,19 @@ mod tests {
         let outcome = clone_repo(upstream.path().to_str().unwrap(), &dest).unwrap();
         assert_eq!(outcome.path, dest.to_string_lossy());
         assert!(dest.join("a.txt").exists());
+    }
+
+    #[test]
+    fn clone_rejects_relative_destination() {
+        let upstream = TestRepo::new();
+        upstream.write_file("a.txt", "hello");
+        upstream.stage_all();
+        upstream.commit("c1");
+
+        let dest = Path::new("relative-dest-should-not-be-created");
+        let err = clone_repo(upstream.path().to_str().unwrap(), dest).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        assert!(!dest.exists());
     }
 
     #[test]

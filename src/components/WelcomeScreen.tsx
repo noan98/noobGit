@@ -232,7 +232,13 @@ function CloneSection({ onCloned }: { onCloned: (path: string) => void }) {
       const msg = String(e);
       try {
         const kind = await api.classifyNetworkError(msg);
-        setCloneError({ kind, raw: msg });
+        if (kind === "other") {
+          // 保存先にファイルがある・URL の形が不正など、ネットワークに起因しない
+          // エラーは core の日本語メッセージをそのまま見せる方が分かりやすい。
+          showToast(msg, "error");
+        } else {
+          setCloneError({ kind, raw: msg });
+        }
       } catch {
         // 分類自体が失敗した場合は従来のトースト通知にフォールバックする。
         showToast(msg, "error");
