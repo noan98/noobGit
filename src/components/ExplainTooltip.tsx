@@ -32,6 +32,8 @@ const BORDER_COLOR: Partial<Record<OperationKind, string>> = {
   merge: "var(--caution)",
   push: "var(--caution)",
   delete_branch: "var(--caution)",
+  bisect_start: "var(--caution)",
+  bisect_reset: "var(--caution)",
 };
 
 function borderColor(op: OperationKind): string {

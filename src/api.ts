@@ -144,7 +144,9 @@ export type OperationKind =
   | "rebase"
   | "merge"
   | "remove_remote"
-  | "restore_file";
+  | "restore_file"
+  | "bisect_start"
+  | "bisect_reset";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -227,6 +229,17 @@ export interface NetworkProgress {
   received_bytes: number;
   indexed_deltas: number;
   total_deltas: number;
+}
+
+// Bisect（バグ混入コミットの二分探索）セッションの状態。
+// bisect_start / bisect_mark の返り値、および bisect_status での復元にも使う
+// （アプリ再起動やタブの再表示のあいだも進行状況を追えるようにするため）。
+export interface BisectStatus {
+  current_commit: CommitInfo | null;
+  remaining_steps: number;
+  is_done: boolean;
+  found_commit: CommitInfo | null;
+  tested_count: number;
 }
 
 // merge（ブランチ統合）の結果。
@@ -492,4 +505,19 @@ export const api = {
   // reflog が存在しないリポジトリでは空の配列を返す。
   getReflog: (repoPath: string, max: number) =>
     invoke<ReflogEntry[]>("get_reflog", { repoPath, max }),
+
+  // #184 Bisect: バグ混入コミットの二分探索。
+  // bad は「壊れている」コミット、good は「動いていた」コミット（どちらも revspec）。
+  bisectStart: (repoPath: string, bad: string, good: string) =>
+    invoke<BisectStatus>("bisect_start", { repoPath, bad, good }),
+  // いま Bisect が調べているコミットについて good/bad を記録し、次の候補へ進める。
+  bisectMark: (repoPath: string, commit: string, isGood: boolean) =>
+    invoke<BisectStatus>("bisect_mark", { repoPath, commit, isGood }),
+  // Bisect セッションを終了し、開始前のブランチ（または元のコミット）へ戻す。
+  bisectReset: (repoPath: string) =>
+    invoke<void>("bisect_reset", { repoPath }),
+  // 現在の Bisect セッションの状態を返す（無ければ null）。タブの再表示やアプリ
+  // 再起動後の復元に使う読み取り専用コマンド。
+  bisectStatus: (repoPath: string) =>
+    invoke<BisectStatus | null>("bisect_status", { repoPath }),
 };

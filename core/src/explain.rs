@@ -181,6 +181,18 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "特定のファイルだけを過去の状態に戻したいときに使います。今の変更は上書きされます。".into(),
             on_trouble: "ステージされるので、誤ったときは Undo（アンステージ）で戻せます。上書き前の内容が必要なら事前に stash 退避を。".into(),
         },
+        OperationKind::BisectStart => Explanation {
+            title: "バグ混入コミットを探す（Bisect）".into(),
+            what: "「壊れている」コミットと「動いていた」コミットを指定すると、その間のコミットを1つずつ自動でチェックアウトしながら、はい/いいえで答えるだけで原因のコミットを二分探索で絞り込みます。".into(),
+            why: "この間、HEAD は一時的にどのブランチも指さない「detached HEAD」（切り離されたHEAD）という状態になります。作業ツリーの中身も、調べているコミットに合わせて入れ替わります。ブランチは失われず、いつでも元に戻せます。".into(),
+            on_trouble: "「detached HEAD」の間はコミットしても、あとでどのブランチにも属さず見失いやすいので、調査以外の作業はしないでください。途中でやめたくなったら「Bisect を終了」でいつでも元のブランチに戻れます。".into(),
+        },
+        OperationKind::BisectReset => Explanation {
+            title: "Bisect を終了".into(),
+            what: "Bisect の調査を終わりにして、開始する前のブランチ（またはコミット）へ戻します。".into(),
+            why: "detached HEAD のままにしておくと、あとで見失いやすくなります。原因が見つかった・見つからなくても、調査が済んだらここで終了しましょう。".into(),
+            on_trouble: "直後なら Undo で、Bisect を始める前の状態にも戻せます。".into(),
+        },
     }
 }
 
@@ -214,6 +226,8 @@ mod tests {
             OperationKind::Merge,
             OperationKind::RemoveRemote,
             OperationKind::RestoreFile,
+            OperationKind::BisectStart,
+            OperationKind::BisectReset,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);

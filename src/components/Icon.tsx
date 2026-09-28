@@ -25,6 +25,7 @@ import {
   IconArrowsJoin,
   IconBolt,
   IconBraces,
+  IconBug,
   IconBulb,
   IconCheck,
   IconChecklist,
@@ -166,6 +167,8 @@ const ICONS = {
   history: IconHistory,
   /** 操作履歴の一覧（reflog）。 */
   reflog: IconListDetails,
+  /** バグ混入コミットの二分探索（Bisect）。 */
+  bisect: IconBug,
   /** ステージ手順の説明（オンボーディング）。 */
   checklist: IconChecklist,
 

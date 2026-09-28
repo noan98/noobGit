@@ -36,6 +36,17 @@ pub enum UndoAction {
         target: String,
         message: Option<String>,
     },
+    /// Bisect（バグ混入コミットの二分探索）セッションの開始を取り消し、開始前の
+    /// ブランチ（`original_branch` が Some）または具体的なコミット（`original_commit`。
+    /// `original_branch` が None、または当該ブランチが既に削除されている場合の
+    /// フォールバック）へ戻す。Bisect セッション全体を「開始前の状態」へ一括で巻き戻す
+    /// という設計（判定=`bisect_mark`ごとの個別 undo は記録しない）。
+    /// `crate::bisect::bisect_reset` と同じ復元ロジックを使うため冪等
+    /// （セッションが既に手動で終了していても、同じ場所へチェックアウトし直すだけ）。
+    RestoreBisectHead {
+        original_branch: Option<String>,
+        original_commit: String,
+    },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -286,6 +297,22 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
                     }
                 }
             }
+        }
+        UndoAction::RestoreBisectHead {
+            original_branch,
+            original_commit,
+        } => {
+            // bisect_reset と同じ復元ロジックを共有する（冪等: 同じ場所へ checkout し
+            // 直すだけなので、セッションが既に手動で終了していても壊れない）。
+            crate::bisect::restore_original_head(
+                repo,
+                original_branch.as_deref(),
+                original_commit,
+            )?;
+            // セッションファイルもあわせて破棄する（無ければ何もしない＝冪等）。
+            // 破棄に失敗しても、根底の HEAD 復元は既に成功しているので undo 自体は
+            // 成功として扱う（ベストエフォート方針）。
+            let _ = crate::bisect::clear_session(repo);
         }
     }
     Ok(())

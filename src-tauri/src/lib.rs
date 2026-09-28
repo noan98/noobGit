@@ -10,14 +10,14 @@ use noobgit_core::error::{classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{explain as explain_op, Explanation};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
-    BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome, FileChange,
-    FileDiff, LfsCandidate, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo,
-    RepoStatus, SensitiveWarning, StashInfo, TagInfo,
+    BisectStatus, BlameHunk, BranchGraph, BranchInfo, CommitInfo, ConflictFile, FetchOutcome,
+    FileChange, FileDiff, LfsCandidate, MergeOutcome, NetworkProgress, PullOutcome, ReflogEntry,
+    RemoteInfo, RepoStatus, SensitiveWarning, StashInfo, TagInfo,
 };
 use noobgit_core::repo::LogFilter;
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::UndoEntry;
-use noobgit_core::{identity, ops, repo, undo};
+use noobgit_core::{bisect, identity, ops, repo, undo};
 
 fn open(repo_path: &str) -> Result<Repository, String> {
     repo::open(repo_path).map_err(|e| e.to_string())
@@ -526,6 +526,36 @@ fn check_lfs_candidates(
     ))
 }
 
+/// Bisect（バグ混入コミットの二分探索）を開始する。
+/// `bad` は「壊れている」コミット、`good` は「動いていた」コミット（どちらも revspec）。
+#[tauri::command]
+fn bisect_start(repo_path: String, bad: String, good: String) -> Result<BisectStatus, String> {
+    let r = open(&repo_path)?;
+    bisect::bisect_start(&r, &bad, &good).map_err(|e| e.to_string())
+}
+
+/// いま Bisect が調べているコミットについて good/bad を記録し、次の候補へ進める。
+#[tauri::command]
+fn bisect_mark(repo_path: String, commit: String, is_good: bool) -> Result<BisectStatus, String> {
+    let r = open(&repo_path)?;
+    bisect::bisect_mark(&r, &commit, is_good).map_err(|e| e.to_string())
+}
+
+/// Bisect セッションを終了し、開始前のブランチ（または元のコミット）へ戻す。
+#[tauri::command]
+fn bisect_reset(repo_path: String) -> Result<(), String> {
+    let r = open(&repo_path)?;
+    bisect::bisect_reset(&r).map_err(|e| e.to_string())
+}
+
+/// 現在の Bisect セッションの状態を返す（無ければ null）。タブの再表示やアプリ再起動後の
+/// 復元に使う読み取り専用コマンド。
+#[tauri::command]
+fn bisect_status(repo_path: String) -> Result<Option<BisectStatus>, String> {
+    let r = open(&repo_path)?;
+    bisect::bisect_status(&r).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -588,6 +618,10 @@ pub fn run() {
             check_lfs_candidates,
             restore_file_from_commit,
             get_reflog,
+            bisect_start,
+            bisect_mark,
+            bisect_reset,
+            bisect_status,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");

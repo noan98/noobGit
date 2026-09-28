@@ -34,6 +34,8 @@ interface Props {
   // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
   // 親（App）が guarded("reset_hard") に配線する。
   onResetTo: (newOid: string) => void;
+  // #184 Bisect: バグ混入コミットを探すウィザードを開く。
+  onStartBisect: () => void;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -130,6 +132,7 @@ export function HistoryPanel({
   onStartRebase,
   repoPath,
   onResetTo,
+  onStartBisect,
 }: Props) {
   // #51 DAG グラフ — ON/OFF トグル状態。
   const [showGraph, setShowGraph] = useState(false);
@@ -249,6 +252,14 @@ export function HistoryPanel({
                 <Icon name="squash" /> 整理する… ({selectedCount})
               </button>
             )}
+            {/* #184 Bisect: バグ混入コミットを二分探索で探すウィザードを開く。 */}
+            <button
+              className="btn btn-small"
+              onClick={onStartBisect}
+              title="「壊れている」コミットと「動いていた」コミットを指定して、バグ混入コミットを二分探索で見つけます"
+            >
+              <Icon name="bisect" /> バグ混入コミットを探す
+            </button>
           </>
         )}
       </div>

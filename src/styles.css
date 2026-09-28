@@ -2113,6 +2113,73 @@ textarea {
   font-family: inherit;
 }
 
+/* ---- #184 Bisect ウィザード ---- */
+.bisect-wizard {
+  width: 560px;
+}
+.bisect-wizard-done {
+  width: 780px;
+  max-width: 94vw;
+}
+.bisect-step h3 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+.bisect-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+  line-height: 1.6;
+}
+.bisect-select {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+}
+.bisect-manual-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.bisect-progress {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--caution);
+  margin: 0 0 10px;
+}
+.bisect-commit-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  margin: 0 0 10px;
+}
+.bisect-commit-card.bisect-found {
+  border-color: var(--safe-border);
+  background: var(--safe-bg);
+}
+.bisect-commit-summary {
+  font-weight: 600;
+  color: var(--text);
+}
+.bisect-commit-meta {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--muted);
+}
+.bisect-answer-actions {
+  flex-wrap: wrap;
+}
+/* バナー内のアイコンを他の setup バナーと同じ扱いに揃える。 */
+.bisect-banner > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* ---- #48 Undo タイムライン ---- */
 .empty-hint {
   color: var(--muted);
