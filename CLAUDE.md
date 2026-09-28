@@ -39,10 +39,10 @@ noobGit/
 |---|---|
 | `model.rs` | Serde データ型: `RepoStatus`, `FileChange`, `ChangeKind`, `BranchInfo`, `CommitInfo`, `StashInfo`（`file_count` 付き）, `FileDiff` / `DiffLine` / `DiffLineKind`（差分表示）, `BlameHunk`（blame）, `ConflictFile`（コンフリクト一覧）, `TagInfo`（タグ）。 |
 | `repo.rs` | 読み取り専用の状態: `open`（`.git` を上方向に探索）, `status`, `branches`, `log` / `log_paged` / `log_filtered`（`LogFilter` でメッセージ・作者・日付フィルタ）, `current_branch`, `is_dirty`, `head_is_published`（HEAD が上流より先行していない＝公開済みかの判定。amend / rebase の危険度に使う）, `diff_unstaged` / `diff_staged` / `diff_conflict` / `diff_commits`（任意コミット間差分）, `blame_file`（行ごとの最終変更コミット）, `file_log`（ファイル別履歴）, `get_conflicts`（コンフリクト中ファイル一覧）, `list_tags`, `suggest_commit_messages`（件名の前方一致補完。頻度順・同頻度は新しい順、大文字小文字無視、走査コミット数に上限）。 |
-| `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `stage_hunk`（hunk 単位の部分ステージ。undo は `UnstagePath`）, `unstage`, `commit`（マージ中は MERGE_HEAD を第2親に加えてマージを完了させる。コンフリクト未解消なら中断）, `amend_commit`（直前コミットの書き換え。author 据え置き・committer 更新。元コミットへの soft reset を undo に記録）, `reword_commit` / `squash_commits`（インタラクティブリベース。HEAD からの連続範囲のみ。元 HEAD への reset を undo に記録）, `cherry_pick`（別コミットを HEAD にコピー。ステージ済み変更あり・コンフリクト・未コミット変更との衝突時は何も変えずに `Blocked`。soft reset を undo に記録）, `mark_resolved`（コンフリクト解消マーク）, `discard_path`（未コミット変更の破棄。HEAD にあれば最後のコミット状態へ強制復元、新規なら index から外して削除。不可逆なので undo は記録しない）, `stash_save` / `stash_apply` / `stash_pop` / `stash_list` / `stash_diff`（作業の一時退避と差分プレビュー。`stash_save` は未追跡も含めて退避し、空メッセージなら自動命名、取り出し用の `PopStash` undo を記録。`stash_diff` は適用せずツリー比較のみ。`apply` / `pop` はコンフリクトしうる。stash 系は `&mut Repository` を取る）, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`, `create_tag` / `delete_tag`（タグ。削除は `RecreateTag` undo を記録）、リモート取り込み `fetch` / `pull`（`pull` は安全な fast-forward のみ。分岐時は何も変えずに中断）、リモート送信 `push`（`force` で強制 push）。ローカルの書き込みは undo エントリを記録する（ベストエフォート。`discard` は不可逆なので例外）。`fetch` / `pull` / `push` はネットワーク操作で undo は記録しない。 |
+| `ops.rs` | 書き込み操作: `stage_all`, `stage_path`, `stage_hunk`（hunk 単位の部分ステージ。undo は `UnstagePath`）, `unstage`, `commit`（マージ中は MERGE_HEAD を第2親に加えてマージを完了させる。コンフリクト未解消なら中断）, `amend_commit`（直前コミットの書き換え。author 据え置き・committer 更新。元コミットへの soft reset を undo に記録）, `reword_commit` / `squash_commits`（インタラクティブリベース。HEAD からの連続範囲のみ。元 HEAD への reset を undo に記録）, `cherry_pick`（別コミットを HEAD にコピー。ステージ済み変更あり・コンフリクト・未コミット変更との衝突時は何も変えずに `Blocked`。soft reset を undo に記録）, `mark_resolved`（コンフリクト解消マーク）, `discard_path`（未コミット変更の破棄。HEAD にあれば最後のコミット状態へ強制復元、新規なら index から外して削除。不可逆なので undo は記録しない）, `stash_save` / `stash_apply` / `stash_pop` / `stash_list` / `stash_diff`（作業の一時退避と差分プレビュー。`stash_save` は未追跡も含めて退避し、空メッセージなら自動命名、取り出し用の `PopStash` undo を記録。`stash_diff` は適用せずツリー比較のみ。`apply` / `pop` はコンフリクトしうる。stash 系は `&mut Repository` を取る）, `create_branch`, `switch_branch`, `delete_branch`, `reset_hard`, `create_tag` / `delete_tag`（タグ。作成は `DeleteTag`、削除は `RecreateTag` undo を記録）、リモート取り込み `fetch` / `pull`（`pull` は安全な fast-forward のみ。分岐時は何も変えずに中断）、リモート送信 `push`（`force` で強制 push）。ローカルの書き込みは undo エントリを記録する（ベストエフォート。`discard` は不可逆なので例外）。`fetch` / `pull` / `push` はネットワーク操作で undo は記録しない。 |
 | `safety.rs` | リスク分類: `assess(op, ctx) -> RiskAssessment`（`RiskLevel::{Safe, Caution, Destructive}`）。`OperationKind` は stage 系・コミット系のほか `CherryPick`（Caution）, `CreateTag`（Safe）/ `DeleteTag`（Caution）, `Rebase`（Destructive。公開済み履歴で警告を強める）を含む。保護ブランチ（`main`/`master`）を定義する。 |
 | `explain.rs` | `OperationKind` ごとの平易な日本語の説明（`what` / `why` / `on_trouble`）。操作文言の唯一の出典。 |
-| `undo.rs` | ワンクリック undo。ジャーナルは `.git/noobgit_undo.json` に保存。`UndoAction` の各バリアント（`SoftResetTo`, `HardResetTo`, `RecreateBranch`, `DeleteBranch`, `UncommitInitial`, `PopStash`, `UnstagePath`, `RecreateTag`）が、各操作をどう巻き戻すかを記述する。`apply` は冪等。 |
+| `undo.rs` | ワンクリック undo。ジャーナルは `.git/noobgit_undo.json` に保存。`UndoAction` の各バリアント（`SoftResetTo`, `HardResetTo`, `RecreateBranch`, `DeleteBranch`, `UncommitInitial`, `PopStash`, `UnstagePath`, `RecreateTag`, `DeleteTag`）が、各操作をどう巻き戻すかを記述する。`apply` は冪等。 |
 | `error.rs` | `CoreError`（日本語メッセージ）, `ErrorKind`（シリアライズ可能）, `Result<T>`。 |
 | `test_support.rs` | `#[cfg(test)]` 専用 — 実際の一時リポジトリを構築する `TestRepo` ヘルパー。 |
 
@@ -57,8 +57,12 @@ noobGit/
   しなければならない。さもないと呼び出せない。
 - `src/main.rs` — `noobgit_lib::run()` を呼ぶだけの小さなエントリポイント。
 - `capabilities/default.json` — ウィンドウ権限（カスタムコマンドはここに明示的な
-  エントリを必要としない）。
+  エントリを必要としない）。カスタムタイトルバー (#273) が使う
+  `core:window:allow-*`（close/minimize/toggle-maximize/start-dragging/
+  is-maximized）はここで個別に許可している（`core:default` には含まれない）。
 - `tauri.conf.json` — アプリ設定、CSP、バンドルターゲット、ウィンドウ設定。
+  メインウィンドウは `decorations: false`（フレームレス）— OS 標準タイトル
+  バーの代わりに `src/components/TitleBar.tsx` を使う (#273)。
 
 ### `src/`（フロントエンド）
 
@@ -76,8 +80,9 @@ noobGit/
   `window` に登録するショートカット類は `active` プロップでアクティブなタブ
   だけが反応する。
 - `components/` — `StatusPanel`, `HistoryPanel`, `BranchPanel`,
-  `ConfirmDialog`, `TabBar`。表示専用で、`RepoWorkspace.tsx`（タブバーは
-  `App.tsx`）から渡されたコールバックを呼ぶ。
+  `ConfirmDialog`, `TabBar`, `TitleBar`（カスタムタイトルバー, #273）。表示
+  専用で、`RepoWorkspace.tsx`（タブバー・タイトルバーは `App.tsx`）から
+  渡されたコールバックを呼ぶ。
 - `components/Icon.tsx` — アイコンの唯一の出典。[Tabler Icons](https://tabler.io/icons)
   （`@tabler/icons-react`）を用途ベースの名前（`IconName`）で包み、`<Icon
   name="commit" />` のように使う。**絵文字は使わない** — 下記「規約」を参照。
@@ -165,6 +170,35 @@ Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実
 UI/機能の正しさはここ（Windows デスクトップアプリ）ではヘッドレスに検証できない
 ので、UI が動くと主張するのではなく、その旨を明示すること。
 
+### スナップショットテスト（insta）
+
+`core/src/ops.rs` の一部の出力（`CommitInfo`, `StashInfo` の自動命名, squash の
+合成メッセージ形式など、serde でフロントに渡る「形式」）は [insta](https://insta.rs/)
+のスナップショットテストで固定している。スナップショットファイルは
+`core/src/snapshots/` に置き、テストコードと一緒にコミットする。コミット id /
+short_id / タイムスタンプなど実行ごとに変わる値は insta の redaction
+（`{ ".id" => "[id]", ... }`）で伏せているが、伏せる前に長さ・16進であることなど
+形式そのものを通常の `assert!` で検証してから伏せている。新しく形式を固定したい
+出力を増やすときも、この二段構え（形式を assert → 変わる値だけ redaction）を
+踏襲すること。
+
+スナップショットを更新する（=挙動を意図的に変えた）ときの手順:
+
+```bash
+cargo install cargo-insta   # 未インストールなら（任意。無くても運用できる）
+
+cargo insta test            # core のスナップショットテストを実行
+cargo insta review          # 差分を1件ずつ確認して採用/却下
+```
+
+`cargo-insta` CLI が無い環境では、`INSTA_UPDATE=always cargo test -p
+noobgit-core` でスナップショットを直接更新できる（レビューは無しでその場で
+上書きされる）。更新後は `.snap` の内容を必ず自分の目で確認し、意図した変更か
+確かめてからコミットすること。作業後に `.snap.new`（未レビューの保留ファイル）
+が残っていないか確認し、残っていれば削除するか `cargo insta review` で解消する
+（`.snap.new` はコミットしない）。CI は `INSTA_UPDATE=no` を明示しているため、
+更新を忘れてコミットするとスナップショット不一致でテストが失敗する。
+
 ## 規約
 
 - **言語:** ユーザー向けの文字列、エラーメッセージ、ドキュメントコメント、コード
@@ -212,10 +246,28 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     存在せず、手動マージのままになる。
   - **frontend**（`if frontend`）— `npm ci` のあと `npm run build`（`tsc && vite
     build` なので型チェックも含まれる）。パストリガー: `src/**`, `index.html`,
-    `package*.json`, `tsconfig*.json`, `vite.config.*`。
+    `package*.json`, `tsconfig*.json`, `vite.config.*`。rust も変更されている
+    PR（`needs.changes.outputs.rust == 'true'`）では、ビルドした `dist/` を
+    `actions/upload-artifact`（アーティファクト名 `frontend-dist`,
+    `retention-days: 1`）で rust ジョブに共有する。rust が変わらない PR では
+    アップロード自体をスキップする。
   - **rust (fmt)**（`if rust`）— `cargo fmt --all -- --check`。ビルドしないので
-    速く失敗する。
-  - **rust (check + clippy + test)**（`if rust`）— Tauri 2 の Linux システム依存を
+    速く失敗する。`changes` にのみ依存し、frontend ジョブとは独立に即座に
+    始まる。
+  - **rust (check + clippy + test)**（`if rust`）— `needs: [changes, frontend]`
+    で、`if` は `!cancelled() && needs.changes.outputs.rust == 'true'`（既定の
+    「needs 全成功」条件を外す）。frontend ジョブが**成功**した（frontend/rust
+    両方変更の）PR では、その `dist/` を `actions/download-artifact` で
+    ダウンロードして使い、このジョブ内での `npm ci` / `npm run build` の二重
+    実行を省く。frontend ジョブが成功しなかった場合 — rust のみの変更で
+    スキップされた、または（Vitest だけが落ちた等で）失敗した — は、これまで
+    通りこのジョブ内で自前に `npm ci` + `npm run build` する。frontend の失敗で
+    Rust のテスト結果まで失わないためのフォールバックで、`npm run build` 自体が
+    壊れていればここでも同じく失敗する。トレードオフ: rust のみの変更では
+    frontend ジョブが即座にスキップ終了するので開始はほぼ遅れないが、両方変更の
+    PR では frontend ジョブの完了を待ってから始まる（二重ビルドの計算資源削減と
+    引き換え）。
+    Tauri 2 の Linux システム依存を
     （cached-apt アクションで）インストールする。パッケージ一覧はジョブの
     `env.TAURI_APT_PACKAGES` に一元化し、直後の健全性チェックが `pkg-config` で
     `glib-2.0` / `gtk+-3.0` / `webkit2gtk-4.1` の有無を検証する。キャッシュの
@@ -223,7 +275,7 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     「Package glib-2.0 was not found」で落ちるため、欠けていれば通常の apt で
     入れ直して自己修復する（この復元漏れは同じブランチでも再現したりしなかったり
     する不安定な事象で、Rust ジョブを断続的に赤くしていた）。その後
-    先にフロントエンドをビルドし
+    上記の通りフロントエンドを用意し
     （`src-tauri` の `generate_context!` マクロが `../dist` を必要とする）、その後
     `cargo clippy --workspace --all-targets --locked -- -D warnings` を実行する。
     Clippy の警告はビルドを失敗させる — ツリーを警告ゼロに保つこと。`--locked` は
@@ -243,7 +295,10 @@ GitHub Actions のワークフローは `.github/` にある。アクション�
     このステップの終了コードでこれまで通り判定する（`continue-on-error` は
     付けない）。コード計装は独自の RUSTFLAGS を注入し `RUSTC_WRAPPER=sccache`
     と競合しうるため、このステップに限り `RUSTC_WRAPPER` を空文字で上書きして
-    sccache を無効化する（他のステップは通常どおり sccache を使う）。続く
+    sccache を無効化する（他のステップは通常どおり sccache を使う）。同じ
+    ステップで `INSTA_UPDATE: "no"` も明示し、insta のスナップショット
+    テスト（`core/src/snapshots/`）が不一致のとき確実に失敗させる（insta は
+    CI 環境変数を検知して自動的に no になるが、明示して意図を残している）。続く
     `cargo llvm-cov report --summary-only >> $GITHUB_STEP_SUMMARY` ステップは、
     直前のステップで収集済みのカバレッジデータを整形するだけでテストを
     再実行せず、モジュール別カバレッジ率をジョブサマリーに表示する。テストの

@@ -76,7 +76,7 @@ export function LfsGuideDialog({
           <span
             style={{
               background: "var(--caution)",
-              color: "#fff",
+              color: "var(--on-emphasis)",
               fontSize: "12px",
               padding: "2px 10px",
               borderRadius: "12px",

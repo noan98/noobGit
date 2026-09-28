@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
-import { CommitGraph } from "./CommitGraph";
+import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
+import { computeCommitGraphLayout } from "../lib/commitGraph";
+// #272: 一覧の矢印キー行ナビゲーション（コミット一覧・reflog 一覧で使う）。
+import { useListNav } from "../hooks/useListNav";
 
 interface Props {
   commits: CommitInfo[];
@@ -34,6 +38,10 @@ interface Props {
   // #131 reflog: reflog エントリの「この時点に戻す」ボタンが押されたとき呼ぶコールバック。
   // 親（App）が guarded("reset_hard") に配線する。
   onResetTo: (newOid: string) => void;
+  // #274 危険度カラー: 各トリガーボタンに付与する強調クラス。
+  // 未取得の間は空文字（Safe相当の通常スタイル）。
+  resetRiskClass?: string;
+  cherryPickRiskClass?: string;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -112,6 +120,14 @@ function CopyHashButton({ shortId }: { shortId: string }) {
 // reflog の最大表示件数。最近の操作を一覧できる程度の件数にする。
 const REFLOG_MAX = 100;
 
+// #271: 仮想スクロール — 行の推定高さ（実測前の仮の値。measureElement で実測後に補正される）。
+// アバター・要約・メタ情報の 2 行分に、行の上下パディングを足したおおよその値。
+const COMMIT_ROW_ESTIMATE_PX = 64;
+// reflog 行は要約が短くコミット行よりやや低め。
+const REFLOG_ROW_ESTIMATE_PX = 56;
+// 表示範囲の前後にあらかじめ描画しておく行数（スクロール中の白い隙間を防ぐ）。
+const VIRTUAL_OVERSCAN = 8;
+
 export function HistoryPanel({
   commits,
   currentBranch,
@@ -130,8 +146,12 @@ export function HistoryPanel({
   onStartRebase,
   repoPath,
   onResetTo,
+  // #274 危険度カラー
+  resetRiskClass = "",
+  cherryPickRiskClass = "",
 }: Props) {
-  // #51 DAG グラフ — ON/OFF トグル状態。
+  // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
+  // グラフ列（レーン線・ノード）を表示する。
   const [showGraph, setShowGraph] = useState(false);
 
   // #131 reflog: 表示中のタブ（"commits" | "reflog"）。
@@ -141,6 +161,87 @@ export function HistoryPanel({
   const [reflogEntries, setReflogEntries] = useState<ReflogEntry[]>([]);
   const [reflogLoading, setReflogLoading] = useState(false);
   const [reflogError, setReflogError] = useState<string | null>(null);
+
+  // #271: 仮想スクロール — コミット一覧・reflog 一覧はそれぞれ専用のスクロール
+  // 領域を持ち、表示範囲＋オーバースキャン分だけを DOM に描画する。行の高さは
+  // アバターやブランチバッジで変動するため、estimateSize は仮の値に過ぎず、
+  // 実際のマウント後に measureElement（rowVirtualizer.measureElement を各行の
+  // ref に渡す）で実測して補正する。#272（矢印キーでの行ナビゲーション）は
+  // このインスタンスの scrollToIndex をそのまま使える想定。
+  const commitsScrollRef = useRef<HTMLDivElement>(null);
+  const commitsVirtualizer = useVirtualizer({
+    count: commits.length,
+    getScrollElement: () => commitsScrollRef.current,
+    estimateSize: () => COMMIT_ROW_ESTIMATE_PX,
+    overscan: VIRTUAL_OVERSCAN,
+    getItemKey: (index) => commits[index].id,
+  });
+
+  const reflogScrollRef = useRef<HTMLDivElement>(null);
+  const reflogVirtualizer = useVirtualizer({
+    count: reflogEntries.length,
+    getScrollElement: () => reflogScrollRef.current,
+    estimateSize: () => REFLOG_ROW_ESTIMATE_PX,
+    overscan: VIRTUAL_OVERSCAN,
+    // reflog エントリには安定した id が無いため、取得時点でのインデックスをキーにする
+    // （reflog は並び替えが起きない一覧なので、再取得のたびに全件入れ替わる想定）。
+    getItemKey: (index) => index,
+  });
+
+  // #272: 矢印キーでの行ナビゲーション。仮想スクロールと両立させるため、
+  // roving tabindex ではなく aria-activedescendant パターンを使う
+  // （フォーカスは一覧コンテナ自体に置き、「現在の行」は属性で示す）。
+  // 実際のインデックス計算は useListNav（内部で lib/listNav.ts の純粋関数を使う）
+  // に委譲する。
+  //
+  // コミット一覧の主操作＝クリック選択に相当するのは、リベース対象チェックボックス
+  // のトグル（onToggleSelect）。reflog 一覧の「戻す」は reset --hard で破壊的
+  // なので、Enter/Space には割り当てない（onActivate を渡さない＝キー入力は
+  // 消費するが何も実行しない）。
+  const {
+    activeIndex: commitsActiveIndex,
+    setActiveIndex: setCommitsActiveIndex,
+    onKeyDown: onCommitsKeyDown,
+  } = useListNav({
+    itemCount: commits.length,
+    onActivate: (index) => onToggleSelect(commits[index].id),
+  });
+  const {
+    activeIndex: reflogActiveIndex,
+    setActiveIndex: setReflogActiveIndex,
+    onKeyDown: onReflogKeyDown,
+  } = useListNav({ itemCount: reflogEntries.length });
+
+  // 一覧コンテナが実際にフォーカスされている間だけ現在行を視覚的に示す
+  // （フォーカスが外れた後まで枠が残ると、マウス操作中に紛らわしいため）。
+  const [commitsListFocused, setCommitsListFocused] = useState(false);
+  const [reflogListFocused, setReflogListFocused] = useState(false);
+
+  // activeIndex が変わったら、仮想化された一覧でもその行が実際に描画される
+  // よう scrollToIndex で表示範囲に入れる（画面外の行は DOM に存在しないため、
+  // aria-activedescendant が指す id を持つ要素が無いと意味がなくなる）。
+  useEffect(() => {
+    if (commitsActiveIndex < 0) return;
+    commitsVirtualizer.scrollToIndex(commitsActiveIndex, { align: "auto" });
+    // commitsVirtualizer は毎レンダー新しいインスタンスになりうるため依存に含めない。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitsActiveIndex]);
+
+  useEffect(() => {
+    if (reflogActiveIndex < 0) return;
+    reflogVirtualizer.scrollToIndex(reflogActiveIndex, { align: "auto" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reflogActiveIndex]);
+
+  // コミット行の id（aria-activedescendant の参照先）。安定した commit id を使う。
+  function commitRowId(id: string): string {
+    return `history-commit-row-${id}`;
+  }
+  // reflog 行の id。安定した id が無いため、取得時点でのインデックスを使う
+  // （getItemKey と同じ考え方）。
+  function reflogRowId(index: number): string {
+    return `history-reflog-row-${index}`;
+  }
 
   // reflog タブを開いたとき（または repoPath が変わったとき）にデータを取得する。
   useEffect(() => {
@@ -169,6 +270,18 @@ export function HistoryPanel({
   const [authorQuery, setAuthorQuery] = useState("");
   // 検索条件が一つでも入力されているか（Empty State の出し分けに使う）。
   const isSearching = messageQuery.trim() !== "" || authorQuery.trim() !== "";
+
+  // #168: グラフ列を実際に描くか。検索中は一覧が飛び飛びのコミットになり、親が
+  // 一覧に無いためレーンが閉じずに増え続けて意味のないグラフになる（計算量も
+  // レーン数に比例して膨らむ）ので、検索中はグラフを出さない。
+  const graphVisible = showGraph && !isSearching;
+  // #168: コミットのレーン割り当て・接続線を計算する（純粋関数、O(コミット数)）。
+  // 表示するときだけ、commits 配列の参照が変わったとき（ページ追加など）に再計算する。
+  // graphLayout.rows は commits と同じ順序・同じ添字（row.row === commits の index）。
+  const graphLayout = useMemo(
+    () => computeCommitGraphLayout(graphVisible ? commits : []),
+    [graphVisible, commits],
+  );
   const selectedCount = selectedIds.size;
 
   // 最新の onSearch を参照するための ref。デバウンス内でクロージャが陳腐化するのを防ぐ。
@@ -218,11 +331,17 @@ export function HistoryPanel({
         {/* コミットタブ専用のコントロール */}
         {activeTab === "commits" && (
           <>
-            {/* #51 DAG グラフ — グラフ表示の ON/OFF トグル */}
+            {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル */}
             <button
               className={`btn btn-small${showGraph ? " active" : ""}`}
               onClick={() => setShowGraph((v) => !v)}
-              title={showGraph ? "グラフを非表示にする" : "ブランチの分岐・マージをグラフで表示する"}
+              title={
+                showGraph && isSearching
+                  ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
+                  : showGraph
+                    ? "グラフ列を非表示にする"
+                    : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+              }
               aria-pressed={showGraph}
             >
               {showGraph ? "グラフ 非表示" : "グラフ 表示"}
@@ -276,11 +395,6 @@ export function HistoryPanel({
             />
           </div>
 
-          {/* #51 DAG グラフ — ON のとき CommitGraph を表示する */}
-          {showGraph && commits.length > 0 && (
-            <CommitGraph commits={commits} />
-          )}
-
           {commits.length === 0 ? (
             isSearching ? (
               <EmptyState
@@ -298,17 +412,66 @@ export function HistoryPanel({
             )
           ) : (
             <>
-              <ul className="commits">
-                {commits.map((c, idx) => {
+              {/* #271: 仮想スクロール — このラッパーが実際のスクロール領域。
+                  中の <ul> は全行分の高さを確保するダミーの箱で、行は絶対配置で
+                  必要な分だけ描画する。
+                  #272: 矢印キーの行ナビゲーション — aria-activedescendant
+                  パターン。フォーカスはこのコンテナ自体に置き、現在行は
+                  aria-activedescendant で示す（仮想化下でも画面外の行に
+                  直接フォーカスを移す必要が無い）。 */}
+              <div
+                className="commits-scroll"
+                ref={commitsScrollRef}
+                role="listbox"
+                aria-label="コミット一覧"
+                tabIndex={commits.length > 0 ? 0 : -1}
+                aria-activedescendant={
+                  commitsActiveIndex >= 0 ? commitRowId(commits[commitsActiveIndex].id) : undefined
+                }
+                onKeyDown={onCommitsKeyDown}
+                onFocus={() => setCommitsListFocused(true)}
+                onBlur={() => setCommitsListFocused(false)}
+              >
+                <ul
+                  className="commits"
+                  style={{ height: commitsVirtualizer.getTotalSize(), position: "relative" }}
+                >
+                {commitsVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const idx = virtualRow.index;
+                  const c = commits[idx];
                   const isHead = idx === 0;
+                  const isLast = idx === commits.length - 1;
                   const palette = authorPalette(c.author_name);
                   const initials = authorInitials(c.author_name);
                   const isCompareBase = compareBaseId === c.id;
+                  const graphRow = graphLayout.rows[idx];
+                  const isActive = idx === commitsActiveIndex;
                   return (
                     <li
-                      key={c.id}
-                      className={`commit-row${isCompareBase ? " compare-base" : ""}`}
+                      key={virtualRow.key}
+                      ref={commitsVirtualizer.measureElement}
+                      data-index={idx}
+                      id={commitRowId(c.id)}
+                      role="option"
+                      aria-selected={selectedIds.has(c.id)}
+                      className={`commit-row${isCompareBase ? " compare-base" : ""}${isLast ? " commit-row-last" : ""}${isActive && commitsListFocused ? " list-row-active" : ""}`}
+                      // #272: マウスでこの行を操作したときも、以後の矢印キー
+                      // ナビゲーションがこの行から続くようにする。
+                      onMouseDown={() => setCommitsActiveIndex(idx)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
                     >
+                      {/* #168 DAG グラフ列 — ON のとき、このコミットが属するレーンと
+                          親コミットへの接続線を行の左端に表示する。 */}
+                      {graphVisible && graphRow && (
+                        <CommitGraphCell row={graphRow} laneCount={graphLayout.laneCount} />
+                      )}
+
                       {/* リベース対象の選択チェックボックス */}
                       <input
                         type="checkbox"
@@ -368,14 +531,14 @@ export function HistoryPanel({
                           {isCompareBase ? "基準" : "比較"}
                         </button>
                         <button
-                          className="link commit-cherry-pick-btn"
+                          className={`link commit-cherry-pick-btn ${cherryPickRiskClass}`}
                           title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
                           onClick={() => onCherryPick(c)}
                         >
                           コピー
                         </button>
                         <button
-                          className="link danger commit-reset-btn"
+                          className={`link commit-reset-btn ${resetRiskClass}`}
                           title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
                           onClick={() => onReset(c)}
                         >
@@ -385,7 +548,8 @@ export function HistoryPanel({
                     </li>
                   );
                 })}
-              </ul>
+                </ul>
+              </div>
               {hasMore && (
                 <div className="load-more">
                   <button
@@ -429,44 +593,87 @@ export function HistoryPanel({
             />
           )}
           {!reflogLoading && !reflogError && reflogEntries.length > 0 && (
-            <ul className="reflog-list">
-              {reflogEntries.map((entry, idx) => (
-                <li key={idx} className="reflog-row">
-                  {/* 操作種別バッジ */}
-                  <div className="reflog-kind">{entry.short_message}</div>
-                  {/* 詳細情報 */}
-                  <div className="reflog-body">
-                    <div className="reflog-top">
-                      <code className="reflog-hash">{entry.short_id}</code>
-                      <span
-                        className="reflog-raw-message"
-                        title={entry.message}
+            // #271: 仮想スクロール — commits と同じ方式（絶対配置 + measureElement）。
+            // #272: 矢印キーの行ナビゲーション（aria-activedescendant）。
+            // reflog の「戻す」は reset --hard で破壊的なので、この一覧では
+            // Enter/Space に主操作を割り当てない（useListNav に onActivate を
+            // 渡していない）。↑/↓/Home/End での閲覧のみできる。
+            <div
+              className="reflog-scroll"
+              ref={reflogScrollRef}
+              role="listbox"
+              aria-label="reflog 一覧"
+              tabIndex={reflogEntries.length > 0 ? 0 : -1}
+              aria-activedescendant={
+                reflogActiveIndex >= 0 ? reflogRowId(reflogActiveIndex) : undefined
+              }
+              onKeyDown={onReflogKeyDown}
+              onFocus={() => setReflogListFocused(true)}
+              onBlur={() => setReflogListFocused(false)}
+            >
+              <ul
+                className="reflog-list"
+                style={{ height: reflogVirtualizer.getTotalSize(), position: "relative" }}
+              >
+                {reflogVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const idx = virtualRow.index;
+                  const entry = reflogEntries[idx];
+                  const isActive = idx === reflogActiveIndex;
+                  return (
+                    <li
+                      key={virtualRow.key}
+                      ref={reflogVirtualizer.measureElement}
+                      data-index={idx}
+                      id={reflogRowId(idx)}
+                      role="option"
+                      aria-selected={false}
+                      className={`reflog-row${isActive && reflogListFocused ? " list-row-active" : ""}`}
+                      onMouseDown={() => setReflogActiveIndex(idx)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      {/* 操作種別バッジ */}
+                      <div className="reflog-kind">{entry.short_message}</div>
+                      {/* 詳細情報 */}
+                      <div className="reflog-body">
+                        <div className="reflog-top">
+                          <code className="reflog-hash">{entry.short_id}</code>
+                          <span
+                            className="reflog-raw-message"
+                            title={entry.message}
+                          >
+                            {entry.message.length > 60
+                              ? `${entry.message.slice(0, 60)}…`
+                              : entry.message}
+                          </span>
+                        </div>
+                        <div className="reflog-bottom">
+                          <span
+                            className="meta"
+                            title={new Date(entry.timestamp * 1000).toLocaleString("ja-JP")}
+                          >
+                            {formatRelativeTime(entry.timestamp)}
+                          </span>
+                        </div>
+                      </div>
+                      {/* 「この時点に戻す」ボタン */}
+                      <button
+                        className={`link reflog-reset-btn ${resetRiskClass}`}
+                        title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
+                        onClick={() => onResetTo(entry.new_oid)}
                       >
-                        {entry.message.length > 60
-                          ? `${entry.message.slice(0, 60)}…`
-                          : entry.message}
-                      </span>
-                    </div>
-                    <div className="reflog-bottom">
-                      <span
-                        className="meta"
-                        title={new Date(entry.timestamp * 1000).toLocaleString("ja-JP")}
-                      >
-                        {formatRelativeTime(entry.timestamp)}
-                      </span>
-                    </div>
-                  </div>
-                  {/* 「この時点に戻す」ボタン */}
-                  <button
-                    className="link danger reflog-reset-btn"
-                    title={`コミット ${entry.short_id} の状態まで作業ツリーを戻します（reset --hard）。元に戻せないので注意してください。`}
-                    onClick={() => onResetTo(entry.new_oid)}
-                  >
-                    戻す
-                  </button>
-                </li>
-              ))}
-            </ul>
+                        戻す
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
         </div>
       )}

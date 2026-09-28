@@ -10,7 +10,7 @@
  * そのため window に登録するグローバルショートカット類は、active フラグで
  * アクティブなタブだけが反応するようにする。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
@@ -53,6 +53,8 @@ import {
   TagPanelSkeleton,
 } from "./components/SkeletonPanels";
 import { useDelayedFlag } from "./hooks/useDelayedFlag"; // #171 スケルトンのちらつき防止
+import { useRiskLevels } from "./hooks/useRiskLevels"; // #274 操作トリガーボタンの危険度カラー
+import { riskTriggerClassFor } from "./lib/risk"; // #274 操作トリガーボタンの危険度カラー
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConflictWizard } from "./components/ConflictWizard";
 import { RebaseWizard } from "./components/RebaseWizard";
@@ -267,6 +269,43 @@ export function RepoWorkspace({
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
+
+  // #274 操作トリガーボタンの危険度カラー: guarded() を通る操作群をまとめて
+  // 事前評価し、クリック前からボタン自体で Safe/Caution/Destructive を伝える。
+  // 対象（ブランチ名）に依存しない操作は1件、push・delete_branch はブランチ
+  // ごとに評価する（保護ブランチかどうかで結果が変わるため）。
+  // リスク判定ロジックはここには無く、すべて core の assess_operation の結果。
+  const localBranchNames = branches
+    .filter((b) => !b.is_remote)
+    .map((b) => b.name);
+  const nonHeadLocalBranchNames = branches
+    .filter((b) => !b.is_remote && !b.is_head)
+    .map((b) => b.name);
+  // 状態（作業ツリー・履歴・ブランチ）を再取得するたびに危険度も評価し直す。
+  // 例: コミットを送信すると amend_commit が destructive → caution に変わる。
+  const riskRefreshToken = useMemo(() => ({}), [status, commits, branches]);
+  const riskLevels = useRiskLevels(opened ? repoPath : null, [
+    // 対象非依存（常に同じ判定になる操作）。
+    { op: "discard" },
+    { op: "reset_hard" },
+    { op: "cherry_pick" },
+    { op: "merge" },
+    { op: "switch_branch" },
+    { op: "force_push" },
+    { op: "delete_tag" },
+    { op: "remove_remote" },
+    { op: "stash_apply" },
+    { op: "stash_pop" },
+    { op: "restore_file" },
+    { op: "amend_commit" },
+    { op: "pull" },
+    // 対象（ブランチ）依存: 保護ブランチかどうかで危険度が変わる。
+    ...localBranchNames.map((name) => ({ op: "push" as const, target: name })),
+    ...nonHeadLocalBranchNames.map((name) => ({
+      op: "delete_branch" as const,
+      target: name,
+    })),
+  ], riskRefreshToken);
 
   // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
   const [logFilter, setLogFilter] = useState<LogFilter>({});
@@ -1569,7 +1608,9 @@ export function RepoWorkspace({
         {/* #104 操作説明ツールチップ */}
         <ExplainTooltip op="pull">
           <button
-            className="toolbar-btn"
+            // #274 危険度カラー: pull は常に注意（安全に進められるときだけ取り込むが、
+            // 分岐時は中断する可能性があるため）。
+            className={`toolbar-btn ${riskTriggerClassFor(riskLevels, "pull")}`}
             onClick={doPull}
             disabled={isNetworkBusy}
             title="リモートの変更を取り込みます（安全に進められるときだけ取り込みます）"
@@ -1589,7 +1630,8 @@ export function RepoWorkspace({
         {/* #104 操作説明ツールチップ */}
         <ExplainTooltip op="push">
           <button
-            className="toolbar-btn"
+            // #274 危険度カラー: 保護ブランチ（main/master等）への push だけ注意色になる。
+            className={`toolbar-btn ${riskTriggerClassFor(riskLevels, "push", status?.branch ?? undefined)}`}
             onClick={doPushCurrentBranch}
             disabled={isNetworkBusy || !status?.branch}
             title="現在のブランチをリモートへ送信します [Ctrl+P]"
@@ -1785,6 +1827,7 @@ export function RepoWorkspace({
                     status={status}
                     selected={selectedFile}
                     repoPath={repoPath}
+                    discardRiskClass={riskTriggerClassFor(riskLevels, "discard")}
                     onSelect={selectFile}
                     onStageAll={() => {
                       // stage_all の対象: 未ステージ（追跡済み）+ 未追跡ファイル全て。
@@ -2023,7 +2066,8 @@ export function RepoWorkspace({
               {/* #104 操作説明ツールチップ */}
               <ExplainTooltip op="amend_commit">
                 <button
-                  className="btn btn-small"
+                  // #274 危険度カラー: 直前のコミットが送信(push)済みなら destructive になる。
+                  className={`btn btn-small ${riskTriggerClassFor(riskLevels, "amend_commit")}`}
                   onClick={doAmend}
                   disabled={commits.length === 0}
                   title="直前のコミットを書き換えます。メッセージ欄が空ならメッセージはそのまま、ステージした変更を取り込みます。"
@@ -2088,6 +2132,9 @@ export function RepoWorkspace({
                       () => api.resetHard(repoPath, newOid),
                     )
                   }
+                  // #274 危険度カラー
+                  resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
+                  cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
                 />
               </motion.div>
             )}
@@ -2130,6 +2177,7 @@ export function RepoWorkspace({
                 branches={branches}
                 graph={branchGraph}
                 networkBusy={isNetworkBusy}
+                riskLevels={riskLevels}
                 onCreate={(name) =>
                   void guarded("ブランチを作成", "create_branch", () =>
                     api.createBranch(repoPath, name),
@@ -2215,6 +2263,7 @@ export function RepoWorkspace({
                   canTag={commits.length > 0}
                   onCreate={doCreateTag}
                   onDelete={doDeleteTag}
+                  deleteRiskClass={riskTriggerClassFor(riskLevels, "delete_tag")}
                 />
               </motion.div>
             )}
@@ -2230,6 +2279,7 @@ export function RepoWorkspace({
               onAdd={doAddRemote}
               onSetUrl={doSetRemoteUrl}
               onRemove={doRemoveRemote}
+              removeRiskClass={riskTriggerClassFor(riskLevels, "remove_remote")}
             />
           </div>
           )}
@@ -2262,6 +2312,8 @@ export function RepoWorkspace({
                   onApply={doStashApply}
                   onPop={doStashPop}
                   onLoadDiff={loadStashDiff}
+                  applyRiskClass={riskTriggerClassFor(riskLevels, "stash_apply")}
+                  popRiskClass={riskTriggerClassFor(riskLevels, "stash_pop")}
                 />
               </motion.div>
             )}
@@ -2305,6 +2357,7 @@ export function RepoWorkspace({
               },
             );
           }}
+          restoreRiskClass={riskTriggerClassFor(riskLevels, "restore_file")}
         />
       )}
 
