@@ -166,6 +166,39 @@ export function ImpactPreviewSection({ preview }: { preview: ImpactPreview }) {
         </section>
       );
 
+    case "rebase_plan":
+      return (
+        <section className="affected-files-section" data-testid="impact-preview">
+          <h3>履歴の変更前と変更後</h3>
+          <div className="rebase-compare">
+            <div>
+              <h4>変更前（新しい順）</h4>
+              <CommitList commits={preview.before} />
+            </div>
+            <div>
+              <h4>変更後（新しい順）</h4>
+              <CommitList commits={preview.after} />
+            </div>
+          </div>
+          {preview.dropped.length > 0 && (
+            <>
+              <h4>履歴から消えるコミット（{preview.dropped.length}件）</h4>
+              <CommitList commits={preview.dropped} />
+              <p className="impact-note impact-note-warn">
+                <Icon name="warning" /> これらのコミットの変更内容は、作業ツリーからも消えます。
+                直後なら Undo で元に戻せます。
+              </p>
+            </>
+          )}
+          {preview.published && (
+            <p className="impact-note impact-note-warn">
+              <Icon name="warning" /> すでに公開（push）済みのコミットを含みます。整理すると、
+              次の送信で強制 push が必要になり、共同作業者に影響します。
+            </p>
+          )}
+        </section>
+      );
+
     case "rewritten_commits":
       return (
         <section className="affected-files-section" data-testid="impact-preview">

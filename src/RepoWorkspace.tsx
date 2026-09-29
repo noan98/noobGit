@@ -25,6 +25,7 @@ import {
   type FileChange,
   type ImpactPreview,
   type ImpactRequest,
+  type RebaseStep,
   type FileDiff,
   type Identity,
   type IdentityScope,
@@ -1960,6 +1961,25 @@ export function RepoWorkspace({
     );
   }
 
+  // 並べ替え・削除・reword・squash の混在プラン（古い順）を実行する。guarded を通す。
+  // plan は core が検証し、コンフリクト時は何も変えずに中断する。
+  function doRebasePlan(plan: RebaseStep[]) {
+    setShowRebase(false);
+    void guarded(
+      "コミット履歴の整理（リベース）",
+      "rebase",
+      async () => {
+        await api.rebasePlan(repoPath, plan);
+        clearCommitSelection();
+        showToast("コミット履歴を整理しました。", "success");
+      },
+      undefined,
+      undefined,
+      undefined,
+      { op: "rebase_plan", plan },
+    );
+  }
+
   // reword: 最新コミットのメッセージを書き換える。破壊的なので guarded を通す。
   function doReword(message: string) {
     setShowRebase(false);
@@ -2986,6 +3006,10 @@ export function RepoWorkspace({
           selected={selectedCommits}
           onSquash={doSquash}
           onReword={doReword}
+          onRunPlan={doRebasePlan}
+          loadPlanPreview={(plan) =>
+            api.getImpactPreview(repoPath, { op: "rebase_plan", plan })
+          }
           onCancel={() => setShowRebase(false)}
         />
       )}

@@ -13,7 +13,7 @@ use crate::error::{
 use crate::model::{
     BulkDeleteBranchesOutcome, ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange,
     GitignorePatternCheck, GitignoreSuggestion, MergeOutcome, NetworkProgress,
-    NetworkProgressStage, PullOutcome, SkippedBranch, StashInfo, StashRestoreOutcome,
+    NetworkProgressStage, PullOutcome, RebaseStep, SkippedBranch, StashInfo, StashRestoreOutcome,
     SwitchWithStashOutcome,
 };
 use crate::repo::{current_branch, is_submodule_path, merged_branches, read_gitignore};
@@ -703,6 +703,261 @@ pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
 
     let commit = repo.find_commit(new_oid)?;
     Ok(commit_info(&commit))
+}
+
+/// [`validate_rebase_plan`] が返す、検証済みリベースプランの中身。
+pub(crate) struct ValidatedRebasePlan<'r> {
+    /// 適用前の HEAD コミット。
+    pub head: Commit<'r>,
+    /// 範囲の最古コミットの親（新しい履歴を積む土台）。
+    pub base: Commit<'r>,
+    /// 範囲のコミット（新しい順。先頭が HEAD）。
+    pub range: Vec<Commit<'r>>,
+    /// プランの各ステップ（古い順）に対応するコミット。
+    pub steps: Vec<Commit<'r>>,
+}
+
+/// リベースプランを検証する（何も変更しない）。[`rebase_plan`] と影響プレビューが共有する。
+///
+/// - 空のプラン・不正な oid・重複・全 drop・先頭（または drop の直後）の squash・
+///   空メッセージの reword は [`CoreError::InvalidInput`]。
+/// - HEAD が無い・範囲が HEAD から連続していない（範囲外の oid を含む）・マージコミットや
+///   最初のコミット（ルート）を含む・並びも内容も変わらないプランは [`CoreError::Blocked`]
+///   または [`CoreError::InvalidInput`]（最後のものは InvalidInput）。
+pub(crate) fn validate_rebase_plan<'r>(
+    repo: &'r Repository,
+    plan: &[RebaseStep],
+) -> Result<ValidatedRebasePlan<'r>> {
+    if plan.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "リベースの手順が空です。対象のコミットを選んでください。".to_string(),
+        ));
+    }
+
+    let mut oids = Vec::with_capacity(plan.len());
+    for step in plan {
+        let raw = step.oid();
+        let oid = git2::Oid::from_str(raw.trim())
+            .map_err(|_| CoreError::InvalidInput(format!("コミットを特定できません: {raw}")))?;
+        if oids.contains(&oid) {
+            return Err(CoreError::InvalidInput(format!(
+                "同じコミットが手順に2回含まれています: {raw}"
+            )));
+        }
+        oids.push(oid);
+    }
+
+    // ステップの並びの検証（squash は「直前に残るコミット」が必要）。
+    let mut has_kept = false;
+    for step in plan {
+        match step {
+            RebaseStep::Pick { .. } => has_kept = true,
+            RebaseStep::Reword { message, .. } => {
+                if message.trim().is_empty() {
+                    return Err(CoreError::InvalidInput(
+                        "書き換え後のコミットメッセージを入力してください。".to_string(),
+                    ));
+                }
+                has_kept = true;
+            }
+            RebaseStep::Squash { .. } => {
+                if !has_kept {
+                    return Err(CoreError::InvalidInput(
+                        "まとめる（squash）先のコミットがありません。最初の手順や、削除したコミットの直後はまとめられません。"
+                            .to_string(),
+                    ));
+                }
+            }
+            RebaseStep::Drop { .. } => {}
+        }
+    }
+    if !has_kept {
+        return Err(CoreError::InvalidInput(
+            "すべてのコミットを削除（drop）することはできません。少なくとも1つは残してください。"
+                .to_string(),
+        ));
+    }
+
+    let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、履歴を整理できません。先にコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+
+    // HEAD から plan.len() 個ぶん親をたどり、範囲（新しい順）を作る。
+    let mut range = Vec::with_capacity(plan.len());
+    let mut walker = head.clone();
+    for _ in 0..plan.len() {
+        if walker.parent_count() > 1 {
+            return Err(CoreError::Blocked(
+                "マージコミットを含む範囲は整理できません。".to_string(),
+            ));
+        }
+        if walker.parent_count() == 0 {
+            return Err(CoreError::Blocked(
+                "最初のコミット（ルート）を含む範囲は整理できません。土台になる親のコミットが必要です。"
+                    .to_string(),
+            ));
+        }
+        range.push(walker.clone());
+        walker = walker.parent(0)?;
+    }
+    let base = walker;
+
+    // プランの oid の集合が、HEAD から連続する範囲とちょうど一致すること。
+    let all_in_range = oids.iter().all(|o| range.iter().any(|c| c.id() == *o));
+    if !all_in_range {
+        return Err(CoreError::Blocked(
+            "選んだコミットが HEAD から連続していません。整理できるのは、最新のコミットから続いた範囲だけです。"
+                .to_string(),
+        ));
+    }
+
+    // 何も変わらないプラン（全 pick かつ元の順）は拒否する。
+    let unchanged = plan.iter().all(|s| matches!(s, RebaseStep::Pick { .. }))
+        && oids.iter().eq(range
+            .iter()
+            .rev()
+            .map(|c| c.id())
+            .collect::<Vec<_>>()
+            .iter());
+    if unchanged {
+        return Err(CoreError::InvalidInput(
+            "並べ替え・削除・書き換えなどの変更がありません。".to_string(),
+        ));
+    }
+
+    let mut steps = Vec::with_capacity(oids.len());
+    for oid in &oids {
+        steps.push(repo.find_commit(*oid)?);
+    }
+    Ok(ValidatedRebasePlan {
+        head,
+        base,
+        range,
+        steps,
+    })
+}
+
+/// HEAD から連続するコミットの範囲を、プラン（並べ替え・削除・reword・squash の混在）どおりに作り直す。
+///
+/// `plan` は **古い順（適用する順）**。範囲は HEAD から連続していて、プランの oid の集合と
+/// ちょうど一致すること（検証は [`validate_rebase_plan`]）。マージコミット・最初のコミットを
+/// 含む範囲は [`CoreError::Blocked`]。
+///
+/// 範囲の最古コミットの親を土台に、各コミットの変更をメモリ上の cherry-pick で順に重ねる。
+/// 途中でコンフリクトが起きたら、リポジトリ・インデックス・作業ツリーを**一切変えずに**
+/// [`CoreError::Blocked`] で中断する（コンフリクトを解消しながら続行することは v1 では扱わない）。
+/// ステージ済みの変更があるとき、および未コミットの変更が作り直しの結果と同じファイルに
+/// 触れるときも、何も変えずに Blocked にする（[`cherry_pick`] と同じ方針で、作業ツリーへの反映は
+/// 安全チェックアウト）。author は元コミットを引き継ぎ、committer は現在の identity にする。
+///
+/// 成功時は、元の HEAD への hard reset を undo に記録する。
+pub fn rebase_plan(repo: &Repository, plan: &[RebaseStep]) -> Result<()> {
+    let v = validate_rebase_plan(repo, plan)?;
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "履歴の整理には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    let original_head = v.head.id();
+    let head_tree = v.head.tree()?;
+    let staged = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+    if staged.deltas().len() > 0 {
+        return Err(CoreError::Blocked(
+            "ステージ済みの変更があるため、履歴を整理できません。先にコミットするか退避(stash)してください。"
+                .to_string(),
+        ));
+    }
+
+    // 土台から順に、メモリ上で各コミットの変更を重ねる。ここまでは参照も作業ツリーも触らない。
+    let mut tip: Commit = v.base.clone();
+    let mut tip_is_new = false; // tip が今回作ったコミットか（squash 対象になれるか）
+    for (step, commit) in plan.iter().zip(v.steps.iter()) {
+        if matches!(step, RebaseStep::Drop { .. }) {
+            continue;
+        }
+        let mut merged = repo.cherrypick_commit(commit, &tip, 0, None).map_err(|e| {
+            CoreError::Git(format!(
+                "履歴の整理に失敗しました: {}",
+                describe_git2_error(&e)
+            ))
+        })?;
+        if merged.has_conflicts() {
+            return Err(CoreError::Blocked(format!(
+                "コミット「{}」を積み直すときにコンフリクト（競合）が起きたため、整理できませんでした。状態は元に戻しました。並び順や削除するコミットを変えてお試しください。",
+                first_line(commit.message().unwrap_or(""))
+            )));
+        }
+        let tree = repo.find_tree(merged.write_tree_to(repo)?)?;
+        let new_oid = match step {
+            RebaseStep::Squash { .. } if tip_is_new => {
+                // 直前に作ったコミットへ取り込む（親・author は直前のものを引き継ぐ）。
+                let prev_msg = tip.message().unwrap_or("").trim_end().to_string();
+                let message = format!("{prev_msg}\n\n{}", commit.message().unwrap_or("").trim());
+                let parents: Vec<Commit> = tip.parents().collect();
+                let parent_refs: Vec<&Commit> = parents.iter().collect();
+                repo.commit(None, &tip.author(), &sig, &message, &tree, &parent_refs)?
+            }
+            other => {
+                let message = match other {
+                    RebaseStep::Reword { message, .. } => message.as_str(),
+                    _ => commit.message().unwrap_or(""),
+                };
+                repo.commit(None, &commit.author(), &sig, message, &tree, &[&tip])?
+            }
+        };
+        tip = repo.find_commit(new_oid)?;
+        tip_is_new = true;
+    }
+
+    // 作業ツリー・インデックスを新しい内容へ安全チェックアウトで合わせる。未コミットの変更と
+    // 同じファイルに触れる場合はここで失敗し、何も変えずに中断する（force は使わない）。
+    let new_tree = tip.tree()?;
+    let mut co = CheckoutBuilder::new();
+    repo.checkout_tree(new_tree.as_object(), Some(&mut co))
+        .map_err(|_| {
+            CoreError::Blocked(
+                "未コミットの変更と整理後の内容が同じファイルに触れているため、中断しました。先にコミットか退避(stash)をしてください。"
+                    .to_string(),
+            )
+        })?;
+
+    // 現在のブランチ（detached HEAD なら HEAD 自体）を新しい先端へ向ける。
+    let branch_ref = repo.head().ok().and_then(|h| {
+        if h.is_branch() {
+            h.name().ok().map(|s| s.to_string())
+        } else {
+            None
+        }
+    });
+    match branch_ref {
+        Some(refname) => {
+            repo.reference(&refname, tip.id(), true, "noobgit: rebase plan")?;
+        }
+        None => repo.set_head_detached(tip.id())?,
+    }
+
+    record_undo(
+        repo,
+        UndoEntry {
+            head_at_record: None,
+            op: OperationKind::Rebase,
+            description: format!(
+                "コミット履歴の整理（並べ替え・削除など {} 個）を取り消す",
+                plan.len()
+            ),
+            action: UndoAction::HardResetTo {
+                previous: original_head.to_string(),
+            },
+        },
+    );
+
+    Ok(())
 }
 
 /// 指定パスの、まだコミットしていない変更を捨てる（破棄）。
@@ -6771,6 +7026,281 @@ mod tests {
                 assess(OperationKind::SwitchBranch, &clean_detached).level,
                 RiskLevel::Safe
             );
+        }
+    }
+
+    mod rebase_plan_tests {
+        use super::*;
+        use crate::model::RebaseStep;
+
+        fn pick(o: git2::Oid) -> RebaseStep {
+            RebaseStep::Pick { oid: o.to_string() }
+        }
+        fn drop_(o: git2::Oid) -> RebaseStep {
+            RebaseStep::Drop { oid: o.to_string() }
+        }
+        fn squash(o: git2::Oid) -> RebaseStep {
+            RebaseStep::Squash { oid: o.to_string() }
+        }
+        fn reword(o: git2::Oid, m: &str) -> RebaseStep {
+            RebaseStep::Reword {
+                oid: o.to_string(),
+                message: m.to_string(),
+            }
+        }
+
+        /// c1(base) → c2(b.txt) → c3(c.txt) → c4(d.txt)。互いに独立したファイル。
+        fn four() -> (TestRepo, [git2::Oid; 4]) {
+            let fx = TestRepo::new();
+            let mut ids = Vec::new();
+            for (i, f) in ["a.txt", "b.txt", "c.txt", "d.txt"].iter().enumerate() {
+                fx.write_file(f, &format!("{f}\n"));
+                fx.stage_all();
+                ids.push(fx.commit(&format!("c{}", i + 1)));
+            }
+            (fx, [ids[0], ids[1], ids[2], ids[3]])
+        }
+
+        fn summaries(repo: &Repository) -> Vec<String> {
+            log(repo, 20)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.summary)
+                .collect()
+        }
+
+        #[test]
+        fn reorder_changes_history_and_undo_restores() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            let repo = fx.open();
+            let original = repo.head().unwrap().target().unwrap();
+            // 古い順: c3, c2, c4（c2 と c3 を入れ替え）
+            rebase_plan(&repo, &[pick(c3), pick(c2), pick(c4)]).unwrap();
+            assert_eq!(summaries(&repo), ["c4", "c2", "c3", "c1"]);
+            assert!(fx.path().join("b.txt").exists() && fx.path().join("c.txt").exists());
+            assert!(status(&repo).unwrap().is_clean);
+
+            undo_last(&repo).unwrap();
+            assert_eq!(repo.head().unwrap().target().unwrap(), original);
+            assert_eq!(summaries(&repo), ["c4", "c3", "c2", "c1"]);
+            assert!(status(&repo).unwrap().is_clean);
+        }
+
+        #[test]
+        fn drop_removes_content_from_history_and_worktree() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            let repo = fx.open();
+            let original = repo.head().unwrap().target().unwrap();
+            rebase_plan(&repo, &[pick(c2), drop_(c3), pick(c4)]).unwrap();
+            assert_eq!(summaries(&repo), ["c4", "c2", "c1"]);
+            assert!(!fx.path().join("c.txt").exists(), "drop した内容は消える");
+            assert!(fx.path().join("d.txt").exists());
+            assert!(status(&repo).unwrap().is_clean);
+
+            undo_last(&repo).unwrap();
+            assert_eq!(repo.head().unwrap().target().unwrap(), original);
+            assert!(fx.path().join("c.txt").exists());
+        }
+
+        #[test]
+        fn reorder_drop_reword_squash_mix_in_one_plan() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            let repo = fx.open();
+            let original = repo.head().unwrap().target().unwrap();
+            // 古い順: c4 を reword、c3 を c4 に squash、c2 は drop。
+            rebase_plan(&repo, &[drop_(c2), reword(c4, "先頭へ"), squash(c3)]).unwrap();
+            let logged = summaries(&repo);
+            assert_eq!(logged.len(), 2, "c1 と統合コミットだけ: {logged:?}");
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            let msg = head.message().unwrap();
+            assert!(msg.starts_with("先頭へ") && msg.contains("c3"), "{msg}");
+            assert!(!fx.path().join("b.txt").exists());
+            assert!(fx.path().join("c.txt").exists() && fx.path().join("d.txt").exists());
+            assert!(status(&repo).unwrap().is_clean);
+
+            undo_last(&repo).unwrap();
+            assert_eq!(repo.head().unwrap().target().unwrap(), original);
+        }
+
+        #[test]
+        fn author_is_kept_and_committer_updated() {
+            let (fx, [_c1, c2, c3, _c4]) = four();
+            let repo = fx.open();
+            let a_before = repo.find_commit(c3).unwrap().author().when().seconds();
+            rebase_plan(&repo, &[pick(c3), pick(c2), pick(_c4)]).unwrap();
+            let moved = repo.head().unwrap().peel_to_commit().unwrap();
+            let c3_new = moved.parent(0).unwrap().parent(0).unwrap();
+            assert_eq!(c3_new.summary().unwrap(), Some("c3"));
+            assert_eq!(c3_new.author().when().seconds(), a_before);
+            assert_eq!(c3_new.author().name().unwrap(), "Test User");
+        }
+
+        #[test]
+        fn conflict_aborts_with_everything_untouched() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "0\n");
+            fx.stage_all();
+            fx.commit("c1");
+            fx.write_file("a.txt", "1\n");
+            fx.stage_all();
+            let c2 = fx.commit("c2");
+            fx.write_file("a.txt", "2\n");
+            fx.stage_all();
+            let c3 = fx.commit("c3");
+            // 未ステージの無関係な変更と未追跡ファイルを用意して、それも保たれることを見る。
+            fx.write_file("a.txt", "2\n"); // clean のまま
+            fx.write_file("untracked.txt", "u\n");
+
+            let repo = fx.open();
+            let head_before = repo.head().unwrap().target().unwrap();
+            let index_before = repo.index().unwrap().write_tree().unwrap();
+            let file_before = std::fs::read_to_string(fx.path().join("a.txt")).unwrap();
+
+            // c2 を drop すると c3 が c1 の上で衝突する。
+            let err = rebase_plan(&repo, &[drop_(c2), pick(c3)]).unwrap_err();
+            assert!(matches!(err, CoreError::Blocked(_)), "{err:?}");
+
+            let repo = fx.open();
+            assert_eq!(repo.head().unwrap().target().unwrap(), head_before);
+            assert_eq!(repo.index().unwrap().write_tree().unwrap(), index_before);
+            assert_eq!(
+                std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+                file_before
+            );
+            assert!(fx.path().join("untracked.txt").exists());
+            assert!(repo.state() == git2::RepositoryState::Clean);
+            // 失敗した操作の undo は積まれない。
+            assert!(undo_last(&repo).is_err());
+        }
+
+        #[test]
+        fn invalid_plans_are_rejected() {
+            let (fx, [c1, c2, c3, c4]) = four();
+            let repo = fx.open();
+            let head = repo.head().unwrap().target().unwrap();
+            let is_input = |r: Result<()>| matches!(r, Err(CoreError::InvalidInput(_)));
+            let is_blocked = |r: Result<()>| matches!(r, Err(CoreError::Blocked(_)));
+
+            // 空
+            assert!(is_input(rebase_plan(&repo, &[])));
+            // 全 drop
+            assert!(is_input(rebase_plan(&repo, &[drop_(c3), drop_(c4)])));
+            // 重複
+            assert!(is_input(rebase_plan(&repo, &[pick(c3), pick(c3)])));
+            // 不正な oid
+            assert!(is_input(rebase_plan(
+                &repo,
+                &[RebaseStep::Pick {
+                    oid: "zzz".to_string()
+                }]
+            )));
+            // 先頭が squash / drop の直後の squash
+            assert!(is_input(rebase_plan(&repo, &[squash(c3), pick(c4)])));
+            assert!(is_input(rebase_plan(&repo, &[drop_(c3), squash(c4)])));
+            // 空メッセージの reword
+            assert!(is_input(rebase_plan(&repo, &[reword(c4, "  ")])));
+            // 変更なし（全 pick で元の順）
+            assert!(is_input(rebase_plan(&repo, &[pick(c3), pick(c4)])));
+            // 範囲外（HEAD から連続していない c2 だけ / 存在しない oid）
+            assert!(is_blocked(rebase_plan(&repo, &[pick(c2), drop_(c4)])));
+            assert!(is_blocked(rebase_plan(
+                &repo,
+                &[
+                    RebaseStep::Drop {
+                        oid: "0123456789012345678901234567890123456789".to_string()
+                    },
+                    pick(c4)
+                ]
+            )));
+            // ルートコミットを含む
+            assert!(is_blocked(rebase_plan(
+                &repo,
+                &[pick(c1), pick(c2), drop_(c3), pick(c4)]
+            )));
+            // 何も変わっていない
+            assert_eq!(repo.head().unwrap().target().unwrap(), head);
+            assert!(undo_last(&repo).is_err());
+        }
+
+        #[test]
+        fn merge_commit_in_range_is_blocked() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "0\n");
+            fx.stage_all();
+            fx.commit("base");
+            let repo = fx.open();
+            let base = repo.head().unwrap().peel_to_commit().unwrap();
+            // main 側と side 側にそれぞれ 1 コミットずつ作り、手動でマージコミットを作る。
+            fx.write_file("m.txt", "m\n");
+            fx.stage_all();
+            let main1 = fx.commit("main1");
+            let sig = repo.signature().unwrap();
+            let mut tb = repo.treebuilder(Some(&base.tree().unwrap())).unwrap();
+            let blob = repo.blob(b"s\n").unwrap();
+            tb.insert("s.txt", blob, 0o100644).unwrap();
+            let side_tree = repo.find_tree(tb.write().unwrap()).unwrap();
+            let side = repo
+                .commit(None, &sig, &sig, "side1", &side_tree, &[&base])
+                .unwrap();
+            let main1_c = repo.find_commit(main1).unwrap();
+            let side_c = repo.find_commit(side).unwrap();
+            let mut idx = repo.merge_commits(&main1_c, &side_c, None).unwrap();
+            let mtree = repo.find_tree(idx.write_tree_to(&repo).unwrap()).unwrap();
+            let merge = repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    "merge",
+                    &mtree,
+                    &[&main1_c, &side_c],
+                )
+                .unwrap();
+            let mut co = CheckoutBuilder::new();
+            co.force();
+            repo.checkout_head(Some(&mut co)).unwrap();
+            fx.write_file("z.txt", "z\n");
+            fx.stage_all();
+            let z = fx.commit("z");
+
+            let repo = fx.open();
+            let r = rebase_plan(&repo, &[pick(merge), drop_(z)]);
+            assert!(matches!(r, Err(CoreError::Blocked(_))), "{r:?}");
+        }
+
+        #[test]
+        fn staged_changes_block_without_touching_anything() {
+            let (fx, [_c1, _c2, c3, c4]) = four();
+            fx.write_file("new.txt", "n\n");
+            fx.stage_all();
+            let repo = fx.open();
+            let head = repo.head().unwrap().target().unwrap();
+            let r = rebase_plan(&repo, &[pick(c4), pick(c3)]);
+            assert!(matches!(r, Err(CoreError::Blocked(_))), "{r:?}");
+            assert_eq!(repo.head().unwrap().target().unwrap(), head);
+            assert!(fx.path().join("new.txt").exists());
+        }
+
+        #[test]
+        fn unstaged_change_to_unrelated_file_is_kept() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            fx.write_file("a.txt", "local edit\n");
+            let repo = fx.open();
+            rebase_plan(&repo, &[pick(c2), pick(c4), drop_(c3)]).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+                "local edit\n"
+            );
+        }
+
+        #[test]
+        fn detached_head_is_supported() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            let repo = fx.open();
+            repo.set_head_detached(c4).unwrap();
+            rebase_plan(&repo, &[pick(c3), pick(c2), pick(c4)]).unwrap();
+            assert!(repo.head_detached().unwrap());
+            assert_eq!(summaries(&repo), ["c4", "c2", "c3", "c1"]);
         }
     }
 }

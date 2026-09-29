@@ -284,7 +284,24 @@ export type ImpactPreview =
       overlapping: FileChange[];
     }
   // squash / reword: 書き換わるコミット（新しい順）と公開済みか。
-  | { kind: "rewritten_commits"; commits: CommitInfo[]; published: boolean };
+  | { kind: "rewritten_commits"; commits: CommitInfo[]; published: boolean }
+  // リベースプラン（並べ替え・削除など）: 変更前/後の履歴（新しい順）と消えるコミット。
+  // after の id / short_id は元コミットのもの、summary は reword 反映後。
+  | {
+      kind: "rebase_plan";
+      before: CommitInfo[];
+      after: CommitInfo[];
+      dropped: CommitInfo[];
+      published: boolean;
+    };
+
+// リベースプランの 1 ステップ。core/src/model.rs の RebaseStep と一致させること。
+// プランは古い順（適用する順）。squash は直前に残るステップへ取り込む。
+export type RebaseStep =
+  | { action: "pick"; oid: string }
+  | { action: "drop"; oid: string }
+  | { action: "reword"; oid: string; message: string }
+  | { action: "squash"; oid: string };
 
 // 影響プレビューの計算依頼。core/src/model.rs の ImpactRequest と一致させること。
 export type ImpactRequest =
@@ -295,7 +312,9 @@ export type ImpactRequest =
   | { op: "stash_apply"; index: number }
   | { op: "stash_pop"; index: number }
   // commit_ids が空なら HEAD の 1 件（reword）。
-  | { op: "rebase"; commit_ids: string[] };
+  | { op: "rebase"; commit_ids: string[] }
+  // リベースプラン（古い順）。
+  | { op: "rebase_plan"; plan: RebaseStep[] };
 
 // 「退避して切り替える」（switch_branch_with_stash）の結果。変更は失われない。
 // stashed: 実際に退避したか（変更が無ければ false）。
@@ -592,6 +611,8 @@ export const api = {
     invoke<CommitInfo>("amend_commit", { repoPath, message }),
   squashCommits: (repoPath: string, commitOids: string[], message: string) =>
     invoke<void>("squash_commits", { repoPath, commitOids, message }),
+  rebasePlan: (repoPath: string, plan: RebaseStep[]) =>
+    invoke<void>("rebase_plan", { repoPath, plan }),
   rewordCommit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("reword_commit", { repoPath, message }),
   discardPath: (repoPath: string, path: string) =>
