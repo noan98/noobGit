@@ -93,4 +93,16 @@ describe("ImpactPreviewSection", () => {
     renderPreview({ kind: "rewritten_commits", commits: [commit], published: false });
     expect(screen.queryByText(/プッシュ（送信）済み/)).toBeNull();
   });
+  it("rebase_plan: 変更前後と消えるコミット・公開済み警告を表示する", () => {
+    renderPreview({
+      kind: "rebase_plan",
+      before: [commit],
+      after: [],
+      dropped: [commit],
+      published: true,
+    });
+    expect(screen.getByText("履歴の変更前と変更後")).toBeTruthy();
+    expect(screen.getByText(/履歴から消えるコミット（1件）/)).toBeTruthy();
+    expect(screen.getByText(/公開（push）済み/)).toBeTruthy();
+  });
 });

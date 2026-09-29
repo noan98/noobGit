@@ -228,6 +228,25 @@ export interface UndoEntry {
   head_at_record?: string | null;
 }
 
+// #208 操作アクティビティログ。core の ActivityOutcome（serde tag = "status",
+// content = "message"）のミラー。
+export type ActivityOutcome =
+  | { status: "success" }
+  | { status: "failed"; message: string }
+  | { status: "undone" };
+
+// core の ActivityEntry のミラー。取り消し履歴（UndoEntry）とは別物で、戻せない操作や
+// 失敗した操作も含む読み物としての記録。
+export interface ActivityEntry {
+  // 記録した時刻（UNIX 秒）。
+  timestamp: number;
+  // 取り消し（undone）のときは「取り消した操作」の種別。
+  op: OperationKind;
+  // 人が読む 1 行の説明（core が生成）。
+  summary: string;
+  outcome: ActivityOutcome;
+}
+
 // #201 undo エントリを今のリポジトリ状態で適用してよいかの検証結果。
 // core の UndoApplicability（serde tag = "status"）のミラー。
 export type UndoApplicability =
@@ -289,7 +308,24 @@ export type ImpactPreview =
       overlapping: FileChange[];
     }
   // squash / reword: 書き換わるコミット（新しい順）と公開済みか。
-  | { kind: "rewritten_commits"; commits: CommitInfo[]; published: boolean };
+  | { kind: "rewritten_commits"; commits: CommitInfo[]; published: boolean }
+  // リベースプラン（並べ替え・削除など）: 変更前/後の履歴（新しい順）と消えるコミット。
+  // after の id / short_id は元コミットのもの、summary は reword 反映後。
+  | {
+      kind: "rebase_plan";
+      before: CommitInfo[];
+      after: CommitInfo[];
+      dropped: CommitInfo[];
+      published: boolean;
+    };
+
+// リベースプランの 1 ステップ。core/src/model.rs の RebaseStep と一致させること。
+// プランは古い順（適用する順）。squash は直前に残るステップへ取り込む。
+export type RebaseStep =
+  | { action: "pick"; oid: string }
+  | { action: "drop"; oid: string }
+  | { action: "reword"; oid: string; message: string }
+  | { action: "squash"; oid: string };
 
 // 影響プレビューの計算依頼。core/src/model.rs の ImpactRequest と一致させること。
 export type ImpactRequest =
@@ -300,7 +336,9 @@ export type ImpactRequest =
   | { op: "stash_apply"; index: number }
   | { op: "stash_pop"; index: number }
   // commit_ids が空なら HEAD の 1 件（reword）。
-  | { op: "rebase"; commit_ids: string[] };
+  | { op: "rebase"; commit_ids: string[] }
+  // リベースプラン（古い順）。
+  | { op: "rebase_plan"; plan: RebaseStep[] };
 
 // 「退避して切り替える」（switch_branch_with_stash）の結果。変更は失われない。
 // stashed: 実際に退避したか（変更が無ければ false）。
@@ -608,6 +646,8 @@ export const api = {
     invoke<CommitInfo>("amend_commit", { repoPath, message }),
   squashCommits: (repoPath: string, commitOids: string[], message: string) =>
     invoke<void>("squash_commits", { repoPath, commitOids, message }),
+  rebasePlan: (repoPath: string, plan: RebaseStep[]) =>
+    invoke<void>("rebase_plan", { repoPath, plan }),
   rewordCommit: (repoPath: string, message: string) =>
     invoke<CommitInfo>("reword_commit", { repoPath, message }),
   discardPath: (repoPath: string, path: string) =>
@@ -767,6 +807,11 @@ export const api = {
   // 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
   getUndoJournal: (repoPath: string) =>
     invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
+  // #208 操作アクティビティログ（古い順）。
+  getActivityLog: (repoPath: string) =>
+    invoke<ActivityEntry[]>("get_activity_log", { repoPath }),
+  clearActivityLog: (repoPath: string) =>
+    invoke<void>("clear_activity_log", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
   // confirmRisky: 履歴が進んでいて新しい作業も巻き戻る場合に、確認済みとして進める（#201）。

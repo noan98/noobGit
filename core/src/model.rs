@@ -312,6 +312,48 @@ pub enum ImpactPreview {
         /// 直前のコミットがすでに公開（push）済みか。true なら強い警告を出す。
         published: bool,
     },
+    /// リベースプラン（並べ替え・削除・reword・squash の混在）: 変更前と変更後の履歴。
+    RebasePlan {
+        /// 変更前の履歴（新しい順）。対象範囲のコミットだけ。
+        before: Vec<CommitInfo>,
+        /// 実行後の履歴の予想（新しい順）。まだ作られていないコミットなので、`id` / `short_id` は
+        /// 元コミットのもの、`summary` は reword・squash 反映後の 1 行目。
+        after: Vec<CommitInfo>,
+        /// 履歴から消える（drop する）コミット。
+        dropped: Vec<CommitInfo>,
+        /// 直前のコミットがすでに公開（push）済みか。true なら強い警告を出す。
+        published: bool,
+    },
+}
+
+/// リベースプラン（[`crate::ops::rebase_plan`]）の 1 ステップ。
+///
+/// プランは **古い順（適用する順）** に並べる。`git rebase -i` の todo リストと同じ向き。
+/// 対象は HEAD から連続するコミットの範囲で、プランに含まれる oid の集合がその範囲と
+/// ちょうど一致しなければならない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RebaseStep {
+    /// そのまま採用する。
+    Pick { oid: String },
+    /// 履歴から取り除く（このコミットの変更は消える）。
+    Drop { oid: String },
+    /// 採用しつつメッセージを書き換える。
+    Reword { oid: String, message: String },
+    /// 直前の（drop されていない）ステップのコミットに取り込む。メッセージは両者を連結する。
+    Squash { oid: String },
+}
+
+impl RebaseStep {
+    /// このステップが対象とするコミットの oid（文字列）。
+    pub fn oid(&self) -> &str {
+        match self {
+            RebaseStep::Pick { oid }
+            | RebaseStep::Drop { oid }
+            | RebaseStep::Reword { oid, .. }
+            | RebaseStep::Squash { oid } => oid,
+        }
+    }
 }
 
 /// 影響プレビューの計算依頼。`op` で操作を判別し、操作ごとの対象を運ぶ。
@@ -338,6 +380,10 @@ pub enum ImpactRequest {
     /// squash / reword。`commit_ids` が空なら HEAD の 1 件だけ（reword）。
     Rebase {
         commit_ids: Vec<String>,
+    },
+    /// リベースプラン（並べ替え・削除など）。プランは古い順。
+    RebasePlan {
+        plan: Vec<RebaseStep>,
     },
 }
 

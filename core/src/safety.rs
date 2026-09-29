@@ -468,7 +468,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             level: RiskLevel::Destructive,
             reasons: {
                 let mut r = vec![
-                    "コミットの履歴を整理して作り直します（リベース: まとめる/メッセージ書き換え）。"
+                    "コミットの履歴を整理して作り直します（リベース: まとめる・メッセージ書き換え・並べ替え・削除）。"
                         .to_string(),
                 ];
                 if ctx.head_published {

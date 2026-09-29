@@ -37,6 +37,7 @@ import {
   IconChecklist,
   IconChevronDown,
   IconChevronRight,
+  IconChevronUp,
   IconCircleCheck,
   IconClock,
   IconCloud,
@@ -139,6 +140,8 @@ const ICONS = {
   grip: IconGripVertical,
   /** 折りたたみの開閉（従来の ▾ / ▸）。 */
   chevronDown: IconChevronDown,
+  moveUp: IconChevronUp,
+  moveDown: IconChevronDown,
   chevronRight: IconChevronRight,
   /** 現在地の点（従来の ●）。 */
   current: IconPointFilled,
