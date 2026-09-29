@@ -31,6 +31,7 @@ import {
   type LogFilter,
   type MergedBranchInfo,
   type NetworkErrorKind,
+  type LocalErrorExplanation,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -65,6 +66,7 @@ import { ConflictWizard } from "./components/ConflictWizard";
 import { StashPopFollowUp } from "./components/StashPopFollowUp";
 import { RebaseWizard } from "./components/RebaseWizard";
 import { BisectWizard } from "./components/BisectWizard"; // #184 Bisect
+import { DetachedHeadBanner } from "./components/DetachedHeadBanner"; // #197 detached HEAD
 import {
   DiffPanel,
   type DiffSelection,
@@ -86,6 +88,7 @@ import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイム�
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette"; // #105 コマンドパレット
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
+import { LocalErrorDialog } from "./components/LocalErrorDialog"; // #204 ローカルエラー診断
 import { SensitiveWarningDialog } from "./components/SensitiveWarningDialog"; // #69 機密ファイル検出
 import { LfsGuideDialog } from "./components/LfsGuideDialog"; // #81 LFS ガイド
 import { NetworkProgressBar } from "./components/NetworkProgressBar"; // #167 進捗フィードバック
@@ -238,6 +241,9 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   bisect_reset: FULL_REFRESH,
   // クローンはタブの外（WelcomeScreen）で完結する操作で、このタブの状態には影響しない。
   clone: {},
+  // #197 detached HEAD の救出は HEAD がブランチへ移るので status・ブランチ関係を取り直す。
+  // undo も積まれる。
+  rescue_detached_head: { status: true, branches: true, log: true, undo: true },
 };
 
 interface Guard {
@@ -546,6 +552,34 @@ export function RepoWorkspace({
     kind: NetworkErrorKind;
     raw: string;
   } | null>(null);
+
+  // #204 ローカルエラー診断: ロック競合・権限・リポジトリ破損・ディスク満杯・その他の
+  // 解説と生メッセージ。null のときはダイアログ非表示。
+  const [localErrorInfo, setLocalErrorInfo] = useState<{
+    explanation: LocalErrorExplanation;
+    raw: string;
+  } | null>(null);
+
+  // #204 エラーバナーに出そうとした文字列が、noobGit が日本語に包んだローカルエラー
+  // なら、バナーの代わりに解決手順つきのダイアログで案内する（英語の生メッセージだけが
+  // 出る状態を避ける）。解説を取れなければ従来どおりバナーのまま。
+  useEffect(() => {
+    if (!error) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const explanation = await api.explainLocalError(error);
+        if (cancelled || !explanation) return;
+        setLocalErrorInfo({ explanation, raw: error });
+        setError(null);
+      } catch {
+        // 解説の取得に失敗してもバナーはそのまま表示される。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [error]);
 
   // #69 機密ファイル検出: 機密ファイルが見つかった場合の警告と、「それでもステージする」
   // ときに呼ぶ続行コールバックを保持する。null のときはダイアログ非表示。
@@ -1034,6 +1068,13 @@ export function RepoWorkspace({
           // #126 ネットワーク診断: ネットワーク操作の失敗はダイアログで種別ごとに案内する。
           // バナーは出さず、ダイアログだけ表示する（二重表示を避ける）。
           try {
+            // #204 ネットワーク操作でも、ローカル起因（ロック競合・権限・ディスク満杯など）の
+            // 失敗はローカル用の解決手順を優先する。
+            const local = await api.explainLocalError(msg);
+            if (local && local.kind !== "other") {
+              setLocalErrorInfo({ explanation: local, raw: msg });
+              return;
+            }
             const kind = await api.classifyNetworkError(msg);
             setNetworkErrorInfo({ kind, raw: msg });
           } catch {
@@ -1119,12 +1160,34 @@ export function RepoWorkspace({
       setShowIdentity(true);
       return;
     }
-    void exec(
+    const run = async () => {
+      await api.commit(repoPath, msg);
+      setCommitMsg("");
+    };
+    // #197 detached HEAD 中のコミットはブランチに属さず見失いやすいので、警告を挟む。
+    if (status?.head_detached) {
+      void guarded("コミット（detached HEAD）", "commit", async () => {
+        await run();
+        showToast("コミットしました。", "success");
+      });
+      return;
+    }
+    void exec(run, {
+      successMsg: "コミットしました。",
+      refresh: REFRESH_BY_OP.commit,
+    });
+  }
+
+  // #197 detached HEAD: 今の位置に新しいブランチを作って安全にする（Safe 判定なので直接実行）。
+  function doRescueDetachedHead(name: string) {
+    void guarded(
+      "ここから新しいブランチを作る",
+      "rescue_detached_head",
       async () => {
-        await api.commit(repoPath, msg);
-        setCommitMsg("");
+        await api.rescueDetachedHead(repoPath, name);
+        showToast(`ブランチ「${name}」を作って安全にしました。`, "success");
       },
-      { successMsg: "コミットしました。", refresh: REFRESH_BY_OP.commit },
+      name,
     );
   }
 
@@ -2256,6 +2319,22 @@ export function RepoWorkspace({
         </div>
       )}
 
+      {/* #197 detached HEAD: 状態の説明と復帰アクション。Bisect 中は detached が正常なので出さない */}
+      {status?.head_detached && !bisectStatus && (
+        <DetachedHeadBanner
+          info={status.detached_info}
+          onRescue={doRescueDetachedHead}
+          onReturn={(name) =>
+            void guarded(
+              `ブランチ「${name}」へ戻る`,
+              "switch_branch",
+              () => api.switchBranch(repoPath, name),
+              name,
+            )
+          }
+        />
+      )}
+
       {/* #184 Bisect: セッション進行中であることをタブ上で常に分かるようにするバナー。
           ウィザードを閉じていてもここから再度開ける。 */}
       {bisectStatus && !showBisectWizard && (
@@ -2963,6 +3042,15 @@ export function RepoWorkspace({
           kind={networkErrorInfo.kind}
           raw={networkErrorInfo.raw}
           onClose={() => setNetworkErrorInfo(null)}
+        />
+      )}
+
+      {/* #204 ローカルエラー診断: ロック競合・権限・破損・ディスク満杯・その他の解決手順ダイアログ */}
+      {localErrorInfo && (
+        <LocalErrorDialog
+          explanation={localErrorInfo.explanation}
+          raw={localErrorInfo.raw}
+          onClose={() => setLocalErrorInfo(null)}
         />
       )}
 

@@ -37,6 +37,8 @@ pub enum OperationKind {
     BisectStart,
     BisectReset,
     Clone,
+    /// detached HEAD 中のコミットを、新しいブランチを作って安全にする。
+    RescueDetachedHead,
 }
 
 /// 操作の危険度。フロントの表示色・確認の強さに対応させる。
@@ -102,6 +104,10 @@ pub struct SafetyContext {
     pub protected_branches: Vec<String>,
     /// 直前のコミット（HEAD）がすでにリモートへ送信（公開）済みか。amend の危険度判定に使う。
     pub head_published: bool,
+    /// HEAD が detached（どのブランチも指していない）か。コミット・ブランチ切替の危険度に使う。
+    pub head_detached: bool,
+    /// detached HEAD 上で、どのブランチ・タグにも属していないコミットの数。
+    pub detached_unsaved_commits: usize,
 }
 
 /// 操作のリスク評価結果。確認ダイアログの内容に使う。
@@ -146,8 +152,28 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             RiskAssessment::safe("コミット対象から外すだけで、ファイルの中身は変わりません。")
         }
         OperationKind::Commit => {
-            RiskAssessment::safe("変更の記録を1つ作るだけで、あとから取り消せます。")
+            if ctx.head_detached {
+                // detached HEAD 中のコミットはブランチに属さず、切替で見失いやすい（典型事故）。
+                RiskAssessment {
+                    level: RiskLevel::Caution,
+                    reasons: vec![
+                        "いまは「detached HEAD」（どのブランチも指していない見学モード）です。このコミットはどのブランチにも属しません。".to_string(),
+                        "このままブランチを切り替えると、このコミットを見失いやすくなります。".to_string(),
+                    ],
+                    reversible: true,
+                    permanent_data_loss: false,
+                    recommended_alternative: Some(
+                        "先に「ここから新しいブランチを作る」で安全にしてからコミットするのがおすすめです。".to_string(),
+                    ),
+                }
+            } else {
+                RiskAssessment::safe("変更の記録を1つ作るだけで、あとから取り消せます。")
+            }
         }
+
+        OperationKind::RescueDetachedHead => RiskAssessment::safe(
+            "いまの位置に新しいブランチ名を付けて、そこに乗るだけです。ファイルの中身やコミットは一切変わらず、あとから取り消せます。",
+        ),
 
         OperationKind::AmendCommit => {
             if ctx.head_published {
@@ -238,7 +264,26 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
         }
 
         OperationKind::SwitchBranch => {
-            if ctx.working_dir_dirty {
+            if ctx.head_detached && ctx.detached_unsaved_commits > 0 {
+                let mut reasons = vec![format!(
+                    "いまの detached HEAD には、どのブランチにも属していないコミットが {} 件あります。切り替えると、それらを見失いやすくなります（一覧からは消えます）。",
+                    ctx.detached_unsaved_commits
+                )];
+                if ctx.working_dir_dirty {
+                    reasons.push(
+                        "未コミットの変更もあるため、切り替えに失敗することがあります。".to_string(),
+                    );
+                }
+                RiskAssessment {
+                    level: RiskLevel::Caution,
+                    reasons,
+                    reversible: true,
+                    permanent_data_loss: false,
+                    recommended_alternative: Some(
+                        "先に「ここから新しいブランチを作る」でコミットを安全にしてから切り替えましょう。".to_string(),
+                    ),
+                }
+            } else if ctx.working_dir_dirty {
                 RiskAssessment {
                     level: RiskLevel::Caution,
                     reasons: vec![
@@ -1078,6 +1123,7 @@ mod tests {
             OperationKind::BisectStart,
             OperationKind::BisectReset,
             OperationKind::Clone,
+            OperationKind::RescueDetachedHead,
         ] {
             assert!(!assess(op, &ctx).reasons.is_empty());
         }

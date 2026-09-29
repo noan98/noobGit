@@ -29,6 +29,17 @@ export interface RepoStatus {
   // #203 サブモジュール検出: リポジトリが .gitmodules を含むか。
   // true のとき noobGit は中身を操作できないことを説明するバナーを表示する。
   has_submodules: boolean;
+  // #197 detached HEAD: HEAD がブランチを指さずコミットを直接指しているか。
+  head_detached: boolean;
+  // detached のときだけ非 null。復帰ガイド（バナー）用の補足情報。
+  detached_info: DetachedHeadInfo | null;
+}
+
+export interface DetachedHeadInfo {
+  // 直前までいたブランチ名（reflog からの推定）。特定できなければ null。
+  previous_branch: string | null;
+  // どのブランチ・タグ・リモート追跡ブランチにも属していないコミット数。
+  unsaved_commits: number;
 }
 
 export interface BranchInfo {
@@ -185,7 +196,8 @@ export type OperationKind =
   | "restore_file"
   | "bisect_start"
   | "bisect_reset"
-  | "clone";
+  | "clone"
+  | "rescue_detached_head";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -292,7 +304,7 @@ export type PullOutcome =
 // #167 進捗フィードバック: fetch / pull / push の通信段階（core の
 // NetworkProgressStage に対応）。この型は check_type_contract.py の自動検証
 // 対象ではない（対象は OperationKind / RiskLevel / ChangeKind / DiffLineKind /
-// NetworkErrorKind のみ）ため、core/src/model.rs の enum を変更したら
+// NetworkErrorKind / LocalErrorKind のみ）ため、core/src/model.rs の enum を変更したら
 // ここも必ず手動で同期すること。
 export type NetworkProgressStage =
   | "connecting"
@@ -343,6 +355,25 @@ export type NetworkErrorKind =
   | "non_fast_forward"
   | "timeout"
   | "other";
+
+// ローカル操作（ステージ・コミット・チェックアウトなど）のエラー種別
+// （core の LocalErrorKind に対応。#204）。snake_case のリテラルで届く。
+export type LocalErrorKind =
+  | "lock_busy"
+  | "permission_denied"
+  | "repo_corrupted"
+  | "disk_full"
+  | "other";
+
+// ローカル操作エラーの初心者向け解説（core の LocalErrorExplanation に対応。#204）。
+// steps は上から順に試す解決手順。
+export interface LocalErrorExplanation {
+  kind: LocalErrorKind;
+  title: string;
+  what: string;
+  why: string;
+  steps: string[];
+}
 
 export interface Identity {
   name: string | null;
@@ -558,6 +589,9 @@ export const api = {
 
   createBranch: (repoPath: string, name: string) =>
     invoke<void>("create_branch", { repoPath, name }),
+  // #197 detached HEAD: 今の位置に新しいブランチを作って乗り換え、コミットを安全にする。
+  rescueDetachedHead: (repoPath: string, name: string) =>
+    invoke<void>("rescue_detached_head", { repoPath, name }),
   switchBranch: (repoPath: string, name: string) =>
     invoke<void>("switch_branch", { repoPath, name }),
   switchBranchWithStash: (repoPath: string, name: string) =>
@@ -676,6 +710,12 @@ export const api = {
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。
   classifyNetworkError: (message: string) =>
     invoke<NetworkErrorKind>("classify_network_error_cmd", { message }),
+
+  // #204 ローカルエラーの日本語化: 操作が reject されたときの文字列を渡すと、
+  // noobGit が日本語に包んだローカルエラー（ロック競合・権限・破損・ディスク満杯・
+  // その他）なら解説を返す。それ以外（ネットワーク系など）は null。
+  explainLocalError: (message: string) =>
+    invoke<LocalErrorExplanation | null>("explain_local_error_cmd", { message }),
 
   // #69 機密ファイル検出: 指定パスが機密性の高いファイルかどうかを検出する。
   // 機密ファイルが含まれる場合は SensitiveWarning の配列を返す（空なら問題なし）。
