@@ -208,4 +208,18 @@ describe("api ラッパー", () => {
       });
     });
   });
+
+  describe("ファイルシステム監視 (#199)", () => {
+    it("watch_repo / unwatch_repo を repoPath 付きで呼ぶこと", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      await api.watchRepo("/path/to/repo");
+      expect(mockInvoke).toHaveBeenCalledWith("watch_repo", {
+        repoPath: "/path/to/repo",
+      });
+      await api.unwatchRepo("/path/to/repo");
+      expect(mockInvoke).toHaveBeenCalledWith("unwatch_repo", {
+        repoPath: "/path/to/repo",
+      });
+    });
+  });
 });
