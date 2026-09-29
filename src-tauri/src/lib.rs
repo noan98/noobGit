@@ -17,7 +17,7 @@ use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, ImpactPreview, ImpactRequest, LfsCandidate, LogPage, MergeOutcome,
-    MergedBranchInfo, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    MergedBranchInfo, NetworkProgress, PullOutcome, RefLabel, ReflogEntry, RemoteInfo, RepoStatus,
     SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
@@ -738,6 +738,15 @@ fn list_tags(repo_path: String) -> Result<Vec<TagInfo>, String> {
     repo::list_tags(&r).map_err(|e| e.to_string())
 }
 
+/// コミット id → そのコミットを指すブランチ名・タグ・HEAD の一覧（履歴グラフのラベル用, #320）。
+#[tauri::command(async)]
+fn get_commit_refs(
+    repo_path: String,
+) -> Result<std::collections::HashMap<String, Vec<RefLabel>>, String> {
+    let r = open(&repo_path)?;
+    repo::commit_refs(&r).map_err(|e| e.to_string())
+}
+
 /// コミットに目印（タグ）を付ける。`target` 省略時は HEAD、`message` 省略時は軽量タグ。
 #[tauri::command(async)]
 fn create_tag(
@@ -1039,6 +1048,7 @@ pub fn run() {
             revert_commit,
             merge_branch,
             list_tags,
+            get_commit_refs,
             create_tag,
             delete_tag,
             list_remotes,
