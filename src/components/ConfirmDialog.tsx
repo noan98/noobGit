@@ -3,12 +3,12 @@ import { Box } from "@chakra-ui/react";
 import { motion, useAnimation } from "framer-motion";
 import type {
   Explanation,
-  FileChange,
+  ImpactPreview,
   RiskAssessment,
   RiskLevel,
 } from "../api";
 import { fadeIn, shakeXKeyframes, spring, transitions } from "../theme/motion";
-import { StatusBadge } from "./StatusBadge";
+import { ImpactPreviewSection } from "./ImpactPreviewSection";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { Icon } from "./Icon";
 
@@ -31,8 +31,10 @@ interface Props {
   explanation: Explanation;
   onConfirm: () => void;
   onCancel: () => void;
-  // reset_hard 時のみ渡す。staged + unstaged の変更ファイル一覧。
-  affectedFiles?: FileChange[];
+  // #196 操作別の影響プレビュー（reset_hard の失われる変更、discard の差分、
+  // delete_branch / force push / squash のコミット一覧など）。計算に失敗した
+  // 場合や対象外の操作では渡さない（プレビューなしで通常どおり確認できる）。
+  preview?: ImpactPreview;
   // #269 マージ済みブランチの一括削除時のみ渡す。削除対象のブランチ名一覧。
   affectedBranches?: string[];
 }
@@ -43,7 +45,7 @@ export function ConfirmDialog({
   explanation,
   onConfirm,
   onCancel,
-  affectedFiles,
+  preview,
   affectedBranches,
 }: Props) {
   const tone = levelTone[assessment.level];
@@ -158,26 +160,8 @@ export function ConfirmDialog({
           </section>
         )}
 
-        {/* reset_hard 時のみ表示: 失われる変更ファイルの一覧 */}
-        {affectedFiles !== undefined && (
-          <section className="affected-files-section">
-            <h3>失われる変更</h3>
-            {affectedFiles.length === 0 ? (
-              <p className="affected-files-clean">
-                変更なし — 安全にリセットできます
-              </p>
-            ) : (
-              <div className="affected-files-list">
-                {affectedFiles.map((f) => (
-                  <div key={f.path} className="affected-file">
-                    <StatusBadge kind={f.kind} />
-                    <span className="affected-file-path">{f.path}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
+        {/* #196 操作別の影響プレビュー */}
+        {preview && <ImpactPreviewSection preview={preview} />}
 
         <div className="flags">
           <span className={assessment.reversible ? "flag-ok" : "flag-warn"}>

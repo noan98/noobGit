@@ -622,7 +622,7 @@ impl LogFilter {
 /// `git2::Commit` から [`CommitInfo`] を組み立てる。
 ///
 /// `log_filtered` / `file_log` / カーソルページング（[`LogCursor`]）で共通して使う。
-fn commit_info_from(oid: git2::Oid, commit: &git2::Commit) -> CommitInfo {
+pub(crate) fn commit_info_from(oid: git2::Oid, commit: &git2::Commit) -> CommitInfo {
     let author = commit.author();
     CommitInfo {
         id: oid.to_string(),

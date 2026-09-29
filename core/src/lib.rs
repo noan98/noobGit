@@ -15,6 +15,7 @@ pub mod bisect;
 pub mod error;
 pub mod explain;
 pub mod identity;
+pub mod impact;
 pub mod model;
 pub mod ops;
 pub mod repo;
