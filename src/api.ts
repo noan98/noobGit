@@ -668,4 +668,9 @@ export const api = {
   // 再起動後の復元に使う読み取り専用コマンド。
   bisectStatus: (repoPath: string) =>
     invoke<BisectStatus | null>("bisect_status", { repoPath }),
+  // #199 ファイルシステム監視の開始。外部での変更を検知すると Tauri イベント
+  // `repo-changed`（ペイロード: { repo_path }）が届く。
+  watchRepo: (repoPath: string) => invoke<void>("watch_repo", { repoPath }),
+  // #199 ファイルシステム監視の停止（タブを閉じたとき）。
+  unwatchRepo: (repoPath: string) => invoke<void>("unwatch_repo", { repoPath }),
 };
