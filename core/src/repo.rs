@@ -667,7 +667,12 @@ pub fn log_filtered(
 
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
-    revwalk.set_sorting(git2::Sort::TIME)?;
+    // TOPOLOGICAL を併用して「子は必ず親より先」を保証する。TIME だけだと、
+    // 時計ずれ・rebase・GIT_COMMITTER_DATE 指定で親の日時が子より新しい履歴のとき
+    // 親が先に並び、履歴グラフ（`src/lib/commitGraph.ts`）が誤表示になる（Issue #306）。
+    // 日時が矛盾しない通常の履歴では、従来どおり新しい順のまま変わらない。
+    // `LogCursor::open` も同じ指定にして、skip 版とカーソル版の出力順を一致させる。
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
 
     let no_filter = filter.is_empty();
     let mut out = Vec::new();
@@ -704,7 +709,7 @@ pub fn log_filtered(
 //
 // 採用した方式（Issue本文の案(b)）: `git2::Revwalk` は内部にイテレータの走査状態
 // （未出力コミットの優先度付きキュー等）を持ち続ける。同じインスタンスに対して
-// `.next()` を呼び続ける限り、既存の出力順序（`Sort::TIME`）と完全に同じ列を、
+// `.next()` を呼び続ける限り、既存の出力順序（`Sort::TOPOLOGICAL | Sort::TIME`）と完全に同じ列を、
 // 重複・欠落なく「続きから」返せる——これは revwalk のアルゴリズムそのものを
 // 再利用しているだけなので、正しさは revwalk 自身の正しさに帰着でき、独自に
 // 再実装する必要がない。
@@ -726,7 +731,7 @@ pub fn log_filtered(
 
 /// カーソルページングの1件を管理する内部エントリ。
 ///
-/// `repo_path` から新しく開いたリポジトリと、それに対する `Sort::TIME` の
+/// `repo_path` から新しく開いたリポジトリと、それに対する `Sort::TOPOLOGICAL | Sort::TIME` の
 /// revwalk を1組にして保持する。作成後は [`LogCursor::take`] を呼ぶたびに
 /// revwalk が続きから進み、ページをまたいでも既存の出力順序と完全に同じ列を返す。
 struct LogCursor {
@@ -749,7 +754,7 @@ struct LogCursor {
 unsafe impl Send for LogCursor {}
 
 impl LogCursor {
-    /// `repo_path` を新しく開き、`filter` 付きの `Sort::TIME` revwalk を
+    /// `repo_path` を新しく開き、`filter` 付きの `Sort::TOPOLOGICAL | Sort::TIME` revwalk を
     /// HEAD から開始する。呼び出し前に「コミット0件かどうか」は判定済みとする
     /// （`repo.head()` が無いと `push_head` がエラーになるため）。
     ///
@@ -769,7 +774,8 @@ impl LogCursor {
         let repo = Box::new(open(repo_path)?);
         let mut revwalk = repo.revwalk()?;
         revwalk.push_head()?;
-        revwalk.set_sorting(git2::Sort::TIME)?;
+        // `log_filtered` と同じ並び（子が必ず親より先）にする。Issue #306。
+        revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         // SAFETY: 上のドキュメントコメントの通り。`repo` はこの直後に構造体へ
         // move されるだけで、`LogCursor` が drop されるまでヒープ上の同じ
         // アドレスに留まり続けるため、`revwalk` が指す参照は常に有効。
@@ -942,6 +948,8 @@ pub fn file_log(repo: &Repository, path: &str, max: usize) -> Result<Vec<CommitI
 
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
+    // ファイル別履歴は一覧表示のみでグラフを描かず、親子の前後関係に依存しない
+    // ため、あえて `Sort::TIME` のままにしている（Issue #306 で判断）。
     revwalk.set_sorting(git2::Sort::TIME)?;
 
     let mut out = Vec::new();
@@ -3171,6 +3179,85 @@ mod tests {
                 .contains("side");
             matches
         }));
+    }
+
+    /// 時計ずれで「親の committer date が子より新しい」履歴を作る。
+    ///
+    /// ```text
+    /// root(100) - base(900) - skewed(500) - merge(1000)
+    ///                 \________________________/
+    /// ```
+    /// `merge` は `base` と `skewed` の両方を親に持つ。`skewed` は `base` の子なのに
+    /// 日時が古いため、`Sort::TIME` だけだと `base` が `skewed` より先に出てしまう。
+    /// 戻り値は先頭（merge）の oid。
+    fn build_skewed_history(fx: &TestRepo) -> git2::Oid {
+        let tree = fx.empty_tree_oid();
+        let root = fx.commit_raw(tree, &[], 100, "root");
+        let base = fx.commit_raw(tree, &[root], 900, "base");
+        let skewed = fx.commit_raw(tree, &[base], 500, "skewed");
+        let tip = fx.commit_raw(tree, &[base, skewed], 1000, "merge");
+        fx.set_branch("main", tip);
+        tip
+    }
+
+    /// 全コミットについて、子が親より前に並んでいることを確認する。
+    fn assert_children_before_parents(repo: &Repository, ids: &[String]) {
+        for (i, id) in ids.iter().enumerate() {
+            let commit = repo.find_commit(git2::Oid::from_str(id).unwrap()).unwrap();
+            for parent in commit.parent_ids() {
+                let pos = ids
+                    .iter()
+                    .position(|x| *x == parent.to_string())
+                    .expect("親も一覧に含まれるはず");
+                assert!(pos > i, "親 {parent} が子 {id} より先に並んでいる");
+            }
+        }
+    }
+
+    #[test]
+    fn log_orders_children_before_parents_even_with_skewed_dates() {
+        let fx = TestRepo::new_without_identity();
+        build_skewed_history(&fx);
+        let repo = fx.open();
+
+        let log = log_filtered(&repo, 0, 100, &LogFilter::default()).unwrap();
+        let ids: Vec<String> = log.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids.len(), 4);
+        assert_children_before_parents(&repo, &ids);
+        let summaries: Vec<&str> = log.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, ["merge", "skewed", "base", "root"]);
+    }
+
+    #[test]
+    fn log_pages_have_no_gap_or_duplicate_with_skewed_dates() {
+        let fx = TestRepo::new_without_identity();
+        build_skewed_history(&fx);
+        let repo = fx.open();
+        let baseline: Vec<String> = log_filtered(&repo, 0, 100, &LogFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+
+        // skip 版: ページ境界をまたいで連結しても一括取得と一致する。
+        let mut by_skip = Vec::new();
+        for skip in 0..baseline.len() {
+            let page = log_filtered(&repo, skip, 1, &LogFilter::default()).unwrap();
+            by_skip.extend(page.into_iter().map(|c| c.id));
+        }
+        assert_eq!(by_skip, baseline);
+
+        // カーソル版: ページサイズ 1 と 3（割り切れない）で一括取得と一致する。
+        for page_size in [1, 3] {
+            let mut store = LogCursorStore::new();
+            let (collected, _) = drain_all_pages(
+                &mut store,
+                fx.path().to_str().unwrap(),
+                LogFilter::default(),
+                page_size,
+            );
+            assert_eq!(collected, baseline, "page_size={page_size}");
+        }
     }
 
     #[test]
