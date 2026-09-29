@@ -74,6 +74,11 @@ export interface LogFilter {
   author?: string;
   since?: number;
   until?: number;
+  // true なら HEAD だけでなく全ローカルブランチの先端から履歴をたどる（Issue #320）。
+  // 絞り込み条件ではなく「どこから辿るか」の指定。
+  all_branches?: boolean;
+  // all_branches が true のとき、リモート追跡ブランチの先端からも辿る。
+  include_remotes?: boolean;
 }
 
 // コミット履歴をカーソルベースでページングしたときの1ページ分の結果
@@ -340,6 +345,17 @@ export interface RemoteInfo {
 }
 
 // タグ1件の情報。message は注釈付きタグのときだけ文字列、軽量タグは null。
+// コミットに付ける ref の種類（履歴グラフのラベル用, #320）。core の `RefKind` と一致させる。
+export type RefKind = "local_branch" | "remote_branch" | "tag" | "head";
+
+// あるコミットを指す ref 1件（ブランチ名・タグ名・detached HEAD）。
+export interface RefLabel {
+  name: string;
+  kind: RefKind;
+  // 現在チェックアウト中のブランチ（detached HEAD の "HEAD" も true）。
+  is_current: boolean;
+}
+
 export interface TagInfo {
   name: string;
   target_id: string;
@@ -741,6 +757,9 @@ export const api = {
   mergeBranch: (repoPath: string, branchName: string) =>
     invoke<MergeOutcome>("merge_branch", { repoPath, branchName }),
   listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
+  // コミット id → そのコミットを指すブランチ名・タグ・HEAD の一覧（#320）。
+  getCommitRefs: (repoPath: string) =>
+    invoke<Record<string, RefLabel[]>>("get_commit_refs", { repoPath }),
   createTag: (
     repoPath: string,
     name: string,
@@ -826,4 +845,9 @@ export const api = {
   // 再起動後の復元に使う読み取り専用コマンド。
   bisectStatus: (repoPath: string) =>
     invoke<BisectStatus | null>("bisect_status", { repoPath }),
+  // #199 ファイルシステム監視の開始。外部での変更を検知すると Tauri イベント
+  // `repo-changed`（ペイロード: { repo_path }）が届く。
+  watchRepo: (repoPath: string) => invoke<void>("watch_repo", { repoPath }),
+  // #199 ファイルシステム監視の停止（タブを閉じたとき）。
+  unwatchRepo: (repoPath: string) => invoke<void>("unwatch_repo", { repoPath }),
 };
