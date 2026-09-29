@@ -19,6 +19,7 @@ pub enum OperationKind {
     StashDrop,
     CreateBranch,
     SwitchBranch,
+    SwitchBranchWithStash,
     DeleteBranch,
     ResetHard,
     Fetch,
@@ -253,6 +254,20 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                 RiskAssessment::safe("作業中の変更が無いので、安全に切り替えられます。")
             }
         }
+
+        OperationKind::SwitchBranchWithStash => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "未コミットの変更をいったん退避（stash）してからブランチを切り替え、切り替え後に変更を作業ツリーへ戻します。".to_string(),
+                "切り替え先のブランチが同じ箇所を変更していると、戻すときにコンフリクト（競合）が起きることがあります。その場合も変更は退避一覧に残り、失われません。".to_string(),
+                "ワンクリックの取り消し（Undo）は記録されません。元のブランチへは、もう一度ブランチを切り替えると戻れます。".to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "変更を残したい内容としてまとめられるなら、コミットしてから切り替えるのがいちばん確実です。".to_string(),
+            ),
+        },
 
         OperationKind::DeleteBranch => RiskAssessment {
             level: if protected {
@@ -943,6 +958,19 @@ mod tests {
     }
 
     #[test]
+    fn switch_branch_with_stash_is_caution_without_data_loss() {
+        for dirty in [false, true] {
+            let ctx = SafetyContext {
+                working_dir_dirty: dirty,
+                ..SafetyContext::default()
+            };
+            let a = assess(OperationKind::SwitchBranchWithStash, &ctx);
+            assert_eq!(a.level, RiskLevel::Caution);
+            assert!(!a.permanent_data_loss);
+        }
+    }
+
+    #[test]
     fn stash_drop_is_caution_and_not_reversible() {
         let ctx = SafetyContext::default();
         let a = assess(OperationKind::StashDrop, &ctx);
@@ -1032,6 +1060,7 @@ mod tests {
             OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
+            OperationKind::SwitchBranchWithStash,
             OperationKind::DeleteBranch,
             OperationKind::ResetHard,
             OperationKind::Fetch,
