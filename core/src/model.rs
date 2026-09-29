@@ -75,6 +75,22 @@ pub struct RepoStatus {
     /// true のときフロントエンドは「未対応」であることを説明するバナーを表示する。
     #[serde(default)]
     pub has_submodules: bool,
+    /// HEAD がブランチを指さず、特定のコミットを直接指している（detached HEAD）か。
+    #[serde(default)]
+    pub head_detached: bool,
+    /// detached HEAD のときだけ Some。復帰ガイド（バナー）に使う補足情報。
+    #[serde(default)]
+    pub detached_info: Option<DetachedHeadInfo>,
+}
+
+/// detached HEAD の補足情報（復帰ガイド用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetachedHeadInfo {
+    /// 直前までいたブランチ名（HEAD の reflog からの推定）。特定できなければ None。
+    pub previous_branch: Option<String>,
+    /// どのブランチ・タグ・リモート追跡ブランチにも属していないコミット数。
+    /// 1 以上なら、このまま別のブランチへ切り替えるとそれらのコミットを見失いやすい。
+    pub unsaved_commits: u32,
 }
 
 /// ブランチ1件の情報。

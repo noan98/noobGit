@@ -220,6 +220,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             why: "detached HEAD のままにしておくと、あとで見失いやすくなります。原因が見つかった・見つからなくても、調査が済んだらここで終了しましょう。".into(),
             on_trouble: "直後なら Undo で、Bisect を始める前の状態にも戻せます。".into(),
         },
+        OperationKind::RescueDetachedHead => Explanation {
+            title: "ここから新しいブランチを作って安全にする".into(),
+            what: "いまいる場所（detached HEAD）に新しいブランチ名を付けて、そのブランチに乗り換えます。ファイルの中身や、これまでに積んだコミットは変わりません。".into(),
+            why: "detached HEAD は「実験用の見学モード」のようなものです。見学中に書いたメモ（コミット）は、名札（ブランチ）が無いので、別のブランチへ移ると見つけにくくなります。先に名札を付けておけば、いつでも戻ってこられます。".into(),
+            on_trouble: "直後なら Undo で、元の detached HEAD の状態とブランチの作成を取り消せます。ブランチ名が既に使われているときは、別の名前を試してください。".into(),
+        },
         OperationKind::Clone => Explanation {
             title: "クローン（新規取得）".into(),
             what: "リモートリポジトリの URL を指定して、その内容を丸ごと新しいフォルダに取得します。".into(),
@@ -265,6 +271,7 @@ mod tests {
             OperationKind::BisectStart,
             OperationKind::BisectReset,
             OperationKind::Clone,
+            OperationKind::RescueDetachedHead,
         ] {
             let e = explain(op);
             assert!(!e.title.is_empty(), "{:?}: title が空", op);
