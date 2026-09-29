@@ -19,6 +19,7 @@ pub enum OperationKind {
     StashDrop,
     CreateBranch,
     SwitchBranch,
+    SwitchBranchWithStash,
     DeleteBranch,
     ResetHard,
     Fetch,
@@ -26,6 +27,7 @@ pub enum OperationKind {
     Push,
     ForcePush,
     CherryPick,
+    Revert,
     CreateTag,
     DeleteTag,
     Rebase,
@@ -253,6 +255,20 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             }
         }
 
+        OperationKind::SwitchBranchWithStash => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "未コミットの変更をいったん退避（stash）してからブランチを切り替え、切り替え後に変更を作業ツリーへ戻します。".to_string(),
+                "切り替え先のブランチが同じ箇所を変更していると、戻すときにコンフリクト（競合）が起きることがあります。その場合も変更は退避一覧に残り、失われません。".to_string(),
+                "ワンクリックの取り消し（Undo）は記録されません。元のブランチへは、もう一度ブランチを切り替えると戻れます。".to_string(),
+            ],
+            reversible: false,
+            permanent_data_loss: false,
+            recommended_alternative: Some(
+                "変更を残したい内容としてまとめられるなら、コミットしてから切り替えるのがいちばん確実です。".to_string(),
+            ),
+        },
+
         OperationKind::DeleteBranch => RiskAssessment {
             level: if protected {
                 RiskLevel::Destructive
@@ -296,7 +312,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reversible: true,
             permanent_data_loss: ctx.working_dir_dirty,
             recommended_alternative: Some(
-                "残したい変更があるなら、先にコミットか stash をしてください。".to_string(),
+                "残したい変更があるなら、先にコミットか stash をしてください。すでに push 済みのコミットを取り消したいときは、履歴を書き換えない「打ち消しコミット（revert）」が安全な代替案です。".to_string(),
             ),
         },
 
@@ -358,7 +374,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reversible: false,
             permanent_data_loss: true,
             recommended_alternative: Some(
-                "本当に必要か、チームに確認してください。多くの場合 force push は不要です。"
+                "本当に必要か、チームに確認してください。多くの場合 force push は不要です。公開済みの変更を取り消すだけなら、履歴を書き換えない「打ち消しコミット（revert）」で足ります。"
                     .to_string(),
             ),
         },
@@ -369,6 +385,17 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                 "別の場所にあるコミットの変更を、いまのブランチにコピーして取り込みます（cherry-pick）。".to_string(),
                 "いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
                 "別のブランチのコミットをコピーしても、そのブランチ自体は変わりません。コピーされるのは選んだコミット1つ分の変更だけです。".to_string(),
+            ],
+            reversible: true,
+            permanent_data_loss: false,
+            recommended_alternative: None,
+        },
+
+        OperationKind::Revert => RiskAssessment {
+            level: RiskLevel::Caution,
+            reasons: vec![
+                "選んだコミットの変更を打ち消す「新しいコミット」を追加します（revert）。過去の履歴は書き換えません。".to_string(),
+                "いまの内容と打ち消したい変更が同じ箇所に触れていると、コンフリクト（競合）で打ち消せないことがあります。".to_string(),
             ],
             reversible: true,
             permanent_data_loss: false,
@@ -410,7 +437,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reversible: true,
             permanent_data_loss: false,
             recommended_alternative: Some(
-                "履歴の整理は、まだ送信（push）していないコミットに対して行うのが安全です。直後なら Undo で元に戻せます。"
+                "履歴の整理は、まだ送信（push）していないコミットに対して行うのが安全です。公開済みのコミットを取り消したいときは、履歴を書き換えない「打ち消しコミット（revert）」が代替案です。直後なら Undo で元に戻せます。"
                     .to_string(),
             ),
         },
@@ -935,6 +962,19 @@ mod tests {
     }
 
     #[test]
+    fn switch_branch_with_stash_is_caution_without_data_loss() {
+        for dirty in [false, true] {
+            let ctx = SafetyContext {
+                working_dir_dirty: dirty,
+                ..SafetyContext::default()
+            };
+            let a = assess(OperationKind::SwitchBranchWithStash, &ctx);
+            assert_eq!(a.level, RiskLevel::Caution);
+            assert!(!a.permanent_data_loss);
+        }
+    }
+
+    #[test]
     fn stash_drop_is_caution_and_not_reversible() {
         let ctx = SafetyContext::default();
         let a = assess(OperationKind::StashDrop, &ctx);
@@ -950,6 +990,29 @@ mod tests {
         assert_eq!(a.level, RiskLevel::Caution);
         assert!(a.reversible);
         assert!(!a.permanent_data_loss);
+    }
+
+    #[test]
+    fn revert_is_caution_and_reversible() {
+        let ctx = SafetyContext::default();
+        let a = assess(OperationKind::Revert, &ctx);
+        assert_eq!(a.level, RiskLevel::Caution);
+        assert!(a.reversible);
+        assert!(!a.permanent_data_loss);
+    }
+
+    // reset 系の警告には代替案として revert（打ち消しコミット）への誘導が含まれる（#195）。
+    #[test]
+    fn destructive_history_ops_recommend_revert() {
+        let ctx = SafetyContext::default();
+        for op in [
+            OperationKind::ResetHard,
+            OperationKind::Rebase,
+            OperationKind::ForcePush,
+        ] {
+            let alt = assess(op, &ctx).recommended_alternative.unwrap();
+            assert!(alt.contains("revert"), "{op:?} の代替案に revert が無い");
+        }
     }
 
     #[test]
@@ -1001,6 +1064,7 @@ mod tests {
             OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
+            OperationKind::SwitchBranchWithStash,
             OperationKind::DeleteBranch,
             OperationKind::ResetHard,
             OperationKind::Fetch,
@@ -1008,6 +1072,7 @@ mod tests {
             OperationKind::Push,
             OperationKind::ForcePush,
             OperationKind::CherryPick,
+            OperationKind::Revert,
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
             OperationKind::Rebase,

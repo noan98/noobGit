@@ -173,6 +173,7 @@ export type OperationKind =
   | "stash_drop"
   | "create_branch"
   | "switch_branch"
+  | "switch_branch_with_stash"
   | "delete_branch"
   | "reset_hard"
   | "fetch"
@@ -180,6 +181,7 @@ export type OperationKind =
   | "push"
   | "force_push"
   | "cherry_pick"
+  | "revert"
   | "create_tag"
   | "delete_tag"
   | "rebase"
@@ -210,7 +212,17 @@ export interface Explanation {
 export interface UndoEntry {
   op: OperationKind;
   description: string;
+  // 記録時点の HEAD コミット id。旧形式のジャーナルには無い（#201）。
+  head_at_record?: string | null;
 }
+
+// #201 undo エントリを今のリポジトリ状態で適用してよいかの検証結果。
+// core の UndoApplicability（serde tag = "status"）のミラー。
+export type UndoApplicability =
+  | { status: "applicable" }
+  | { status: "already_undone" }
+  | { status: "unresolvable"; reason: string }
+  | { status: "risky"; reason: string };
 
 // 退避（stash）1件の情報。index は一覧での位置（0 が最新）。
 export interface StashInfo {
@@ -227,6 +239,22 @@ export interface StashInfo {
 // true の間は退避を一覧から取り除かない。
 export interface StashRestoreOutcome {
   conflicted: boolean;
+}
+
+// 「退避して切り替える」（switch_branch_with_stash）の結果。変更は失われない。
+// stashed: 実際に退避したか（変更が無ければ false）。
+// conflicted: 戻すときにコンフリクトが起きたか。true の間は退避を一覧に残す。
+export interface SwitchWithStashOutcome {
+  stashed: boolean;
+  conflicted: boolean;
+}
+
+// switch_branch が「未コミットの変更のため切り替えできない」で失敗したか。
+// Tauri 境界ではエラーが日本語メッセージの文字列になるため、core の
+// ops::switch_branch の Blocked メッセージ（この一節）で判定する。
+// メッセージを変えたらここも合わせること。
+export function isSwitchBlockedByChanges(error: unknown): boolean {
+  return String(error).includes("未コミットの変更があるため切り替えできません");
 }
 
 // リモートリポジトリ1件の情報。push_url は fetch と異なる場合のみ文字列、同じか未設定なら null。
@@ -548,6 +576,11 @@ export const api = {
     invoke<void>("create_branch", { repoPath, name }),
   switchBranch: (repoPath: string, name: string) =>
     invoke<void>("switch_branch", { repoPath, name }),
+  switchBranchWithStash: (repoPath: string, name: string) =>
+    invoke<SwitchWithStashOutcome>("switch_branch_with_stash", {
+      repoPath,
+      name,
+    }),
   deleteBranch: (repoPath: string, name: string) =>
     invoke<void>("delete_branch", { repoPath, name }),
   // #269 ブランチクリーンアップ: マージ済みローカルブランチの一覧を返す。
@@ -610,6 +643,8 @@ export const api = {
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  revertCommit: (repoPath: string, oid: string) =>
+    invoke<CommitInfo>("revert_commit", { repoPath, oid }),
   mergeBranch: (repoPath: string, branchName: string) =>
     invoke<MergeOutcome>("merge_branch", { repoPath, branchName }),
   listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
@@ -646,7 +681,15 @@ export const api = {
     invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
-  undoLast: (repoPath: string) => invoke<string>("undo_last", { repoPath }),
+  // confirmRisky: 履歴が進んでいて新しい作業も巻き戻る場合に、確認済みとして進める（#201）。
+  undoLast: (repoPath: string, confirmRisky = false) =>
+    invoke<string>("undo_last", { repoPath, confirmRisky }),
+  // 各エントリの適用可否（getUndoJournal と同じ古い順）。
+  getUndoApplicability: (repoPath: string) =>
+    invoke<UndoApplicability[]>("get_undo_applicability", { repoPath }),
+  // 適用不能な履歴を整理し、取り除いた件数を返す。
+  pruneUndoJournal: (repoPath: string) =>
+    invoke<number>("prune_undo_journal", { repoPath }),
 
   // #126 ネットワーク診断: エラーメッセージを種別に分類する。
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。

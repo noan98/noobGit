@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  isSwitchBlockedByChanges,
   type BisectStatus,
   type BlameHunk,
   type BranchGraph,
@@ -38,6 +39,7 @@ import {
   type TagInfo,
   type RemoteInfo,
   type UndoEntry,
+  type UndoApplicability,
 } from "./api";
 import { Icon } from "./components/Icon";
 import { showToast } from "./components/Toaster";
@@ -227,6 +229,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
   switch_branch: FULL_REFRESH,
+  // 退避 → 切り替え → 復元。HEAD・作業ツリー・退避一覧が変わる。
+  switch_branch_with_stash: FULL_REFRESH,
   // 削除はブランチ一覧だけ。
   delete_branch: { branches: true, undo: true },
   // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
@@ -241,6 +245,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   force_push: { branches: true },
   // cherry-pick は HEAD に新しいコミットを積む。status・log・ブランチ関係が変わり、undo も積まれる。
   cherry_pick: { status: true, branches: true, log: true, undo: true },
+  // revert も HEAD に新しいコミット（打ち消しコミット）を積む。cherry-pick と同じ再取得が要る。
+  revert: { status: true, branches: true, log: true, undo: true },
   // タグ作成・削除はタグ一覧だけを取り直す。削除は undo も積まれる。
   create_tag: { tags: true, undo: true },
   delete_tag: { tags: true, undo: true },
@@ -319,6 +325,8 @@ export function RepoWorkspace({
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
   const [undoJournal, setUndoJournal] = useState<UndoEntry[]>([]); // #48 Undo タイムライン
+  // #201 undoJournal と同じ古い順の適用可否。取得に失敗したら空（＝すべて適用可として表示）。
+  const [undoApplicability, setUndoApplicability] = useState<UndoApplicability[]>([]);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
@@ -344,6 +352,7 @@ export function RepoWorkspace({
     { op: "discard" },
     { op: "reset_hard" },
     { op: "cherry_pick" },
+    { op: "revert" },
     { op: "merge" },
     { op: "switch_branch" },
     { op: "force_push" },
@@ -712,6 +721,13 @@ export function RepoWorkspace({
         if (parts.undo) {
           tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
           tasks.push(api.getUndoJournal(repoPath).then(setUndoJournal)); // #48 Undo タイムライン
+          // #201 失効・危険なエントリの表示用。失敗しても画面全体は止めない。
+          tasks.push(
+            api
+              .getUndoApplicability(repoPath)
+              .then(setUndoApplicability)
+              .catch(() => setUndoApplicability([])),
+          );
         }
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
         if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
@@ -1251,12 +1267,69 @@ export function RepoWorkspace({
     applyLogFilter({ ...prev, all_branches: next, include_remotes: next });
   }, [applyLogFilter]);
 
-  function doUndo() {
-    void exec(async () => {
-      const desc = await api.undoLast(repoPath);
+  // #201 undo の実行。適用可否を先に調べ、履歴が進んでいて新しい作業も巻き戻る
+  // （risky）場合は確認ダイアログを挟む。適用不能なら core 側が履歴から整理してエラーを返す。
+  async function runUndo(confirmRisky: boolean) {
+    try {
+      const desc = await api.undoLast(repoPath, confirmRisky);
       // 取り消し完了はトーストで通知（exec の successMsg 経路を使わず直接呼ぶ）。
       showToast(`取り消しました: ${desc}`, "success");
-    });
+    } catch (e) {
+      // 失敗時は exec が refresh しないので、整理された履歴表示だけここで取り直す。
+      await refresh({ undo: true });
+      throw e;
+    }
+  }
+
+  function doUndo() {
+    void (async () => {
+      let risky: string | null = null;
+      try {
+        const all = await api.getUndoApplicability(repoPath);
+        const last = all[all.length - 1];
+        if (last && last.status === "risky") risky = last.reason;
+      } catch {
+        // 判定に失敗しても、core 側の undo_last が同じ検証を行うのでここでは進める。
+      }
+      if (risky === null) {
+        await exec(() => runUndo(false));
+        return;
+      }
+      setGuard({
+        title: "履歴が進んでいる状態で取り消す",
+        assessment: {
+          level: "destructive",
+          reasons: [risky],
+          reversible: false,
+          permanent_data_loss: false,
+          recommended_alternative:
+            "新しい作業を残したいときは、取り消さずに、必要な変更だけ新しいコミットで打ち消す方法もあります。",
+        },
+        explanation: {
+          title: "履歴が進んでいる状態での取り消し",
+          what: `「${undoInfo?.description ?? "直前の操作"}」を取り消します。`,
+          why: "この操作のあとに別のツールなどで履歴が進んでいるため、取り消すとその新しいコミットも一緒に巻き戻ります。",
+          on_trouble:
+            "巻き戻したコミットは noobGit の取り消しでは戻せません。心配なら実行せず、先にブランチを作って今の位置を残しておきましょう。",
+        },
+        action: () => runUndo(true),
+        refresh: FULL_REFRESH,
+      });
+    })();
+  }
+
+  // #201 適用できなくなった取り消し履歴を整理する。
+  function pruneUndo() {
+    void exec(
+      async () => {
+        const n = await api.pruneUndoJournal(repoPath);
+        showToast(
+          n > 0 ? `使えなくなった履歴を${n}件整理しました。` : "整理が必要な履歴はありません。",
+          "success",
+        );
+      },
+      { refresh: { undo: true } },
+    );
   }
 
   // #63 ショートカット: Ctrl+P で現在ブランチをプッシュする。
@@ -1475,6 +1548,18 @@ export function RepoWorkspace({
     );
   }
 
+  // コミットの打ち消し（revert）。履歴は書き換えず、逆向きの変更を新しいコミットとして積む。
+  function doRevert(commit: CommitInfo) {
+    void guarded(
+      `「${commit.short_id}」を打ち消す（revert）`,
+      "revert",
+      async () => {
+        await api.revertCommit(repoPath, commit.id);
+        showToast(`コミット ${commit.short_id} を打ち消しました`, "success");
+      },
+    );
+  }
+
   // #184 Bisect: 開始。detached HEAD になり作業ツリーが入れ替わるので guarded を通す。
   // 成功したら返ってきた状態をそのまま保持し、ウィザードは「進行中」画面に自動で切り替わる。
   function doBisectStart(bad: string, good: string) {
@@ -1659,6 +1744,70 @@ export function RepoWorkspace({
         showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
       }
     });
+  }
+
+  // ブランチ切り替え。未コミットの変更が邪魔で切り替えできなかった（core が Blocked を
+  // 返した）ときは、エラーにせず「退避して切り替える」提案（確認ダイアログ）を出す。
+  // 変更は core 側で退避 → 切り替え → 復元され、やめる（キャンセル）なら何も変わらない。
+  function doSwitchBranch(name: string) {
+    void guarded(
+      `ブランチ「${name}」へ切り替え`,
+      "switch_branch",
+      async () => {
+        try {
+          await api.switchBranch(repoPath, name);
+        } catch (e) {
+          if (isSwitchBlockedByChanges(e)) {
+            offerSwitchWithStash(name);
+            return;
+          }
+          throw e;
+        }
+      },
+      name,
+    );
+  }
+
+  // 「退避して切り替える」の確認。コンフリクトしたときは退避が一覧に残るので、
+  // stash_pop と同じく stashPopConflict へ記録して既存の後片付け導線に乗せる。
+  function offerSwitchWithStash(name: string) {
+    void guarded(
+      `変更を退避してブランチ「${name}」へ切り替え`,
+      "switch_branch_with_stash",
+      async () => {
+        let outcome;
+        try {
+          outcome = await api.switchBranchWithStash(repoPath, name);
+        } catch (e) {
+          // 「切り替えは済んだが戻せなかった」場合もあるので、状態を取り直してから伝える。
+          await refresh(FULL_REFRESH);
+          throw e;
+        }
+        if (!outcome.stashed) {
+          showToast(`ブランチ「${name}」へ切り替えました。`, "success");
+        } else if (outcome.conflicted) {
+          // 退避は今作ったばかりで先頭（index 0）にある。
+          const list = await api.getStashes(repoPath);
+          if (list[0]) {
+            setStashPopConflict({
+              id: list[0].id,
+              message: list[0].message,
+              seenConflicts: false,
+            });
+          }
+          showToast(
+            "切り替え後、退避した変更を戻すときにコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避は一覧に残しています）。",
+            "warning",
+          );
+        } else {
+          showToast(
+            `変更を退避してブランチ「${name}」へ切り替え、変更を戻しました。`,
+            "success",
+          );
+        }
+      },
+      name,
+    );
   }
 
   // 退避の取り出し（pop・コンフリクトが無ければ一覧から削除）。
@@ -2161,14 +2310,7 @@ export function RepoWorkspace({
           remotes={remotes}
           stashes={stashes}
           undoCount={undoJournal.length}
-          onSwitchBranch={(name) =>
-            void guarded(
-              `ブランチ「${name}」へ切り替え`,
-              "switch_branch",
-              () => api.switchBranch(repoPath, name),
-              name,
-            )
-          }
+          onSwitchBranch={(name) => doSwitchBranch(name)}
         />
 
         <main className="main-view">
@@ -2519,6 +2661,7 @@ export function RepoWorkspace({
                   onCompareSelect={onCompareSelect}
                   compareBaseId={compareBase?.id ?? null}
                   onCherryPick={doCherryPick}
+                  onRevert={doRevert}
                   selectedIds={selectedCommitIds}
                   onToggleSelect={toggleCommitSelect}
                   onStartRebase={() => setShowRebase(true)}
@@ -2534,6 +2677,7 @@ export function RepoWorkspace({
                   // #274 危険度カラー
                   resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
                   cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
+                  revertRiskClass={riskTriggerClassFor(riskLevels, "revert")}
                 />
               </motion.div>
             )}
@@ -2587,14 +2731,7 @@ export function RepoWorkspace({
                     api.createBranch(repoPath, name),
                   )
                 }
-                onSwitch={(name) =>
-                  void guarded(
-                    `ブランチ「${name}」へ切り替え`,
-                    "switch_branch",
-                    () => api.switchBranch(repoPath, name),
-                    name,
-                  )
-                }
+                onSwitch={(name) => doSwitchBranch(name)}
                 onDelete={(name) =>
                   void guarded(
                     `ブランチ「${name}」を削除`,
@@ -2728,7 +2865,11 @@ export function RepoWorkspace({
           {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
           {view === "undo" && (
           <div className="view-scroll">
-            <UndoTimeline entries={[...undoJournal].reverse()} />
+            <UndoTimeline
+              entries={[...undoJournal].reverse()}
+              applicability={[...undoApplicability].reverse()}
+              onPrune={pruneUndo}
+            />
           </div>
           )}
         </main>
