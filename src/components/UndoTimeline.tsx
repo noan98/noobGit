@@ -1,12 +1,16 @@
 // #48 Undo タイムライン
 import { AnimatePresence, motion } from "framer-motion";
-import type { UndoEntry, OperationKind } from "../api";
+import type { UndoEntry, OperationKind, UndoApplicability } from "../api";
 import { slideInFromBottom } from "../theme/motion";
 import { Icon, type IconName } from "./Icon";
 
 interface Props {
   // 新しい順（先頭が最新の操作）で渡す。
   entries: UndoEntry[];
+  // #201 entries と同じ順序・同じ長さの適用可否。無い（長さが合わない）ときは全件「適用可」扱い。
+  applicability?: UndoApplicability[];
+  // #201 適用不能な履歴を整理する。
+  onPrune?: () => void;
 }
 
 // OperationKind ごとの日本語ラベルとアイコン。
@@ -82,19 +86,46 @@ const OP_ICON: Record<OperationKind, IconName> = {
 };
 
 // #48 Undo タイムライン: 取り消し履歴をタイムライン形式で表示するパネル。
-export function UndoTimeline({ entries }: Props) {
+export function UndoTimeline({ entries, applicability, onPrune }: Props) {
+  const usable =
+    applicability !== undefined && applicability.length === entries.length;
+  const statusOf = (index: number): UndoApplicability | null =>
+    usable ? applicability[index] : null;
+  const hasStale = entries.some(
+    (_, i) => statusOf(i)?.status === "unresolvable",
+  );
   return (
     <div className="panel">
       <h2>取り消し履歴</h2>
+      {hasStale && onPrune && (
+        <button type="button" className="undo-prune-btn" onClick={onPrune}>
+          使えなくなった履歴を整理する
+        </button>
+      )}
       {entries.length === 0 ? (
         <p className="empty-hint">取り消せる操作はありません</p>
       ) : (
         <ul className="undo-timeline-list">
           <AnimatePresence initial={false}>
-            {entries.map((entry, index) => (
+            {entries.map((entry, index) => {
+              const st = statusOf(index);
+              // 危険（risky）は次に適用される最新エントリでのみ意味を持つ。
+              // それ以前のものは「最新を先に取り消すまで」の参考値なので表示しない。
+              const stale =
+                st?.status === "unresolvable" || st?.status === "already_undone";
+              const risky = st?.status === "risky" && index === 0;
+              const note =
+                st?.status === "unresolvable"
+                  ? st.reason
+                  : st?.status === "already_undone"
+                    ? "すでに取り消した状態になっているため、この履歴は何も変えません。"
+                    : risky && st?.status === "risky"
+                      ? st.reason
+                      : null;
+              return (
               <motion.li
                 key={`${entry.op}-${index}-${entry.description}`}
-                className="undo-timeline-item"
+                className={`undo-timeline-item${stale ? " undo-timeline-item-stale" : ""}${risky ? " undo-timeline-item-risky" : ""}`}
                 variants={slideInFromBottom}
                 initial="hidden"
                 animate="visible"
@@ -111,13 +142,21 @@ export function UndoTimeline({ entries }: Props) {
                   <span className="undo-timeline-desc">
                     {entry.description}
                   </span>
+                  {note && (
+                    <span
+                      className={`undo-timeline-note${risky ? " undo-timeline-note-risky" : ""}`}
+                    >
+                      {note}
+                    </span>
+                  )}
                 </div>
                 {/* 最新エントリ（先頭）に「最新」バッジを表示する。 */}
                 {index === 0 && (
                   <span className="undo-timeline-badge">最新</span>
                 )}
               </motion.li>
-            ))}
+              );
+            })}
           </AnimatePresence>
         </ul>
       )}

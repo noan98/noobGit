@@ -515,6 +515,7 @@ fn undo_with_dangling_target_oid_fails_but_does_not_block_queue() {
     undo::push(
         &repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::ResetHard,
             description: "実在しないコミットへ戻す".into(),
             action: UndoAction::HardResetTo {
@@ -546,6 +547,7 @@ fn undo_with_malformed_oid_fails_but_does_not_block_queue() {
     undo::push(
         &repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Commit,
             description: "壊れた oid".into(),
             action: UndoAction::SoftResetTo {

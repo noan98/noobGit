@@ -38,6 +38,7 @@ import {
   type TagInfo,
   type RemoteInfo,
   type UndoEntry,
+  type UndoApplicability,
 } from "./api";
 import { Icon } from "./components/Icon";
 import { showToast } from "./components/Toaster";
@@ -296,6 +297,8 @@ export function RepoWorkspace({
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
   const [undoJournal, setUndoJournal] = useState<UndoEntry[]>([]); // #48 Undo タイムライン
+  // #201 undoJournal と同じ古い順の適用可否。取得に失敗したら空（＝すべて適用可として表示）。
+  const [undoApplicability, setUndoApplicability] = useState<UndoApplicability[]>([]);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
@@ -688,6 +691,13 @@ export function RepoWorkspace({
         if (parts.undo) {
           tasks.push(api.peekUndo(repoPath).then(setUndoInfo));
           tasks.push(api.getUndoJournal(repoPath).then(setUndoJournal)); // #48 Undo タイムライン
+          // #201 失効・危険なエントリの表示用。失敗しても画面全体は止めない。
+          tasks.push(
+            api
+              .getUndoApplicability(repoPath)
+              .then(setUndoApplicability)
+              .catch(() => setUndoApplicability([])),
+          );
         }
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
         if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
@@ -1220,12 +1230,69 @@ export function RepoWorkspace({
     [repoPath, releaseLogCursor],
   );
 
-  function doUndo() {
-    void exec(async () => {
-      const desc = await api.undoLast(repoPath);
+  // #201 undo の実行。適用可否を先に調べ、履歴が進んでいて新しい作業も巻き戻る
+  // （risky）場合は確認ダイアログを挟む。適用不能なら core 側が履歴から整理してエラーを返す。
+  async function runUndo(confirmRisky: boolean) {
+    try {
+      const desc = await api.undoLast(repoPath, confirmRisky);
       // 取り消し完了はトーストで通知（exec の successMsg 経路を使わず直接呼ぶ）。
       showToast(`取り消しました: ${desc}`, "success");
-    });
+    } catch (e) {
+      // 失敗時は exec が refresh しないので、整理された履歴表示だけここで取り直す。
+      await refresh({ undo: true });
+      throw e;
+    }
+  }
+
+  function doUndo() {
+    void (async () => {
+      let risky: string | null = null;
+      try {
+        const all = await api.getUndoApplicability(repoPath);
+        const last = all[all.length - 1];
+        if (last && last.status === "risky") risky = last.reason;
+      } catch {
+        // 判定に失敗しても、core 側の undo_last が同じ検証を行うのでここでは進める。
+      }
+      if (risky === null) {
+        await exec(() => runUndo(false));
+        return;
+      }
+      setGuard({
+        title: "履歴が進んでいる状態で取り消す",
+        assessment: {
+          level: "destructive",
+          reasons: [risky],
+          reversible: false,
+          permanent_data_loss: false,
+          recommended_alternative:
+            "新しい作業を残したいときは、取り消さずに、必要な変更だけ新しいコミットで打ち消す方法もあります。",
+        },
+        explanation: {
+          title: "履歴が進んでいる状態での取り消し",
+          what: `「${undoInfo?.description ?? "直前の操作"}」を取り消します。`,
+          why: "この操作のあとに別のツールなどで履歴が進んでいるため、取り消すとその新しいコミットも一緒に巻き戻ります。",
+          on_trouble:
+            "巻き戻したコミットは noobGit の取り消しでは戻せません。心配なら実行せず、先にブランチを作って今の位置を残しておきましょう。",
+        },
+        action: () => runUndo(true),
+        refresh: FULL_REFRESH,
+      });
+    })();
+  }
+
+  // #201 適用できなくなった取り消し履歴を整理する。
+  function pruneUndo() {
+    void exec(
+      async () => {
+        const n = await api.pruneUndoJournal(repoPath);
+        showToast(
+          n > 0 ? `使えなくなった履歴を${n}件整理しました。` : "整理が必要な履歴はありません。",
+          "success",
+        );
+      },
+      { refresh: { undo: true } },
+    );
   }
 
   // #63 ショートカット: Ctrl+P で現在ブランチをプッシュする。
@@ -2772,7 +2839,11 @@ export function RepoWorkspace({
           {/* #48 Undo タイムライン: 取り消し履歴を新しい順で表示する。 */}
           {view === "undo" && (
           <div className="view-scroll">
-            <UndoTimeline entries={[...undoJournal].reverse()} />
+            <UndoTimeline
+              entries={[...undoJournal].reverse()}
+              applicability={[...undoApplicability].reverse()}
+              onPrune={pruneUndo}
+            />
           </div>
           )}
         </main>

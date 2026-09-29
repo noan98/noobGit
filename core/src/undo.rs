@@ -73,6 +73,26 @@ pub struct UndoEntry {
     /// 「何を取り消すのか」を表す日本語の説明。
     pub description: String,
     pub action: UndoAction,
+    /// 記録した時点（操作が成功した直後）の HEAD コミット id。記録後に外部ツール等で
+    /// 履歴が進んだかどうかを [`validate_entry`] が判定するために使う。
+    /// 旧形式のジャーナルには無いので `Option` + `#[serde(default)]`（後方互換）。
+    /// 記録側で `None` のまま [`push`] すると、その時点の HEAD が自動で入る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_at_record: Option<String>,
+}
+
+/// 取り消しエントリを「今のリポジトリ状態で適用してよいか」を検証した結果（Issue #201）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UndoApplicability {
+    /// そのまま安全に適用できる。
+    Applicable,
+    /// すでに取り消したのと同じ状態になっている（適用しても何も変わらない。冪等）。
+    AlreadyUndone,
+    /// 記録した oid や参照が見つからず、適用できない（GC 済み・参照が削除済みなど）。
+    Unresolvable { reason: String },
+    /// 適用はできるが、記録後に履歴が進んでおり、新しい作業も一緒に巻き戻る恐れがある。
+    Risky { reason: String },
 }
 
 fn journal_path(repo: &Repository) -> PathBuf {
@@ -180,7 +200,10 @@ fn save(repo: &Repository, entries: &[UndoEntry]) -> Result<()> {
 }
 
 /// 取り消しエントリを履歴の末尾に追加する。
-pub fn push(repo: &Repository, entry: UndoEntry) -> Result<()> {
+pub fn push(repo: &Repository, mut entry: UndoEntry) -> Result<()> {
+    if entry.head_at_record.is_none() {
+        entry.head_at_record = current_head(repo).map(|o| o.to_string());
+    }
     let mut entries = load(repo)?;
     entries.push(entry);
     save(repo, &entries)
@@ -201,16 +224,280 @@ pub fn list(repo: &Repository) -> Result<Vec<UndoEntry>> {
     load(repo)
 }
 
+/// 各エントリを現在のリポジトリ状態で検証した結果を返す（履歴と同じ古い順）。
+/// 実際に適用されるのは末尾（最新）のエントリだけなので、それ以前のエントリの
+/// 結果は「今それを適用したら」という参考情報になる。
+pub fn validate_journal(repo: &Repository) -> Result<Vec<UndoApplicability>> {
+    Ok(load(repo)?
+        .iter()
+        .map(|e| validate_entry(repo, e))
+        .collect())
+}
+
+/// 適用不能（`Unresolvable`）なエントリを履歴から取り除き、取り除いた件数を返す。
+pub fn prune_unresolvable(repo: &Repository) -> Result<usize> {
+    let entries = load(repo)?;
+    let before = entries.len();
+    let kept: Vec<UndoEntry> = entries
+        .into_iter()
+        .filter(|e| {
+            !matches!(
+                validate_entry(repo, e),
+                UndoApplicability::Unresolvable { .. }
+            )
+        })
+        .collect();
+    let removed = before - kept.len();
+    if removed > 0 {
+        save(repo, &kept)?;
+    }
+    Ok(removed)
+}
+
+fn current_head(repo: &Repository) -> Option<git2::Oid> {
+    repo.head().ok()?.peel_to_commit().ok().map(|c| c.id())
+}
+
+fn commit_exists(repo: &Repository, oid_str: &str) -> bool {
+    git2::Oid::from_str(oid_str)
+        .ok()
+        .is_some_and(|oid| repo.find_object(oid, None).is_ok())
+}
+
+/// `from` から辿れて `keep` から辿れないコミット（＝ `keep` へ戻すと届かなくなるもの）の
+/// 件名を新しい順に返す。
+fn commits_lost(repo: &Repository, from: git2::Oid, keep: Option<git2::Oid>) -> Vec<String> {
+    let Ok(mut walk) = repo.revwalk() else {
+        return Vec::new();
+    };
+    if walk.push(from).is_err() {
+        return Vec::new();
+    }
+    if let Some(k) = keep {
+        let _ = walk.hide(k);
+    }
+    walk.filter_map(|r| r.ok())
+        .filter_map(|oid| repo.find_commit(oid).ok())
+        .map(|c| c.summary().ok().flatten().unwrap_or("").to_string())
+        .collect()
+}
+
+fn risky_lost_commits(lost: &[String], what: &str) -> UndoApplicability {
+    let shown: Vec<String> = lost.iter().take(5).map(|s| format!("「{s}」")).collect();
+    let more = if lost.len() > 5 {
+        format!(" ほか{}件", lost.len() - 5)
+    } else {
+        String::new()
+    };
+    UndoApplicability::Risky {
+        reason: format!(
+            "この操作の記録後に、外部のツールなどで履歴が進んでいます。取り消すと、{what}{}件のコミットも一緒に巻き戻ります: {}{more}",
+            lost.len(),
+            shown.join(" ")
+        ),
+    }
+}
+
+/// エントリを「今のリポジトリ状態で適用してよいか」検証する（読み取り専用）。
+///
+/// 判定できない場合（記録に HEAD が無い旧形式など）は `Applicable` として扱い、
+/// 従来どおりの動作を保つ。
+pub fn validate_entry(repo: &Repository, entry: &UndoEntry) -> UndoApplicability {
+    use UndoApplicability::*;
+    let missing = |what: &str| {
+        Unresolvable {
+        reason: format!("{what}が見つからないため（削除・整理済みの可能性があります）、この操作は取り消せません。"),
+    }
+    };
+    match &entry.action {
+        UndoAction::SoftResetTo { previous } | UndoAction::HardResetTo { previous } => {
+            let Ok(prev) = git2::Oid::from_str(previous) else {
+                return missing("戻し先のコミット");
+            };
+            if repo.find_object(prev, None).is_err() {
+                return missing("戻し先のコミット");
+            }
+            let head = current_head(repo);
+            if head == Some(prev) {
+                return AlreadyUndone;
+            }
+            let moved = match (&entry.head_at_record, head) {
+                (Some(rec), Some(h)) => rec != &h.to_string(),
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if moved {
+                if let Some(h) = head {
+                    let lost = commits_lost(repo, h, Some(prev));
+                    if !lost.is_empty() {
+                        return risky_lost_commits(&lost, "あとから積まれた");
+                    }
+                }
+            }
+            Applicable
+        }
+        UndoAction::RecreateBranch { name, target } => {
+            if repo.find_branch(name, git2::BranchType::Local).is_ok() {
+                AlreadyUndone
+            } else if !commit_exists(repo, target) {
+                missing("ブランチの復元先のコミット")
+            } else {
+                Applicable
+            }
+        }
+        UndoAction::DeleteBranch { name } => {
+            let Ok(branch) = repo.find_branch(name, git2::BranchType::Local) else {
+                return AlreadyUndone;
+            };
+            let tip = branch.get().peel_to_commit().ok().map(|c| c.id());
+            if let (Some(rec), Some(tip)) = (&entry.head_at_record, tip) {
+                if rec != &tip.to_string() {
+                    let base = git2::Oid::from_str(rec).ok();
+                    let lost = commits_lost(repo, tip, base);
+                    if !lost.is_empty() {
+                        return risky_lost_commits(
+                            &lost,
+                            &format!("ブランチ「{name}」に作成後に積まれた"),
+                        );
+                    }
+                }
+            }
+            Applicable
+        }
+        UndoAction::UncommitInitial { branch } => {
+            let refname = format!("refs/heads/{branch}");
+            let Ok(r) = repo.find_reference(&refname) else {
+                return AlreadyUndone;
+            };
+            let tip = r.peel_to_commit().ok().map(|c| c.id());
+            if let (Some(rec), Some(tip)) = (&entry.head_at_record, tip) {
+                if rec != &tip.to_string() {
+                    let lost = commits_lost(repo, tip, None);
+                    return risky_lost_commits(&lost, "ブランチ上のあとから積まれた");
+                }
+            }
+            Applicable
+        }
+        UndoAction::PopStash { id } => {
+            let Ok(mut r) = Repository::open(repo.path()) else {
+                return Applicable;
+            };
+            let Ok(target) = git2::Oid::from_str(id) else {
+                return missing("退避（stash）");
+            };
+            let mut found = false;
+            let _ = r.stash_foreach(|_, _, oid| {
+                if *oid == target {
+                    found = true;
+                    false
+                } else {
+                    true
+                }
+            });
+            if found {
+                Applicable
+            } else {
+                AlreadyUndone
+            }
+        }
+        UndoAction::UnstagePath { .. } => Applicable,
+        UndoAction::RestoreIndexEntry { path, blob, .. } => {
+            let Ok(index) = repo.index() else {
+                return Applicable;
+            };
+            let current = index.get_path(std::path::Path::new(path), 0);
+            match blob {
+                Some(b) => {
+                    let Ok(oid) = git2::Oid::from_str(b) else {
+                        return missing("ステージ内容");
+                    };
+                    if repo.find_blob(oid).is_err() {
+                        return missing("ステージ内容");
+                    }
+                    if current.is_some_and(|e| e.id == oid) {
+                        AlreadyUndone
+                    } else {
+                        Applicable
+                    }
+                }
+                None => {
+                    if current.is_none() {
+                        AlreadyUndone
+                    } else {
+                        Applicable
+                    }
+                }
+            }
+        }
+        UndoAction::RecreateTag { name, target, .. } => {
+            if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+                AlreadyUndone
+            } else if !commit_exists(repo, target) {
+                missing("タグの付け先")
+            } else {
+                Applicable
+            }
+        }
+        UndoAction::DeleteTag { name } => {
+            if repo.find_reference(&format!("refs/tags/{name}")).is_ok() {
+                Applicable
+            } else {
+                AlreadyUndone
+            }
+        }
+        UndoAction::RestoreBisectHead {
+            original_commit, ..
+        } => {
+            if commit_exists(repo, original_commit) {
+                Applicable
+            } else {
+                missing("Bisect 開始前のコミット")
+            }
+        }
+    }
+}
+
 /// 直前の操作を取り消す。取り消した操作の説明を返す。
+///
+/// 履歴が進んでいて新しい作業も巻き戻る恐れがある（`Risky`）場合は、何も変えずに
+/// [`CoreError::Blocked`] で中断する。確認のうえで進めるなら [`undo_last_confirmed`]。
 pub fn undo_last(repo: &Repository) -> Result<String> {
+    undo_last_confirmed(repo, false)
+}
+
+/// [`undo_last`] の確認済みフラグ付き版。`confirm_risky` が true のときだけ
+/// `Risky` なエントリも適用する。適用不能（`Unresolvable`）なエントリは、
+/// 履歴から取り除いたうえで平易なエラーを返す。
+pub fn undo_last_confirmed(repo: &Repository, confirm_risky: bool) -> Result<String> {
     let mut entries = load(repo)?;
     let entry = entries
-        .pop()
+        .last()
+        .cloned()
         .ok_or_else(|| CoreError::NothingToUndo("取り消せる操作がありません。".to_string()))?;
+
+    match validate_entry(repo, &entry) {
+        UndoApplicability::Risky { reason } if !confirm_risky => {
+            // エントリは消費しない（確認後にやり直せるように）。
+            return Err(CoreError::Blocked(format!(
+                "{reason}（確認のうえ実行してください）"
+            )));
+        }
+        UndoApplicability::Unresolvable { reason } => {
+            // 二度と適用できないので履歴から整理し、次の Undo が詰まらないようにする。
+            entries.pop();
+            save(repo, &entries)?;
+            return Err(CoreError::NothingToUndo(format!(
+                "「{}」: {reason} この履歴は整理しました。",
+                entry.description
+            )));
+        }
+        _ => {}
+    }
 
     // apply の成否にかかわらずエントリを消費する。
     // apply が失敗しても再実行すると同じ結果になるため、消費して次の Undo が動けるようにする
     // （例: stash pop のコンフリクト時に同じエントリで失敗し続ける「ブロック状態」を防ぐ）。
+    entries.pop();
     let result = apply(repo, &entry.action);
     save(repo, &entries)?;
     result?;
@@ -586,6 +873,7 @@ mod tests {
         push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::DeleteBranch,
                 description: "test".into(),
                 action: UndoAction::RecreateBranch {
@@ -624,6 +912,7 @@ mod tests {
         push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::DeleteBranch,
                 description: "ブランチ temp の削除を取り消す".into(),
                 action: UndoAction::RecreateBranch {
@@ -727,6 +1016,7 @@ mod tests {
             push(
                 &repo,
                 UndoEntry {
+                    head_at_record: None,
                     op: OperationKind::DeleteBranch,
                     description: format!("操作{i}"),
                     action: UndoAction::RecreateBranch {
@@ -760,6 +1050,7 @@ mod tests {
         push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: crate::safety::OperationKind::DeleteBranch,
                 description: "test".into(),
                 action: UndoAction::RecreateBranch {
@@ -1018,5 +1309,421 @@ mod tests {
         apply(&repo, &remove).unwrap();
         let index = repo.index().unwrap();
         assert!(index.get_path(std::path::Path::new("a.txt"), 0).is_none());
+    }
+
+    // ---- Issue #201: stale（失効）検出 ----
+
+    fn entry(op: OperationKind, action: UndoAction) -> UndoEntry {
+        UndoEntry {
+            head_at_record: None,
+            op,
+            description: "テスト用".into(),
+            action,
+        }
+    }
+
+    // head_at_record の無い旧形式エントリが読め、Risky 判定はされず従来どおり適用できる。
+    #[test]
+    fn legacy_entry_without_head_at_record_is_readable_and_applicable() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+        let repo = fx.open();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "entries": [{
+                "op": "commit",
+                "description": "旧形式",
+                "action": { "action": "soft_reset_to", "previous": c1.to_string() }
+            }]
+        });
+        std::fs::write(
+            repo.path().join("noobgit_undo.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let entries = list(&repo).unwrap();
+        assert_eq!(entries[0].head_at_record, None);
+        assert_eq!(
+            validate_entry(&repo, &entries[0]),
+            UndoApplicability::Applicable
+        );
+        undo_last(&repo).unwrap();
+        assert_eq!(fx.open().head().unwrap().target().unwrap(), c1);
+    }
+
+    // push は head_at_record を自動で埋め、保存後も読み戻せる。
+    #[test]
+    fn push_fills_head_at_record() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        let repo = fx.open();
+        push(
+            &repo,
+            entry(
+                OperationKind::CreateBranch,
+                UndoAction::DeleteBranch { name: "x".into() },
+            ),
+        )
+        .unwrap();
+        let e = peek(&repo).unwrap().unwrap();
+        assert_eq!(e.head_at_record, Some(c1.to_string()));
+    }
+
+    #[test]
+    fn soft_reset_applicable_when_head_unchanged() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+        let repo = fx.open();
+        let e = entry(
+            OperationKind::Commit,
+            UndoAction::SoftResetTo {
+                previous: c1.to_string(),
+            },
+        );
+        push(&repo, e).unwrap();
+        let e = peek(&repo).unwrap().unwrap();
+        assert_eq!(validate_entry(&repo, &e), UndoApplicability::Applicable);
+    }
+
+    // 外部で履歴が進んだ後の undo は、確認なしでは新しいコミットを巻き戻さない。
+    #[test]
+    fn soft_reset_is_risky_after_external_commits_and_needs_confirmation() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        let c2 = fx.commit("c2");
+        let repo = fx.open();
+        push(
+            &repo,
+            entry(
+                OperationKind::Commit,
+                UndoAction::SoftResetTo {
+                    previous: c1.to_string(),
+                },
+            ),
+        )
+        .unwrap();
+        // 外部ツールで 3 コミット積まれた想定。
+        for i in 3..=5 {
+            fx.write_file("a.txt", &i.to_string());
+            fx.stage_all();
+            fx.commit(&format!("external{i}"));
+        }
+        let head_before = fx.head_oid();
+        let repo = fx.open();
+        let e = peek(&repo).unwrap().unwrap();
+        match validate_entry(&repo, &e) {
+            UndoApplicability::Risky { reason } => {
+                assert!(reason.contains("4件"), "{reason}");
+                assert!(reason.contains("external5"));
+            }
+            other => panic!("Risky のはず: {other:?}"),
+        }
+        // 確認なしはブロックされ、何も変わらずエントリも残る。
+        assert!(matches!(
+            undo_last(&repo).unwrap_err(),
+            CoreError::Blocked(_)
+        ));
+        assert_eq!(fx.head_oid(), head_before);
+        assert!(can_undo(&repo).unwrap());
+        // 確認済みなら適用される。
+        undo_last_confirmed(&repo, true).unwrap();
+        assert_eq!(fx.open().head().unwrap().target().unwrap(), c1);
+        let _ = c2;
+    }
+
+    #[test]
+    fn soft_reset_already_undone_when_head_is_previous() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        let repo = fx.open();
+        let e = entry(
+            OperationKind::Commit,
+            UndoAction::SoftResetTo {
+                previous: c1.to_string(),
+            },
+        );
+        assert_eq!(validate_entry(&repo, &e), UndoApplicability::AlreadyUndone);
+    }
+
+    // oid が存在しない・壊れている場合は Unresolvable。undo_last は履歴から整理する。
+    #[test]
+    fn unresolvable_oid_is_pruned_with_plain_message() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        for prev in ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "not-hex"] {
+            let e = entry(
+                OperationKind::ResetHard,
+                UndoAction::HardResetTo {
+                    previous: prev.into(),
+                },
+            );
+            assert!(matches!(
+                validate_entry(&repo, &e),
+                UndoApplicability::Unresolvable { .. }
+            ));
+        }
+        push(
+            &repo,
+            entry(
+                OperationKind::ResetHard,
+                UndoAction::HardResetTo {
+                    previous: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                },
+            ),
+        )
+        .unwrap();
+        let err = undo_last(&repo).unwrap_err().to_string();
+        assert!(err.contains("整理しました"), "{err}");
+        assert!(!can_undo(&repo).unwrap());
+    }
+
+    #[test]
+    fn prune_unresolvable_removes_only_stale_entries() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        push(
+            &repo,
+            entry(
+                OperationKind::CreateTag,
+                UndoAction::DeleteTag { name: "v1".into() },
+            ),
+        )
+        .unwrap();
+        push(
+            &repo,
+            entry(
+                OperationKind::DeleteTag,
+                UndoAction::RecreateTag {
+                    name: "gone".into(),
+                    target: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                    message: None,
+                },
+            ),
+        )
+        .unwrap();
+        let v = validate_journal(&repo).unwrap();
+        assert_eq!(v[0], UndoApplicability::AlreadyUndone);
+        assert!(matches!(v[1], UndoApplicability::Unresolvable { .. }));
+        assert_eq!(prune_unresolvable(&repo).unwrap(), 1);
+        assert_eq!(list(&repo).unwrap().len(), 1);
+        assert_eq!(prune_unresolvable(&repo).unwrap(), 0);
+    }
+
+    #[test]
+    fn branch_and_tag_applicability() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        let repo = fx.open();
+        let c1_commit = repo.find_commit(c1).unwrap();
+        repo.branch("feat", &c1_commit, false).unwrap();
+
+        // RecreateBranch: 既存 -> AlreadyUndone / 無くて oid あり -> Applicable
+        let rb = |n: &str| {
+            entry(
+                OperationKind::DeleteBranch,
+                UndoAction::RecreateBranch {
+                    name: n.into(),
+                    target: c1.to_string(),
+                },
+            )
+        };
+        assert_eq!(
+            validate_entry(&repo, &rb("feat")),
+            UndoApplicability::AlreadyUndone
+        );
+        assert_eq!(
+            validate_entry(&repo, &rb("other")),
+            UndoApplicability::Applicable
+        );
+
+        // DeleteBranch: 無ければ AlreadyUndone。作成後に進んでいれば Risky。
+        let db = |n: &str| UndoEntry {
+            head_at_record: Some(c1.to_string()),
+            ..entry(
+                OperationKind::CreateBranch,
+                UndoAction::DeleteBranch { name: n.into() },
+            )
+        };
+        assert_eq!(
+            validate_entry(&repo, &db("nope")),
+            UndoApplicability::AlreadyUndone
+        );
+        assert_eq!(
+            validate_entry(&repo, &db("feat")),
+            UndoApplicability::Applicable
+        );
+        fx.set_branch("feat", {
+            fx.write_file("a.txt", "2");
+            fx.stage_all();
+            fx.commit("c2")
+        });
+        let repo = fx.open();
+        assert!(matches!(
+            validate_entry(&repo, &db("feat")),
+            UndoApplicability::Risky { .. }
+        ));
+
+        // タグ
+        let c1_obj = repo.find_object(c1, None).unwrap();
+        repo.tag_lightweight("t1", &c1_obj, false).unwrap();
+        let rt = |n: &str| {
+            entry(
+                OperationKind::DeleteTag,
+                UndoAction::RecreateTag {
+                    name: n.into(),
+                    target: c1.to_string(),
+                    message: None,
+                },
+            )
+        };
+        assert_eq!(
+            validate_entry(&repo, &rt("t1")),
+            UndoApplicability::AlreadyUndone
+        );
+        assert_eq!(
+            validate_entry(&repo, &rt("t2")),
+            UndoApplicability::Applicable
+        );
+        let dt = |n: &str| {
+            entry(
+                OperationKind::CreateTag,
+                UndoAction::DeleteTag { name: n.into() },
+            )
+        };
+        assert_eq!(
+            validate_entry(&repo, &dt("t1")),
+            UndoApplicability::Applicable
+        );
+        assert_eq!(
+            validate_entry(&repo, &dt("t2")),
+            UndoApplicability::AlreadyUndone
+        );
+    }
+
+    #[test]
+    fn uncommit_initial_is_risky_when_branch_advanced() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        let repo = fx.open();
+        let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+        let e = UndoEntry {
+            head_at_record: Some(c1.to_string()),
+            ..entry(
+                OperationKind::Commit,
+                UndoAction::UncommitInitial {
+                    branch: branch.clone(),
+                },
+            )
+        };
+        assert_eq!(validate_entry(&repo, &e), UndoApplicability::Applicable);
+        fx.write_file("a.txt", "2");
+        fx.stage_all();
+        fx.commit("c2");
+        let repo = fx.open();
+        assert!(matches!(
+            validate_entry(&repo, &e),
+            UndoApplicability::Risky { .. }
+        ));
+        let gone = entry(
+            OperationKind::Commit,
+            UndoAction::UncommitInitial {
+                branch: "nope".into(),
+            },
+        );
+        assert_eq!(
+            validate_entry(&repo, &gone),
+            UndoApplicability::AlreadyUndone
+        );
+    }
+
+    #[test]
+    fn index_entry_and_bisect_and_stash_applicability() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        let c1 = fx.commit("c1");
+        let repo = fx.open();
+        let ghost = "cccccccccccccccccccccccccccccccccccccccc";
+        let ri = |blob: Option<&str>| {
+            entry(
+                OperationKind::Unstage,
+                UndoAction::RestoreIndexEntry {
+                    path: "a.txt".into(),
+                    blob: blob.map(|s| s.to_string()),
+                    mode: 0o100644,
+                },
+            )
+        };
+        assert!(matches!(
+            validate_entry(&repo, &ri(Some(ghost))),
+            UndoApplicability::Unresolvable { .. }
+        ));
+        let cur = repo
+            .index()
+            .unwrap()
+            .get_path(std::path::Path::new("a.txt"), 0)
+            .unwrap()
+            .id
+            .to_string();
+        assert_eq!(
+            validate_entry(&repo, &ri(Some(&cur))),
+            UndoApplicability::AlreadyUndone
+        );
+        assert_eq!(
+            validate_entry(&repo, &ri(None)),
+            UndoApplicability::Applicable
+        );
+
+        let bi = |c: &str| {
+            entry(
+                OperationKind::BisectStart,
+                UndoAction::RestoreBisectHead {
+                    original_branch: None,
+                    original_commit: c.into(),
+                },
+            )
+        };
+        assert_eq!(
+            validate_entry(&repo, &bi(&c1.to_string())),
+            UndoApplicability::Applicable
+        );
+        assert!(matches!(
+            validate_entry(&repo, &bi(ghost)),
+            UndoApplicability::Unresolvable { .. }
+        ));
+
+        let ps = entry(
+            OperationKind::StashSave,
+            UndoAction::PopStash { id: ghost.into() },
+        );
+        assert_eq!(validate_entry(&repo, &ps), UndoApplicability::AlreadyUndone);
     }
 }
