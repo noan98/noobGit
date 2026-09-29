@@ -25,6 +25,9 @@ use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext}
 use noobgit_core::undo::{UndoApplicability, UndoEntry};
 use noobgit_core::{bisect, identity, impact, ops, repo, undo};
 
+mod watcher;
+use watcher::WatcherRegistry;
+
 /// 書き込み系コマンドを 1 つずつ順番に実行するためのロック。
 ///
 /// コマンドは `#[tauri::command(async)]` でメインスレッド（画面の描画・入力を
@@ -38,8 +41,25 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// [`WRITE_LOCK`] を取得する。前の書き込みがパニックしてロックが汚染されて
 /// いても、以後の操作をすべて失敗させないよう、そのまま使い続ける
 /// （守っているデータは無く、順番に実行することだけが目的のため）。
-fn write_lock() -> std::sync::MutexGuard<'static, ()> {
-    WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+///
+/// 返すガードは、書き込みの開始・終了をファイルシステム監視（#199）に知らせる。
+/// これにより、noobGit 自身の操作で起きたファイル変更を外部の変更と取り違えて
+/// 二重に再読み込みしないようにしている。
+fn write_lock() -> WriteGuard {
+    let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    watcher::write_started();
+    WriteGuard { _guard: guard }
+}
+
+/// [`write_lock`] が返すガード。drop（＝ロック解放）時に書き込み完了を記録する。
+struct WriteGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        watcher::write_finished();
+    }
 }
 
 fn open(repo_path: &str) -> Result<Repository, String> {
@@ -927,6 +947,27 @@ fn bisect_status(repo_path: String) -> Result<Option<BisectStatus>, String> {
     bisect::bisect_status(&r).map_err(|e| e.to_string())
 }
 
+/// リポジトリのファイルシステム監視を開始する（#199）。外部での変更を検知すると
+/// イベント `repo-changed`（ペイロード: `{ repo_path }`）が送られる。
+#[tauri::command(async)]
+fn watch_repo(
+    app: tauri::AppHandle,
+    watchers: tauri::State<'_, WatcherRegistry>,
+    repo_path: String,
+) -> Result<(), String> {
+    watchers.watch(app, repo_path)
+}
+
+/// リポジトリのファイルシステム監視を止める（タブを閉じたとき）。
+#[tauri::command(async)]
+fn unwatch_repo(
+    watchers: tauri::State<'_, WatcherRegistry>,
+    repo_path: String,
+) -> Result<(), String> {
+    watchers.unwatch(&repo_path);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -936,6 +977,8 @@ pub fn run() {
         // Git ロジックは `noobgit-core::repo::LogCursorStore` 側に閉じており、
         // ここでは `Mutex` に包んでプロセス内で保持するだけ。
         .manage(Mutex::new(LogCursorStore::new()))
+        // タブごとのファイルシステム監視（#199）。
+        .manage(WatcherRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_branches,
@@ -1017,6 +1060,8 @@ pub fn run() {
             bisect_mark,
             bisect_reset,
             bisect_status,
+            watch_repo,
+            unwatch_repo,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::error::{describe_git2_error, describe_io_error, CoreError, Result};
@@ -79,6 +81,16 @@ pub fn is_dirty(repo: &Repository) -> Result<bool> {
             || staged_kind(s).is_some()
             || unstaged_kind(s).is_some()
     }))
+}
+
+/// 作業ツリー内の相対パスが `.gitignore` 等で無視されているかを返す。
+///
+/// ファイルシステム監視（#199）が、無視済みファイル（ビルド成果物など）の変更で
+/// 画面を無駄に再読み込みしないために使う。無視されたファイルは status に現れない
+/// ので、その変更は画面に影響しない。判定に失敗したとき（パスが不正など）は
+/// 「無視されていない」＝再読み込みする側に倒す。
+pub fn is_path_ignored(repo: &Repository, rel_path: &Path) -> bool {
+    repo.is_path_ignored(rel_path).unwrap_or(false)
 }
 
 /// 直前のコミット（HEAD）がすでにリモートへ送信（公開）済みとみなせるか。
@@ -1688,6 +1700,22 @@ pub fn suggest_commit_messages(repo: &Repository, prefix: &str, max: usize) -> R
 mod tests {
     use super::*;
     use crate::test_support::*;
+
+    #[test]
+    fn is_path_ignored_respects_gitignore() {
+        let fx = TestRepo::new();
+        fx.write_file(".gitignore", "*.log\nbuild/\n");
+        fx.write_file("a.txt", "1");
+        fx.write_file("debug.log", "x");
+        fx.write_file("build/out.js", "x");
+        let repo = fx.open();
+        assert!(is_path_ignored(&repo, Path::new("debug.log")));
+        assert!(is_path_ignored(&repo, Path::new("build/out.js")));
+        assert!(!is_path_ignored(&repo, Path::new("a.txt")));
+        assert!(!is_path_ignored(&repo, Path::new(".gitignore")));
+        // 存在しないパスや不正なパスでも panic せず「無視されていない」に倒す。
+        assert!(!is_path_ignored(&repo, Path::new("no/such/file.txt")));
+    }
 
     // is_dirty は status() より軽い条件で調べるが、判定結果は常に
     // `!status().is_clean` と一致しなければならない（危険度の評価に使うため）。
