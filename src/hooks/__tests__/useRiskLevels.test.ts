@@ -17,9 +17,23 @@ function assessment(level: RiskAssessment["level"]): RiskAssessment {
   };
 }
 
+// assess_operations に渡される 1 件分の依頼（src/api.ts の assessMany 参照）。
+interface WireRequest {
+  op: string;
+  target_branch: string | null;
+}
+
+// 1 件ごとの判定関数から、assess_operations のモック実装を作る。
+function mockAssessMany(judge: (r: WireRequest) => RiskAssessment["level"]) {
+  mockInvoke.mockImplementation((_cmd, args) => {
+    const { requests } = args as { requests: WireRequest[] };
+    return Promise.resolve(requests.map((r) => assessment(judge(r))));
+  });
+}
+
 describe("useRiskLevels", () => {
   beforeEach(() => {
-    mockInvoke.mockClear();
+    mockInvoke.mockReset();
   });
 
   it("repoPath が無ければ assess を呼ばず空を返す", () => {
@@ -28,13 +42,10 @@ describe("useRiskLevels", () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("リクエストした操作ごとに assess_operation を呼び、結果をキーで引けるようにする", async () => {
-    mockInvoke.mockImplementation((_cmd, args) => {
-      const a = args as { op: string; targetBranch: string | null };
-      if (a.op === "discard") return Promise.resolve(assessment("destructive"));
-      if (a.op === "pull") return Promise.resolve(assessment("caution"));
-      return Promise.resolve(assessment("safe"));
-    });
+  it("すべての操作を assess_operations の 1 回の呼び出しでまとめて評価し、結果をキーで引けるようにする", async () => {
+    mockAssessMany((r) =>
+      r.op === "discard" ? "destructive" : r.op === "pull" ? "caution" : "safe",
+    );
 
     const { result } = renderHook(() =>
       useRiskLevels("/repo", [{ op: "discard" }, { op: "pull" }]),
@@ -46,17 +57,20 @@ describe("useRiskLevels", () => {
         pull: "caution",
       });
     });
-    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("assess_operations", {
+      repoPath: "/repo",
+      requests: [
+        { op: "discard", target_branch: null },
+        { op: "pull", target_branch: null },
+      ],
+    });
   });
 
   it("target 付きリクエストは `op:target` のキーで結果を保持する", async () => {
-    mockInvoke.mockImplementation((_cmd, args) => {
-      const a = args as { op: string; targetBranch: string | null };
-      if (a.op === "delete_branch" && a.targetBranch === "main") {
-        return Promise.resolve(assessment("destructive"));
-      }
-      return Promise.resolve(assessment("caution"));
-    });
+    mockAssessMany((r) =>
+      r.op === "delete_branch" && r.target_branch === "main" ? "destructive" : "caution",
+    );
 
     const { result } = renderHook(() =>
       useRiskLevels("/repo", [
@@ -73,20 +87,17 @@ describe("useRiskLevels", () => {
     });
   });
 
-  it("assess が失敗した操作はキーに含めない（ベストエフォート）", async () => {
-    mockInvoke.mockImplementation((_cmd, args) => {
-      const a = args as { op: string };
-      if (a.op === "discard") return Promise.reject(new Error("失敗"));
-      return Promise.resolve(assessment("safe"));
-    });
+  it("評価に失敗したら空のまま（Safe 相当の通常スタイル）にする（ベストエフォート）", async () => {
+    mockInvoke.mockRejectedValue(new Error("失敗"));
 
     const { result } = renderHook(() =>
       useRiskLevels("/repo", [{ op: "discard" }, { op: "commit" }]),
     );
 
     await waitFor(() => {
-      expect(result.current).toEqual({ commit: "safe" });
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
     });
+    expect(result.current).toEqual({});
   });
 
   it("リクエストが空なら assess を呼ばない", () => {
@@ -94,9 +105,28 @@ describe("useRiskLevels", () => {
     expect(result.current).toEqual({});
     expect(mockInvoke).not.toHaveBeenCalled();
   });
+
+  it("refreshToken が短時間に何度も変わっても、評価は落ち着いてから 1 回だけ行う", async () => {
+    mockAssessMany(() => "safe");
+
+    const { result, rerender } = renderHook(
+      ({ token }: { token: object }) =>
+        useRiskLevels("/repo", [{ op: "amend_commit" }], token),
+      { initialProps: { token: {} } },
+    );
+    // 状態・履歴・ブランチの再取得がばらばらに完了した様子を再現する。
+    rerender({ token: {} });
+    rerender({ token: {} });
+
+    await waitFor(() => {
+      expect(result.current).toEqual({ amend_commit: "safe" });
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshToken が変わると（状態の再取得後）評価し直して新しい危険度に追従する", async () => {
     let level: RiskAssessment["level"] = "destructive";
-    mockInvoke.mockImplementation(() => Promise.resolve(assessment(level)));
+    mockAssessMany(() => level);
 
     const { result, rerender } = renderHook(
       ({ token }: { token: object }) =>

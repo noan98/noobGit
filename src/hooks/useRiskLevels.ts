@@ -7,9 +7,16 @@
  * リスクの判定ロジックはここには一切持たない——true/destructive のような
  * 判断はすべて core から返る `RiskLevel` をそのまま使うだけ。
  *
- * 大量の IPC 呼び出しを避けるため、`repoPath`・リクエスト内容（署名文字列）・
- * `refreshToken`（リポジトリ状態の再取得ごとに変わる値）が変わったときだけ
- * 再評価する。危険度は状態に依存する（例: amend は直前コミットを送信済みか、
+ * すべての操作を `api.assessMany`（`assess_operations` コマンド）の 1 回の
+ * 呼び出しでまとめて評価する。1 件ずつ `api.assess` を呼ぶと、そのたびに
+ * リポジトリの作業ツリー全体を調べ直すことになり、ブランチが多いと起動直後に
+ * 数十回の重い処理が走っていたため。
+ *
+ * さらに、`repoPath`・リクエスト内容（署名文字列）・`refreshToken`（リポジトリ
+ * 状態の再取得ごとに変わる値）が変わったときだけ、少し待ってから（デバウンス）
+ * 再評価する。状態・履歴・ブランチの再取得は別々に完了して refreshToken が
+ * 短時間に何度も変わるので、落ち着いてから 1 回だけ評価すれば足りる。
+ * 危険度は状態に依存する（例: amend は直前コミットを送信済みか、
  * switch_branch は未コミットの変更があるかで変わる）ため、状態の更新に
  * 追従させないとボタンの色が古いままになる。評価が未取得・失敗の間は該当キーが
  * undefined のままになり、呼び出し側（`riskTriggerClass`）は Safe 相当の
@@ -19,6 +26,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type OperationKind } from "../api";
 import { riskKey, type RiskLevels } from "../lib/risk";
+
+// 再評価までの待ち時間（ミリ秒）。状態の再取得が一通り終わるのを待つ程度の短さ。
+const RISK_REFRESH_DEBOUNCE_MS = 100;
 
 export interface RiskRequest {
   op: OperationKind;
@@ -51,29 +61,32 @@ export function useRiskLevels(
       return;
     }
     let cancelled = false;
-    const targets = requestsRef.current;
-    void (async () => {
-      const entries = await Promise.all(
-        targets.map(async (r) => {
-          try {
-            const assessment = await api.assess(repoPath, r.op, r.target);
-            return [riskKey(r.op, r.target), assessment.level] as const;
-          } catch {
-            // ベストエフォート: 取得失敗は無視し、そのキーは未取得（Safe相当の
-            // 通常スタイル）のままにする。
-            return null;
-          }
-        }),
-      );
-      if (cancelled) return;
-      const next: RiskLevels = {};
-      for (const entry of entries) {
-        if (entry) next[entry[0]] = entry[1];
-      }
-      setLevels(next);
-    })();
+    const handle = setTimeout(() => {
+      const targets = requestsRef.current;
+      void (async () => {
+        let assessments;
+        try {
+          assessments = await api.assessMany(
+            repoPath,
+            targets.map((r) => ({ op: r.op, targetBranch: r.target })),
+          );
+        } catch {
+          // ベストエフォート: 取得に失敗したら未取得（Safe 相当の通常スタイル）のまま
+          // にする。クリック時には guarded() が改めて評価するので事故には繋がらない。
+          return;
+        }
+        if (cancelled) return;
+        const next: RiskLevels = {};
+        targets.forEach((r, i) => {
+          const assessment = assessments[i];
+          if (assessment) next[riskKey(r.op, r.target)] = assessment.level;
+        });
+        setLevels(next);
+      })();
+    }, RISK_REFRESH_DEBOUNCE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(handle);
     };
   }, [repoPath, signature, refreshToken]);
 

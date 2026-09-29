@@ -305,7 +305,9 @@ export function RepoWorkspace({
   // 状態（作業ツリー・履歴・ブランチ）を再取得するたびに危険度も評価し直す。
   // 例: コミットを送信すると amend_commit が destructive → caution に変わる。
   const riskRefreshToken = useMemo(() => ({}), [status, commits, branches]);
-  const riskLevels = useRiskLevels(opened ? repoPath : null, [
+  // 表示中のタブだけ評価する（隠れているタブのボタンの色は見えないため）。
+  // タブを切り替えたときに評価し直す。
+  const riskLevels = useRiskLevels(opened && active ? repoPath : null, [
     // 対象非依存（常に同じ判定になる操作）。
     { op: "discard" },
     { op: "reset_hard" },
@@ -721,14 +723,16 @@ export function RepoWorkspace({
     }
   }, [repoPath]);
 
+  // 開いた直後の補助情報の取得。状態・履歴などの本体（refresh）はここでは
+  // 呼ばない — openRepo() がすでに refresh() を待っているので、ここでも呼ぶと
+  // 起動直後に同じ重い読み込みが 2 回走ってしまう。
   useEffect(() => {
     if (opened) {
-      void refresh();
       void loadIdentity();
       void loadRemotes(); // #71 リモート一覧
       void loadBisectStatus(); // #184 Bisect セッションの復元
     }
-  }, [opened, refresh, loadIdentity, loadRemotes, loadBisectStatus]);
+  }, [opened, loadIdentity, loadRemotes, loadBisectStatus]);
 
   // 選択中ファイルの差分を取得する。参照元（ステージ済み / 未ステージ /
   // コンフリクト）で呼ぶコマンドが変わる。
@@ -879,18 +883,28 @@ export function RepoWorkspace({
     setBlameError(null);
   }
 
-  // #262/#263 マウント時の自動オープン: App.tsx（タブ管理）が initialPath を渡してきた
+  // #262/#263 自動オープン: App.tsx（タブ管理）が initialPath を渡してきた
   // タブ（前回セッションの復元）は、初期画面を挟まずにそのリポジトリを開く。自動で
-  // 開くのはマウント直後の 1 回だけで、「別のリポジトリ」で初期画面へ戻ったあとは
-  // 通常の導線に任せる。開けなかった場合（フォルダ削除など）は openRepo が初期画面へ
-  // 戻すので、エラーはそこで案内される。
+  // 開くのは 1 回だけで、「別のリポジトリ」で初期画面へ戻ったあとは通常の導線に
+  // 任せる。開けなかった場合（フォルダ削除など）は openRepo が初期画面へ戻すので、
+  // エラーはそこで案内される。
+  //
+  // 開くのは、そのタブが初めて表示（active）されたとき。復元したタブをすべて
+  // 起動直後に読み込むと、見えていないタブの分まで重い処理が走って、表示中の
+  // タブが操作できるようになるまでが遅くなるため。まだ開いていない間も、
+  // タブ名とセッション保存には initialPath を使う（下の通知を参照）。
+  // autoOpenPath（ref）は二重オープン防止用（開発時の StrictMode ではエフェクトが
+  // 2 回走るため、state だけだと 2 回開いてしまう）。autoOpenPending（state）は
+  // 「まだ開いていない」ことを画面・タブ管理へ反映するためのもの。
   const autoOpenPath = useRef<string | null>(initialPath);
+  const [autoOpenPending, setAutoOpenPending] = useState(initialPath !== null);
   useEffect(() => {
-    if (autoOpenPath.current !== null && repoPath === autoOpenPath.current) {
-      autoOpenPath.current = null;
-      void openRepo();
-    }
-  }, [repoPath]);
+    if (!active || autoOpenPath.current === null) return;
+    const path = autoOpenPath.current;
+    autoOpenPath.current = null;
+    setAutoOpenPending(false);
+    if (repoPath === path) void openRepo();
+  }, [active, repoPath]);
 
   // 開いているリポジトリの変化をタブ管理（App.tsx）へ通知する。コールバックの同一性に
   // 依存しないよう、ref 経由で常に最新の関数を呼ぶ。
@@ -898,9 +912,14 @@ export function RepoWorkspace({
   useEffect(() => {
     onOpenedRepoChangeRef.current = onOpenedRepoChange;
   }, [onOpenedRepoChange]);
+  // まだ自動オープン待ち（一度も表示されていない復元タブ）のときは、これから開く
+  // initialPath を知らせる。タブ名が「新しいタブ」にならず、表示しないまま
+  // アプリを閉じてもセッションから消えないようにするため。
   useEffect(() => {
-    onOpenedRepoChangeRef.current(opened ? repoPath : null);
-  }, [opened, repoPath]);
+    onOpenedRepoChangeRef.current(
+      opened ? repoPath : autoOpenPending ? initialPath : null,
+    );
+  }, [opened, repoPath, autoOpenPending, initialPath]);
 
   async function openRepo() {
     if (!repoPath.trim()) return;

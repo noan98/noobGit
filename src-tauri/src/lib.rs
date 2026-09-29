@@ -23,6 +23,23 @@ use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext}
 use noobgit_core::undo::UndoEntry;
 use noobgit_core::{bisect, identity, ops, repo, undo};
 
+/// 書き込み系コマンドを 1 つずつ順番に実行するためのロック。
+///
+/// コマンドは `#[tauri::command(async)]` でメインスレッド（画面の描画・入力を
+/// 処理するスレッド）の外で動かしている。これにより Git の処理中も画面が固まら
+/// ないが、そのままだと複数の書き込み（例: ステージとコミット）が同時に走り、
+/// index のロック競合や undo ジャーナルの書き込みが交錯しうる。以前は全コマンドが
+/// メインスレッドで順番に実行されていたので、書き込み系だけはこのロックで同じ
+/// 「1 つずつ」の性質を保つ。読み取り系はロックを取らず、並行して実行してよい。
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// [`WRITE_LOCK`] を取得する。前の書き込みがパニックしてロックが汚染されて
+/// いても、以後の操作をすべて失敗させないよう、そのまま使い続ける
+/// （守っているデータは無く、順番に実行することだけが目的のため）。
+fn write_lock() -> std::sync::MutexGuard<'static, ()> {
+    WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn open(repo_path: &str) -> Result<Repository, String> {
     repo::open(repo_path).map_err(|e| e.to_string())
 }
@@ -38,13 +55,13 @@ fn protected_branches_or_default(r: &Repository) -> Vec<String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_status(repo_path: String) -> Result<RepoStatus, String> {
     let r = open(&repo_path)?;
     repo::status(&r).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
     let r = open(&repo_path)?;
     let protected = protected_branches_or_default(&r);
@@ -52,22 +69,23 @@ fn get_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
 }
 
 /// 保護ブランチ一覧を返す（未設定なら既定値の main/master）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_protected_branches(repo_path: String) -> Result<Vec<String>, String> {
     let r = open(&repo_path)?;
     Ok(protected_branches_or_default(&r))
 }
 
 /// 保護ブランチ一覧を保存する。空配列を渡すと既定値（main/master）に戻る。
-#[tauri::command]
+#[tauri::command(async)]
 fn set_protected_branches(repo_path: String, names: Vec<String>) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::save_protected_branches(&r, &names).map_err(|e| e.to_string())
 }
 
 /// コミット履歴をページングして返す。`filter` を渡すとメッセージ・作者・日付範囲で
 /// 絞り込む。`filter` が `null`（未指定）のときは従来どおり全件を対象にする。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_log(
     repo_path: String,
     skip: usize,
@@ -98,7 +116,7 @@ fn get_log(
 ///
 /// ページの続きを使い切った・検索条件を変えた・タブを閉じたときは
 /// [`close_log_cursor`] でカーソルを手放すこと。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_log_page(
     repo_path: String,
     max: usize,
@@ -145,7 +163,7 @@ fn close_log_cursor(cursor: String, cursors: tauri::State<'_, Mutex<LogCursorSto
 }
 
 /// 指定ファイルを変更したコミットを新しい順に最大 `max` 件返す（ファイル別履歴）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_file_log(repo_path: String, path: String, max: usize) -> Result<Vec<CommitInfo>, String> {
     let r = open(&repo_path)?;
     repo::file_log(&r, &path, max).map_err(|e| e.to_string())
@@ -153,7 +171,7 @@ fn get_file_log(repo_path: String, path: String, max: usize) -> Result<Vec<Commi
 
 /// 過去のコミット履歴から `prefix` に前方一致する件名候補を頻度順で返す
 /// （コミットメッセージのインライン補完 #185）。
-#[tauri::command]
+#[tauri::command(async)]
 fn suggest_commit_messages(
     repo_path: String,
     prefix: String,
@@ -164,21 +182,21 @@ fn suggest_commit_messages(
 }
 
 /// 指定ファイルの未ステージ差分（インデックス↔作業ツリー）を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_diff_unstaged(repo_path: String, path: String) -> Result<FileDiff, String> {
     let r = open(&repo_path)?;
     repo::diff_unstaged(&r, &path).map_err(|e| e.to_string())
 }
 
 /// 指定ファイルのステージ済み差分（HEAD↔インデックス）を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_diff_staged(repo_path: String, path: String) -> Result<FileDiff, String> {
     let r = open(&repo_path)?;
     repo::diff_staged(&r, &path).map_err(|e| e.to_string())
 }
 
 /// コンフリクト中ファイルの作業ツリーの内容（競合の目印を含む）を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String> {
     let r = open(&repo_path)?;
     repo::diff_conflict(&r, &path).map_err(|e| e.to_string())
@@ -187,7 +205,7 @@ fn get_diff_conflict(repo_path: String, path: String) -> Result<FileDiff, String
 /// 2 つのコミット間（または親コミット↔指定コミット）の全変更ファイルの差分を返す。
 ///
 /// `from_oid` が `null` のときは `to_oid` の第1親との比較になる。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_diff_between(
     repo_path: String,
     from_oid: Option<String>,
@@ -198,27 +216,28 @@ fn get_diff_between(
 }
 
 /// 指定ファイルの blame（各行を最後に変更したコミット）を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_blame(repo_path: String, path: String) -> Result<Vec<BlameHunk>, String> {
     let r = open(&repo_path)?;
     repo::blame_file(&r, &path).map_err(|e| e.to_string())
 }
 
 /// コンフリクト中のファイル一覧を返す（解消ウィザード用）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_conflicts(repo_path: String) -> Result<Vec<ConflictFile>, String> {
     let r = open(&repo_path)?;
     repo::get_conflicts(&r).map_err(|e| e.to_string())
 }
 
 /// 指定ファイルのコンフリクトを「解消済み」としてマークする（解消した内容をステージ）。
-#[tauri::command]
+#[tauri::command(async)]
 fn mark_resolved(repo_path: String, path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::mark_resolved(&r, &path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_branch_graph(repo_path: String) -> Result<BranchGraph, String> {
     let r = open(&repo_path)?;
     repo::branch_graph(&r).map_err(|e| e.to_string())
@@ -229,72 +248,129 @@ fn explain_operation(op: OperationKind) -> Explanation {
     explain_op(op)
 }
 
+/// 危険度の評価に必要なリポジトリの状態。1 回だけ調べて、複数の評価で使い回す。
+struct AssessState {
+    working_dir_dirty: bool,
+    protected_branches: Vec<String>,
+    /// HEAD が公開（push）済みか。amend / rebase の評価が 1 件も無ければ調べない。
+    head_published: bool,
+}
+
+impl AssessState {
+    fn load(r: &Repository, needs_head_published: bool) -> Result<Self, String> {
+        Ok(Self {
+            working_dir_dirty: repo::is_dirty(r).map_err(|e| e.to_string())?,
+            protected_branches: protected_branches_or_default(r),
+            head_published: needs_head_published && repo::head_is_published(r).unwrap_or(false),
+        })
+    }
+
+    fn assess(&self, op: OperationKind, target_branch: Option<String>) -> RiskAssessment {
+        // amend / rebase のときだけ、HEAD が公開済みかを危険度の引き上げに使う。
+        let head_published =
+            matches!(op, OperationKind::AmendCommit | OperationKind::Rebase) && self.head_published;
+        let ctx = SafetyContext {
+            target_branch,
+            working_dir_dirty: self.working_dir_dirty,
+            protected_branches: self.protected_branches.clone(),
+            head_published,
+        };
+        assess(op, &ctx)
+    }
+}
+
+fn needs_head_published(op: OperationKind) -> bool {
+    matches!(op, OperationKind::AmendCommit | OperationKind::Rebase)
+}
+
 /// 操作のリスクを評価する。未コミット変更の有無はリポジトリから自動判定する。
-#[tauri::command]
+#[tauri::command(async)]
 fn assess_operation(
     repo_path: String,
     op: OperationKind,
     target_branch: Option<String>,
 ) -> Result<RiskAssessment, String> {
     let r = open(&repo_path)?;
-    let working_dir_dirty = repo::is_dirty(&r).map_err(|e| e.to_string())?;
-    // amend / rebase のときだけ、HEAD が公開（push）済みかを判定する（危険度の引き上げに使う）。
-    let head_published = if matches!(op, OperationKind::AmendCommit | OperationKind::Rebase) {
-        repo::head_is_published(&r).unwrap_or(false)
-    } else {
-        false
-    };
-    let ctx = SafetyContext {
-        target_branch,
-        working_dir_dirty,
-        protected_branches: protected_branches_or_default(&r),
-        head_published,
-    };
-    Ok(assess(op, &ctx))
+    let state = AssessState::load(&r, needs_head_published(op))?;
+    Ok(state.assess(op, target_branch))
 }
 
-#[tauri::command]
+/// [`assess_operations`] の 1 件分の依頼。
+#[derive(serde::Deserialize)]
+struct AssessRequest {
+    op: OperationKind,
+    target_branch: Option<String>,
+}
+
+/// 複数の操作のリスクをまとめて評価する（ボタンの危険度カラー用, #274）。
+///
+/// 1 件ずつ [`assess_operation`] を呼ぶと、そのたびにリポジトリを開き直し、
+/// 作業ツリー全体を調べ直すことになる（ブランチが多いと数十回）。ここでは
+/// リポジトリの状態を 1 回だけ調べて、すべての評価で使い回す。
+/// 結果は `requests` と同じ順序・同じ件数で返す。
+#[tauri::command(async)]
+fn assess_operations(
+    repo_path: String,
+    requests: Vec<AssessRequest>,
+) -> Result<Vec<RiskAssessment>, String> {
+    let r = open(&repo_path)?;
+    let needs = requests.iter().any(|q| needs_head_published(q.op));
+    let state = AssessState::load(&r, needs)?;
+    Ok(requests
+        .into_iter()
+        .map(|q| state.assess(q.op, q.target_branch))
+        .collect())
+}
+
+#[tauri::command(async)]
 fn stage_all(repo_path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::stage_all(&r).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stage_path(repo_path: String, path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::stage_path(&r, &path).map_err(|e| e.to_string())
 }
 
 /// 指定ファイルの差分のうち、`hunk_header` に一致する塊（hunk）だけをステージする。
-#[tauri::command]
+#[tauri::command(async)]
 fn stage_hunk(repo_path: String, file_path: String, hunk_header: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::stage_hunk(&r, &file_path, &hunk_header).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn unstage(repo_path: String, path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::unstage(&r, &path).map_err(|e| e.to_string())
 }
 
 /// 指定ファイルのステージ済み差分のうち、`hunk_header` に一致する塊（hunk）だけを
 /// アンステージする。作業ツリーは変わらない。
-#[tauri::command]
+#[tauri::command(async)]
 fn unstage_hunk(repo_path: String, file_path: String, hunk_header: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::unstage_hunk(&r, &file_path, &hunk_header).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::commit(&r, &message).map_err(|e| e.to_string())
 }
 
 /// 直前のコミットを書き換える（amend）。メッセージが空ならもとのメッセージを保つ。
-#[tauri::command]
+#[tauri::command(async)]
 fn amend_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::amend_commit(&r, &message).map_err(|e| e.to_string())
 }
@@ -302,41 +378,45 @@ fn amend_commit(repo_path: String, message: String) -> Result<CommitInfo, String
 /// HEAD から連続する複数のコミットを1つにまとめる（squash）。
 ///
 /// `commit_oids` は HEAD から連続する範囲を新しい順（先頭が HEAD）で渡す。
-#[tauri::command]
+#[tauri::command(async)]
 fn squash_commits(
     repo_path: String,
     commit_oids: Vec<String>,
     message: String,
 ) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     let refs: Vec<&str> = commit_oids.iter().map(|s| s.as_str()).collect();
     ops::squash_commits(&r, &refs, &message).map_err(|e| e.to_string())
 }
 
 /// 最新のコミット（HEAD）のメッセージだけを書き換える（reword）。
-#[tauri::command]
+#[tauri::command(async)]
 fn reword_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::reword_commit(&r, &message).map_err(|e| e.to_string())
 }
 
 /// 指定パスの、まだコミットしていない変更を捨てる（破棄）。元に戻せない破壊的操作。
-#[tauri::command]
+#[tauri::command(async)]
 fn discard_path(repo_path: String, path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::discard_path(&r, &path).map_err(|e| e.to_string())
 }
 
 /// リポジトリ直下の `.gitignore` の内容を返す（ファイルが無ければ null）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_gitignore(repo_path: String) -> Result<Option<String>, String> {
     let r = open(&repo_path)?;
     repo::read_gitignore(&r).map_err(|e| e.to_string())
 }
 
 /// `.gitignore` の末尾にパターンを 1 行追記する（ファイルが無ければ新規作成）。
-#[tauri::command]
+#[tauri::command(async)]
 fn add_to_gitignore(repo_path: String, pattern: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::add_to_gitignore(&r, &pattern).map_err(|e| e.to_string())
 }
@@ -344,7 +424,7 @@ fn add_to_gitignore(repo_path: String, pattern: String) -> Result<(), String> {
 /// `.gitignore` の 1 パターンを、glob 構文チェックと重複チェックの両方込みで検証する。
 ///
 /// 入力中のリアルタイムバリデーションと、追加ボタン押下前の重複確認の両方に使う。
-#[tauri::command]
+#[tauri::command(async)]
 fn check_gitignore_pattern(
     repo_path: String,
     pattern: String,
@@ -361,8 +441,9 @@ fn suggest_gitignore_patterns(path: String) -> Vec<GitignoreSuggestion> {
 }
 
 /// 現在の変更を一時的にしまう（stash 退避）。未追跡ファイルも含めて退避する。
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_save(repo_path: String, message: String) -> Result<(), String> {
+    let _write = write_lock();
     let mut r = open(&repo_path)?;
     ops::stash_save(&mut r, &message).map_err(|e| e.to_string())
 }
@@ -370,74 +451,81 @@ fn stash_save(repo_path: String, message: String) -> Result<(), String> {
 /// 退避を作業ツリーに取り出す（一覧には残す）。コンフリクトが起きた場合も
 /// エラーにはせず、`StashRestoreOutcome.conflicted` で伝える（フロントの
 /// コンフリクト解消ウィザードへ自然につなげるため）。
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_apply(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
+    let _write = write_lock();
     let mut r = open(&repo_path)?;
     ops::stash_apply(&mut r, index).map_err(|e| e.to_string())
 }
 
 /// 退避を作業ツリーに取り出し、コンフリクトが無ければ一覧から取り除く（pop）。
 /// コンフリクトが起きた場合は退避を一覧に残す（`StashRestoreOutcome.conflicted` で伝える）。
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_pop(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
+    let _write = write_lock();
     let mut r = open(&repo_path)?;
     ops::stash_pop(&mut r, index).map_err(|e| e.to_string())
 }
 
 /// 退避を一覧から取り除く（中身は復元できない）。undo は記録しない。
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_drop(repo_path: String, stash_id: String) -> Result<(), String> {
+    let _write = write_lock();
     let mut r = open(&repo_path)?;
     ops::stash_drop(&mut r, &stash_id).map_err(|e| e.to_string())
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_stashes(repo_path: String) -> Result<Vec<StashInfo>, String> {
     let mut r = open(&repo_path)?;
     ops::stash_list(&mut r).map_err(|e| e.to_string())
 }
 
 /// 指定 index の退避に含まれる変更ファイル一覧を返す（退避は適用しない安全な操作）。
-#[tauri::command]
+#[tauri::command(async)]
 fn stash_diff(repo_path: String, index: usize) -> Result<Vec<FileChange>, String> {
     let mut r = open(&repo_path)?;
     ops::stash_diff(&mut r, index).map_err(|e| e.to_string())
 }
 
 /// 現在の identity（user.name / user.email）を取得する。初回セットアップ案内に使う。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_identity(repo_path: String) -> Result<Identity, String> {
     let r = open(&repo_path)?;
     identity::get_identity(&r).map_err(|e| e.to_string())
 }
 
 /// identity を保存する。`scope` で保存先（ローカル/グローバル）を選ぶ。
-#[tauri::command]
+#[tauri::command(async)]
 fn set_identity(
     repo_path: String,
     name: String,
     email: String,
     scope: IdentityScope,
 ) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     identity::set_identity(&r, &name, &email, scope).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_branch(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn switch_branch(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::switch_branch(&r, &name).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::delete_branch(&r, &name).map_err(|e| e.to_string())
 }
@@ -446,7 +534,7 @@ fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
 ///
 /// 保護ブランチ自身・現在チェックアウト中のブランチは含まれない。保護ブランチが
 /// ローカルに1つも無い場合は空の配列を返す（ブランチクリーンアップ導線 #269）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_merged_branches(repo_path: String) -> Result<Vec<MergedBranchInfo>, String> {
     let r = open(&repo_path)?;
     let protected = protected_branches_or_default(&r);
@@ -457,11 +545,12 @@ fn get_merged_branches(repo_path: String) -> Result<Vec<MergedBranchInfo>, Strin
 ///
 /// フロントから渡された `names` はそのまま信用せず、core 側（[`ops::delete_branches`]）が
 /// 削除直前に再検証する。条件を満たさないブランチは削除せずスキップし、理由と合わせて返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_branches(
     repo_path: String,
     names: Vec<String>,
 ) -> Result<BulkDeleteBranchesOutcome, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     let protected = protected_branches_or_default(&r);
     ops::delete_branches(&r, &names, &protected).map_err(|e| e.to_string())
@@ -474,12 +563,13 @@ fn delete_branches(
 /// 送信自体が失敗しても fetch は継続する（進捗表示はベストエフォート）。
 /// `Channel<T>` は Tauri の IPC 参照型で `Option` にはできないため、フロントエンドは
 /// 進捗を使わないときも（何もしない onmessage の）Channel を渡す（`src/api.ts` 参照）。
-#[tauri::command]
+#[tauri::command(async)]
 fn fetch(
     repo_path: String,
     remote: String,
     progress: Channel<NetworkProgress>,
 ) -> Result<FetchOutcome, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
@@ -491,13 +581,14 @@ fn fetch(
 ///
 /// `progress` は fetch 部分（データ受信）の進捗を通知する。fast-forward 自体は
 /// ローカルの作業なので進捗イベントは発生しない。
-#[tauri::command]
+#[tauri::command(async)]
 fn pull(
     repo_path: String,
     remote: String,
     branch: String,
     progress: Channel<NetworkProgress>,
 ) -> Result<PullOutcome, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
@@ -505,8 +596,9 @@ fn pull(
     ops::pull_with_progress(&r, &remote, &branch, &mut on_progress).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::reset_hard(&r, &revspec).map_err(|e| e.to_string())
 }
@@ -515,7 +607,7 @@ fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
 ///
 /// `progress` を渡すと、送信オブジェクト数などの進捗を Tauri の Channel 経由で
 /// フロントエンドへ都度ストリーミング送信する（#167 進捗フィードバック）。
-#[tauri::command]
+#[tauri::command(async)]
 fn push(
     repo_path: String,
     remote: String,
@@ -523,6 +615,7 @@ fn push(
     force: bool,
     progress: Channel<NetworkProgress>,
 ) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
@@ -537,7 +630,7 @@ fn push(
 /// `open()` を経由しない（`repo_path` を取らない）。`progress` へ受信オブジェクト数
 /// などの進捗を Tauri の Channel 経由でフロントエンドへ都度ストリーミング送信する
 /// （fetch / pull / push と同じ方式。#167 進捗フィードバック）。
-#[tauri::command]
+#[tauri::command(async)]
 fn clone_repo(
     url: String,
     dest_path: String,
@@ -552,69 +645,76 @@ fn clone_repo(
 
 /// 指定したローカルブランチを現在のブランチにマージする。
 /// コンフリクトが発生した場合は `Conflicted` を返し、リポジトリをマージ中の状態にする。
-#[tauri::command]
+#[tauri::command(async)]
 fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
 }
 
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
-#[tauri::command]
+#[tauri::command(async)]
 fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::cherry_pick(&r, &oid).map_err(|e| e.to_string())
 }
 
 /// タグの一覧を返す（名前順）。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_tags(repo_path: String) -> Result<Vec<TagInfo>, String> {
     let r = open(&repo_path)?;
     repo::list_tags(&r).map_err(|e| e.to_string())
 }
 
 /// コミットに目印（タグ）を付ける。`target` 省略時は HEAD、`message` 省略時は軽量タグ。
-#[tauri::command]
+#[tauri::command(async)]
 fn create_tag(
     repo_path: String,
     name: String,
     target: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::create_tag(&r, &name, target.as_deref(), message.as_deref()).map_err(|e| e.to_string())
 }
 
 /// タグ（目印）を削除する。直後に Undo で復元できる。
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::delete_tag(&r, &name).map_err(|e| e.to_string())
 }
 
 /// リモートリポジトリの一覧を返す（名前順）。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_remotes(repo_path: String) -> Result<Vec<RemoteInfo>, String> {
     let r = open(&repo_path)?;
     repo::list_remotes(&r).map_err(|e| e.to_string())
 }
 
 /// リモートリポジトリを追加する。
-#[tauri::command]
+#[tauri::command(async)]
 fn add_remote(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::add_remote(&r, &name, &url).map_err(|e| e.to_string())
 }
 
 /// リモートリポジトリを削除する。
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_remote(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::remove_remote(&r, &name).map_err(|e| e.to_string())
 }
 
 /// リモートリポジトリの fetch URL を変更する。
-#[tauri::command]
+#[tauri::command(async)]
 fn set_remote_url(repo_path: String, name: String, url: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::set_remote_url(&r, &name, &url).map_err(|e| e.to_string())
 }
@@ -630,20 +730,21 @@ fn classify_network_error_cmd(message: String) -> NetworkErrorKind {
 }
 
 /// 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_undo_journal(repo_path: String) -> Result<Vec<UndoEntry>, String> {
     let r = open(&repo_path)?;
     undo::list(&r).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     let r = open(&repo_path)?;
     Ok(undo::peek(&r).ok().flatten())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_last(repo_path: String) -> Result<String, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     undo::undo_last(&r).map_err(|e| e.to_string())
 }
@@ -652,12 +753,13 @@ fn undo_last(repo_path: String) -> Result<String, String> {
 ///
 /// `commit_id` は復元元コミットのハッシュ（短縮形可）。`file_path` はリポジトリルートからの
 /// 相対パス。指定コミットに対象ファイルが存在しない場合は日本語エラーを返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn restore_file_from_commit(
     repo_path: String,
     commit_id: String,
     file_path: String,
 ) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     ops::restore_file_from_commit(&r, &commit_id, &file_path).map_err(|e| e.to_string())
 }
@@ -666,7 +768,7 @@ fn restore_file_from_commit(
 ///
 /// 各エントリには移動前後の OID・短縮形・生メッセージ・日本語化した操作説明・
 /// タイムスタンプを含む。reflog が存在しないリポジトリでは空の配列を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_reflog(repo_path: String, max: usize) -> Result<Vec<ReflogEntry>, String> {
     let r = open(&repo_path)?;
     repo::read_reflog(&r, max).map_err(|e| e.to_string())
@@ -677,7 +779,7 @@ fn get_reflog(repo_path: String, max: usize) -> Result<Vec<ReflogEntry>, String>
 /// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
 /// 機密ファイルが見つかった場合、その理由を日本語で説明した [`SensitiveWarning`] の一覧を返す。
 /// 何も見つからなければ空の配列を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn check_sensitive(repo_path: String, paths: Vec<String>) -> Result<Vec<SensitiveWarning>, String> {
     let r = open(&repo_path)?;
     // リポジトリの作業ツリーのルートパスを使う。bare の場合は repo_path をそのまま使う。
@@ -696,7 +798,7 @@ fn check_sensitive(repo_path: String, paths: Vec<String>) -> Result<Vec<Sensitiv
 /// `paths` はリポジトリルートからの相対パス（スラッシュ区切り）の一覧。
 /// 候補ファイルが見つかった場合、情報を [`LfsCandidate`] の一覧で返す。
 /// 何も見つからなければ空の配列を返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn check_lfs_candidates(
     repo_path: String,
     paths: Vec<String>,
@@ -714,29 +816,32 @@ fn check_lfs_candidates(
 
 /// Bisect（バグ混入コミットの二分探索）を開始する。
 /// `bad` は「壊れている」コミット、`good` は「動いていた」コミット（どちらも revspec）。
-#[tauri::command]
+#[tauri::command(async)]
 fn bisect_start(repo_path: String, bad: String, good: String) -> Result<BisectStatus, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     bisect::bisect_start(&r, &bad, &good).map_err(|e| e.to_string())
 }
 
 /// いま Bisect が調べているコミットについて good/bad を記録し、次の候補へ進める。
-#[tauri::command]
+#[tauri::command(async)]
 fn bisect_mark(repo_path: String, commit: String, is_good: bool) -> Result<BisectStatus, String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     bisect::bisect_mark(&r, &commit, is_good).map_err(|e| e.to_string())
 }
 
 /// Bisect セッションを終了し、開始前のブランチ（または元のコミット）へ戻す。
-#[tauri::command]
+#[tauri::command(async)]
 fn bisect_reset(repo_path: String) -> Result<(), String> {
+    let _write = write_lock();
     let r = open(&repo_path)?;
     bisect::bisect_reset(&r).map_err(|e| e.to_string())
 }
 
 /// 現在の Bisect セッションの状態を返す（無ければ null）。タブの再表示やアプリ再起動後の
 /// 復元に使う読み取り専用コマンド。
-#[tauri::command]
+#[tauri::command(async)]
 fn bisect_status(repo_path: String) -> Result<Option<BisectStatus>, String> {
     let r = open(&repo_path)?;
     bisect::bisect_status(&r).map_err(|e| e.to_string())
@@ -771,6 +876,7 @@ pub fn run() {
             get_branch_graph,
             explain_operation,
             assess_operation,
+            assess_operations,
             stage_all,
             stage_path,
             stage_hunk,
