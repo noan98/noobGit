@@ -2829,6 +2829,38 @@ textarea {
   align-self: center;
 }
 
+/* ---- #208 操作アクティビティログ ---- */
+.activity-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+.activity-meta {
+  font-size: 12px;
+}
+.activity-badge {
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.activity-badge-success {
+  color: var(--safe);
+  border-color: var(--safe);
+}
+.activity-badge-failed {
+  color: var(--destructive, var(--caution, var(--text)));
+  border-color: var(--destructive, var(--caution, var(--muted)));
+}
+
 /* ---- prefers-reduced-motion 対応 (#108) ---- */
 /* OS の「視差効果を減らす / アニメーションを減らす」設定が有効なとき、
    CSS トランジション（カードのホバー・入力フォーカス・ボタン等）も抑制する。

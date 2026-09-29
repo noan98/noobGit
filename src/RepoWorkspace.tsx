@@ -45,6 +45,7 @@ import {
   type RemoteInfo,
   type UndoEntry,
   type UndoApplicability,
+  type ActivityEntry,
 } from "./api";
 import { Icon } from "./components/Icon";
 import { showToast } from "./components/Toaster";
@@ -89,6 +90,7 @@ import { GitignoreModal } from "./components/GitignoreModal"; // #70 .gitignore 
 import { useGlobalShortcuts, isPaletteShortcut } from "./hooks/useGlobalShortcuts"; // #63 ショートカット
 import { Sidebar, type MainView } from "./components/Sidebar"; // SourceTree 風レイアウトのサイドバー
 import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイムライン
+import { ActivityLog } from "./components/ActivityLog"; // #208 操作アクティビティログ
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette"; // #105 コマンドパレット
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
@@ -337,6 +339,8 @@ export function RepoWorkspace({
   const [undoJournal, setUndoJournal] = useState<UndoEntry[]>([]); // #48 Undo タイムライン
   // #201 undoJournal と同じ古い順の適用可否。取得に失敗したら空（＝すべて適用可として表示）。
   const [undoApplicability, setUndoApplicability] = useState<UndoApplicability[]>([]);
+  // #208 操作アクティビティログ（古い順）。失敗しても空のまま（画面全体は止めない）。
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [stashes, setStashes] = useState<StashInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]); // #71 リモート管理
@@ -765,6 +769,13 @@ export function RepoWorkspace({
               .getUndoApplicability(repoPath)
               .then(setUndoApplicability)
               .catch(() => setUndoApplicability([])),
+          );
+          // #208 操作ログも同じタイミングで更新する（補助情報なので失敗は無視）。
+          tasks.push(
+            api
+              .getActivityLog(repoPath)
+              .then(setActivityLog)
+              .catch(() => setActivityLog([])),
           );
         }
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
@@ -1386,6 +1397,34 @@ export function RepoWorkspace({
         action: () => runUndo(true),
         refresh: FULL_REFRESH,
       });
+    })();
+  }
+
+  // #208 操作ログの再取得と消去。
+  const loadActivityLog = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      setActivityLog(await api.getActivityLog(repoPath));
+    } catch {
+      setActivityLog([]);
+    }
+  }, [repoPath]);
+
+  // 操作ログを開いている間は、開いた直後と、操作が失敗した直後（error が更新される）にも
+  // 最新の記録を取り直す（成功時は refresh の undo 更新に相乗りする）。
+  useEffect(() => {
+    if (opened && view === "activity") void loadActivityLog();
+  }, [opened, view, error, loadActivityLog]);
+
+  function clearActivity() {
+    void (async () => {
+      try {
+        await api.clearActivityLog(repoPath);
+        setActivityLog([]);
+        showToast("操作ログを消去しました。", "success");
+      } catch (e) {
+        showToast(String(e), "error");
+      }
     })();
   }
 
@@ -2150,6 +2189,12 @@ export function RepoWorkspace({
           run: () => {
             if (undoInfo) doUndo();
           },
+        },
+        {
+          id: "activity-log",
+          label: "操作ログを開く",
+          description: "これまでに行った操作を時系列で振り返る（先輩に共有用のコピーもできる）",
+          run: () => setView("activity"),
         },
         {
           id: "fetch",
@@ -3059,6 +3104,18 @@ export function RepoWorkspace({
               </motion.div>
             )}
           </AnimatePresence>
+          </div>
+          )}
+
+          {/* #208 操作アクティビティログ: 行った操作を時系列で振り返る。 */}
+          {view === "activity" && (
+          <div className="view-scroll">
+            <ActivityLog
+              entries={activityLog}
+              repoName={repoName}
+              onRefresh={() => void loadActivityLog()}
+              onClear={clearActivity}
+            />
           </div>
           )}
 

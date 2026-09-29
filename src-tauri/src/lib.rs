@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use git2::Repository;
 use tauri::ipc::Channel;
 
+use noobgit_core::activity::{self, ActivityEntry, ActivityOutcome};
 use noobgit_core::error::{classify_local_message, classify_network_error, NetworkErrorKind};
 use noobgit_core::explain::{
     explain as explain_op, explain_local_error, Explanation, LocalErrorExplanation,
@@ -64,6 +65,35 @@ impl Drop for WriteGuard {
 
 fn open(repo_path: &str) -> Result<Repository, String> {
     repo::open(repo_path).map_err(|e| e.to_string())
+}
+
+/// 書き込み系コマンドの共通ラッパー。リポジトリを開いて `f` を実行し、その成否を
+/// 操作アクティビティログ（Issue #208）へ記録してから、結果を `Result<T, String>` で返す。
+///
+/// Git のロジックはすべて `f`（core の関数呼び出し）の中にあり、ここは「開く・呼ぶ・
+/// 記録する・エラーを文字列にする」だけ。記録は core 側でベストエフォートなので、
+/// ログの書き込みに失敗しても操作の結果は変わらない。`detail` は対象のパス名・
+/// ブランチ名など（ファイルの内容や差分は渡さない）。リポジトリを開けなかった場合は
+/// 何も起きていないので記録しない。
+fn logged<T>(
+    repo_path: &str,
+    op: OperationKind,
+    detail: Option<String>,
+    f: impl FnOnce(&mut Repository) -> noobgit_core::Result<T>,
+) -> Result<T, String> {
+    let mut r = open(repo_path)?;
+    let result = f(&mut r);
+    let outcome = match &result {
+        Ok(_) => ActivityOutcome::Success,
+        Err(e) => ActivityOutcome::Failed(e.to_string()),
+    };
+    activity::record(&r, op, activity::summarize(op, detail.as_deref()), outcome);
+    result.map_err(|e| e.to_string())
+}
+
+/// コミット id などを 7 文字の短い形にする（ログの見た目用）。
+fn short_id(id: &str) -> String {
+    id.chars().take(7).collect()
 }
 
 /// 保護ブランチ一覧を返す。読み込みに失敗した場合は安全側に倒し、既定値
@@ -360,30 +390,43 @@ fn assess_operations(
 #[tauri::command(async)]
 fn stage_all(repo_path: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::stage_all(&r).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Stage,
+        Some("すべての変更".into()),
+        |r| ops::stage_all(r),
+    )
 }
 
 #[tauri::command(async)]
 fn stage_path(repo_path: String, path: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::stage_path(&r, &path).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::Stage, Some(path.clone()), |r| {
+        ops::stage_path(r, &path)
+    })
 }
 
 /// 指定ファイルの差分のうち、`hunk_header` に一致する塊（hunk）だけをステージする。
 #[tauri::command(async)]
 fn stage_hunk(repo_path: String, file_path: String, hunk_header: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::stage_hunk(&r, &file_path, &hunk_header).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Stage,
+        Some(format!("{file_path}（一部）")),
+        |r| ops::stage_hunk(r, &file_path, &hunk_header),
+    )
 }
 
 #[tauri::command(async)]
 fn unstage(repo_path: String, path: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::unstage(&r, &path).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Unstage,
+        Some(path.clone()),
+        |r| ops::unstage(r, &path),
+    )
 }
 
 /// 指定ファイルのステージ済み差分のうち、`hunk_header` に一致する塊（hunk）だけを
@@ -391,23 +434,29 @@ fn unstage(repo_path: String, path: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn unstage_hunk(repo_path: String, file_path: String, hunk_header: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::unstage_hunk(&r, &file_path, &hunk_header).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Unstage,
+        Some(format!("{file_path}（一部）")),
+        |r| ops::unstage_hunk(r, &file_path, &hunk_header),
+    )
 }
 
 #[tauri::command(async)]
 fn commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::commit(&r, &message).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::Commit, None, |r| {
+        ops::commit(r, &message)
+    })
 }
 
 /// 直前のコミットを書き換える（amend）。メッセージが空ならもとのメッセージを保つ。
 #[tauri::command(async)]
 fn amend_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::amend_commit(&r, &message).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::AmendCommit, None, |r| {
+        ops::amend_commit(r, &message)
+    })
 }
 
 /// HEAD から連続する複数のコミットを1つにまとめる（squash）。
@@ -420,9 +469,13 @@ fn squash_commits(
     message: String,
 ) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
     let refs: Vec<&str> = commit_oids.iter().map(|s| s.as_str()).collect();
-    ops::squash_commits(&r, &refs, &message).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Rebase,
+        Some(format!("{}件のコミットを1つにまとめる", refs.len())),
+        |r| ops::squash_commits(r, &refs, &message),
+    )
 }
 
 /// HEAD から連続するコミットの範囲を、プラン（並べ替え・削除・reword・squash の混在）どおりに作り直す。
@@ -439,16 +492,24 @@ fn rebase_plan(repo_path: String, plan: Vec<RebaseStep>) -> Result<(), String> {
 #[tauri::command(async)]
 fn reword_commit(repo_path: String, message: String) -> Result<CommitInfo, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::reword_commit(&r, &message).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Rebase,
+        Some("直前のコミットのメッセージを書き換え".into()),
+        |r| ops::reword_commit(r, &message),
+    )
 }
 
 /// 指定パスの、まだコミットしていない変更を捨てる（破棄）。元に戻せない破壊的操作。
 #[tauri::command(async)]
 fn discard_path(repo_path: String, path: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::discard_path(&r, &path).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Discard,
+        Some(path.clone()),
+        |r| ops::discard_path(r, &path),
+    )
 }
 
 /// リポジトリ直下の `.gitignore` の内容を返す（ファイルが無ければ null）。
@@ -489,8 +550,9 @@ fn suggest_gitignore_patterns(path: String) -> Vec<GitignoreSuggestion> {
 #[tauri::command(async)]
 fn stash_save(repo_path: String, message: String) -> Result<(), String> {
     let _write = write_lock();
-    let mut r = open(&repo_path)?;
-    ops::stash_save(&mut r, &message).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::StashSave, None, |r| {
+        ops::stash_save(r, &message)
+    })
 }
 
 /// 退避を作業ツリーに取り出す（一覧には残す）。コンフリクトが起きた場合も
@@ -499,8 +561,12 @@ fn stash_save(repo_path: String, message: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn stash_apply(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
     let _write = write_lock();
-    let mut r = open(&repo_path)?;
-    ops::stash_apply(&mut r, index).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::StashApply,
+        Some(format!("stash@{{{index}}}")),
+        |r| ops::stash_apply(r, index),
+    )
 }
 
 /// 退避を作業ツリーに取り出し、コンフリクトが無ければ一覧から取り除く（pop）。
@@ -508,16 +574,21 @@ fn stash_apply(repo_path: String, index: usize) -> Result<StashRestoreOutcome, S
 #[tauri::command(async)]
 fn stash_pop(repo_path: String, index: usize) -> Result<StashRestoreOutcome, String> {
     let _write = write_lock();
-    let mut r = open(&repo_path)?;
-    ops::stash_pop(&mut r, index).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::StashPop,
+        Some(format!("stash@{{{index}}}")),
+        |r| ops::stash_pop(r, index),
+    )
 }
 
 /// 退避を一覧から取り除く（中身は復元できない）。undo は記録しない。
 #[tauri::command(async)]
 fn stash_drop(repo_path: String, stash_id: String) -> Result<(), String> {
     let _write = write_lock();
-    let mut r = open(&repo_path)?;
-    ops::stash_drop(&mut r, &stash_id).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::StashDrop, None, |r| {
+        ops::stash_drop(r, &stash_id)
+    })
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。
@@ -565,16 +636,24 @@ fn set_identity(
 #[tauri::command(async)]
 fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::create_branch(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::CreateBranch,
+        Some(name.clone()),
+        |r| ops::create_branch(r, &name),
+    )
 }
 
 /// detached HEAD の今の位置に新しいブランチを作って乗り換え、コミットを安全にする。
 #[tauri::command(async)]
 fn rescue_detached_head(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::rescue_detached_head(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::RescueDetachedHead,
+        Some(name.clone()),
+        |r| ops::rescue_detached_head(r, &name),
+    )
 }
 
 /// 未コミットの変更を退避してからブランチを切り替え、切り替え後に変更を戻す。
@@ -585,22 +664,34 @@ fn switch_branch_with_stash(
     name: String,
 ) -> Result<SwitchWithStashOutcome, String> {
     let _write = write_lock();
-    let mut r = open(&repo_path)?;
-    ops::switch_branch_with_stash(&mut r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::SwitchBranchWithStash,
+        Some(name.clone()),
+        |r| ops::switch_branch_with_stash(r, &name),
+    )
 }
 
 #[tauri::command(async)]
 fn switch_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::switch_branch(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::SwitchBranch,
+        Some(name.clone()),
+        |r| ops::switch_branch(r, &name),
+    )
 }
 
 #[tauri::command(async)]
 fn delete_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::delete_branch(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::DeleteBranch,
+        Some(name.clone()),
+        |r| ops::delete_branch(r, &name),
+    )
 }
 
 /// マージ済みローカルブランチ（保護ブランチのいずれかに取り込み済み）の一覧を返す。
@@ -624,9 +715,15 @@ fn delete_branches(
     names: Vec<String>,
 ) -> Result<BulkDeleteBranchesOutcome, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    let protected = protected_branches_or_default(&r);
-    ops::delete_branches(&r, &names, &protected).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::DeleteBranch,
+        Some(names.join(", ")),
+        |r| {
+            let protected = protected_branches_or_default(r);
+            ops::delete_branches(r, &names, &protected)
+        },
+    )
 }
 
 /// リモートから最新を取得し、リモート追跡ブランチを更新する（作業ツリーは変えない）。
@@ -643,11 +740,15 @@ fn fetch(
     progress: Channel<NetworkProgress>,
 ) -> Result<FetchOutcome, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
     };
-    ops::fetch_with_progress(&r, &remote, &mut on_progress).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Fetch,
+        Some(remote.clone()),
+        |r| ops::fetch_with_progress(r, &remote, &mut on_progress),
+    )
 }
 
 /// fetch 後、安全に進められるとき（fast-forward）だけ取り込む。分岐時は中断する。
@@ -662,18 +763,26 @@ fn pull(
     progress: Channel<NetworkProgress>,
 ) -> Result<PullOutcome, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
     };
-    ops::pull_with_progress(&r, &remote, &branch, &mut on_progress).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Pull,
+        Some(format!("{remote}/{branch}")),
+        |r| ops::pull_with_progress(r, &remote, &branch, &mut on_progress),
+    )
 }
 
 #[tauri::command(async)]
 fn reset_hard(repo_path: String, revspec: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::reset_hard(&r, &revspec).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::ResetHard,
+        Some(revspec.clone()),
+        |r| ops::reset_hard(r, &revspec),
+    )
 }
 
 /// ローカルのコミットをリモートへ送信する。`force` が真なら強制 push。
@@ -689,12 +798,17 @@ fn push(
     progress: Channel<NetworkProgress>,
 ) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
     let mut on_progress = move |p: NetworkProgress| {
         let _ = progress.send(p);
     };
-    ops::push_with_progress(&r, &remote, &refspec, force, &mut on_progress)
-        .map_err(|e| e.to_string())
+    let op = if force {
+        OperationKind::ForcePush
+    } else {
+        OperationKind::Push
+    };
+    logged(&repo_path, op, Some(format!("{remote} {refspec}")), |r| {
+        ops::push_with_progress(r, &remote, &refspec, force, &mut on_progress)
+    })
 }
 
 /// リモートリポジトリを `dest_path` へ新規にクローンする。
@@ -721,24 +835,36 @@ fn clone_repo(
 #[tauri::command(async)]
 fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Merge,
+        Some(branch_name.clone()),
+        |r| ops::merge_branch(r, &branch_name),
+    )
 }
 
 /// 指定したコミットの変更を打ち消す新しいコミットを積む（revert）。履歴は書き換えない。
 #[tauri::command(async)]
 fn revert_commit(repo_path: String, oid: String) -> Result<CommitInfo, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::revert_commit(&r, &oid).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Revert,
+        Some(short_id(&oid)),
+        |r| ops::revert_commit(r, &oid),
+    )
 }
 
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
 #[tauri::command(async)]
 fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::cherry_pick(&r, &oid).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::CherryPick,
+        Some(short_id(&oid)),
+        |r| ops::cherry_pick(r, &oid),
+    )
 }
 
 /// タグの一覧を返す（名前順）。
@@ -766,16 +892,24 @@ fn create_tag(
     message: Option<String>,
 ) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::create_tag(&r, &name, target.as_deref(), message.as_deref()).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::CreateTag,
+        Some(name.clone()),
+        |r| ops::create_tag(r, &name, target.as_deref(), message.as_deref()),
+    )
 }
 
 /// タグ（目印）を削除する。直後に Undo で復元できる。
 #[tauri::command(async)]
 fn delete_tag(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::delete_tag(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::DeleteTag,
+        Some(name.clone()),
+        |r| ops::delete_tag(r, &name),
+    )
 }
 
 /// リモートリポジトリの一覧を返す（名前順）。
@@ -797,8 +931,12 @@ fn add_remote(repo_path: String, name: String, url: String) -> Result<(), String
 #[tauri::command(async)]
 fn remove_remote(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::remove_remote(&r, &name).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::RemoveRemote,
+        Some(name.clone()),
+        |r| ops::remove_remote(r, &name),
+    )
 }
 
 /// リモートリポジトリの fetch URL を変更する。
@@ -849,7 +987,34 @@ fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
 fn undo_last(repo_path: String, confirm_risky: Option<bool>) -> Result<String, String> {
     let _write = write_lock();
     let r = open(&repo_path)?;
-    undo::undo_last_confirmed(&r, confirm_risky.unwrap_or(false)).map_err(|e| e.to_string())
+    // 取り消す対象（次に適用される最新エントリ）を先に控えておく。ログには
+    // 「何を取り消したか」を残すため。履歴が空なら記録する対象がない。
+    let target = undo::peek(&r).ok().flatten();
+    let result = undo::undo_last_confirmed(&r, confirm_risky.unwrap_or(false));
+    if let Some(entry) = target {
+        let summary = activity::summarize_undo(entry.op, &entry.description);
+        let outcome = match &result {
+            Ok(_) => ActivityOutcome::Undone,
+            Err(e) => ActivityOutcome::Failed(e.to_string()),
+        };
+        activity::record(&r, entry.op, summary, outcome);
+    }
+    result.map_err(|e| e.to_string())
+}
+
+/// 操作アクティビティログを古い順で返す（Issue #208）。
+#[tauri::command(async)]
+fn get_activity_log(repo_path: String) -> Result<Vec<ActivityEntry>, String> {
+    let r = open(&repo_path)?;
+    activity::list(&r).map_err(|e| e.to_string())
+}
+
+/// 操作アクティビティログを空にする（Issue #208）。
+#[tauri::command(async)]
+fn clear_activity_log(repo_path: String) -> Result<(), String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    activity::clear(&r).map_err(|e| e.to_string())
 }
 
 /// 取り消し履歴の各エントリが今のリポジトリ状態で適用できるかを検証する
@@ -879,8 +1044,12 @@ fn restore_file_from_commit(
     file_path: String,
 ) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::restore_file_from_commit(&r, &commit_id, &file_path).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::RestoreFile,
+        Some(format!("{file_path}（{}）", short_id(&commit_id))),
+        |r| ops::restore_file_from_commit(r, &commit_id, &file_path),
+    )
 }
 
 /// HEAD の reflog（移動履歴）を新しい順に最大 `max` 件返す。
@@ -938,8 +1107,9 @@ fn check_lfs_candidates(
 #[tauri::command(async)]
 fn bisect_start(repo_path: String, bad: String, good: String) -> Result<BisectStatus, String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    bisect::bisect_start(&r, &bad, &good).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::BisectStart, None, |r| {
+        bisect::bisect_start(r, &bad, &good)
+    })
 }
 
 /// いま Bisect が調べているコミットについて good/bad を記録し、次の候補へ進める。
@@ -954,8 +1124,9 @@ fn bisect_mark(repo_path: String, commit: String, is_good: bool) -> Result<Bisec
 #[tauri::command(async)]
 fn bisect_reset(repo_path: String) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    bisect::bisect_reset(&r).map_err(|e| e.to_string())
+    logged(&repo_path, OperationKind::BisectReset, None, |r| {
+        bisect::bisect_reset(r)
+    })
 }
 
 /// 現在の Bisect セッションの状態を返す（無ければ null）。タブの再表示やアプリ再起動後の
@@ -1069,6 +1240,8 @@ pub fn run() {
             classify_network_error_cmd,
             explain_local_error_cmd,
             get_undo_journal,
+            get_activity_log,
+            clear_activity_log,
             peek_undo,
             undo_last,
             get_undo_applicability,
