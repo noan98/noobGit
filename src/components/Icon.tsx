@@ -24,6 +24,7 @@ import {
   IconShieldOff,
   IconArchive,
   IconArrowBackUp,
+  IconArrowBack,
   IconArrowDown,
   IconArrowUp,
   IconArrowsDiff,
@@ -173,6 +174,8 @@ const ICONS = {
   /** 履歴が分岐した状態（non-fast-forward の説明など）。 */
   diverged: IconGitFork,
   cherryPick: IconGitCherryPick,
+  /** コミットの打ち消し（revert）。履歴の各行の「打ち消す」。 */
+  revert: IconArrowBack,
   /** 2 つのコミットの差分比較（履歴の各行の「比較」）。 */
   compare: IconArrowsDiff,
   /** 履歴のコミットグラフ列（ブランチの分岐・マージ）の表示切り替え。 */

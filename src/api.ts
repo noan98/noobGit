@@ -168,6 +168,7 @@ export type OperationKind =
   | "stash_drop"
   | "create_branch"
   | "switch_branch"
+  | "switch_branch_with_stash"
   | "delete_branch"
   | "reset_hard"
   | "fetch"
@@ -175,6 +176,7 @@ export type OperationKind =
   | "push"
   | "force_push"
   | "cherry_pick"
+  | "revert"
   | "create_tag"
   | "delete_tag"
   | "rebase"
@@ -222,6 +224,22 @@ export interface StashInfo {
 // true の間は退避を一覧から取り除かない。
 export interface StashRestoreOutcome {
   conflicted: boolean;
+}
+
+// 「退避して切り替える」（switch_branch_with_stash）の結果。変更は失われない。
+// stashed: 実際に退避したか（変更が無ければ false）。
+// conflicted: 戻すときにコンフリクトが起きたか。true の間は退避を一覧に残す。
+export interface SwitchWithStashOutcome {
+  stashed: boolean;
+  conflicted: boolean;
+}
+
+// switch_branch が「未コミットの変更のため切り替えできない」で失敗したか。
+// Tauri 境界ではエラーが日本語メッセージの文字列になるため、core の
+// ops::switch_branch の Blocked メッセージ（この一節）で判定する。
+// メッセージを変えたらここも合わせること。
+export function isSwitchBlockedByChanges(error: unknown): boolean {
+  return String(error).includes("未コミットの変更があるため切り替えできません");
 }
 
 // リモートリポジトリ1件の情報。push_url は fetch と異なる場合のみ文字列、同じか未設定なら null。
@@ -551,6 +569,11 @@ export const api = {
     invoke<void>("create_branch", { repoPath, name }),
   switchBranch: (repoPath: string, name: string) =>
     invoke<void>("switch_branch", { repoPath, name }),
+  switchBranchWithStash: (repoPath: string, name: string) =>
+    invoke<SwitchWithStashOutcome>("switch_branch_with_stash", {
+      repoPath,
+      name,
+    }),
   deleteBranch: (repoPath: string, name: string) =>
     invoke<void>("delete_branch", { repoPath, name }),
   // #269 ブランチクリーンアップ: マージ済みローカルブランチの一覧を返す。
@@ -613,6 +636,8 @@ export const api = {
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  revertCommit: (repoPath: string, oid: string) =>
+    invoke<CommitInfo>("revert_commit", { repoPath, oid }),
   mergeBranch: (repoPath: string, branchName: string) =>
     invoke<MergeOutcome>("merge_branch", { repoPath, branchName }),
   listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),
