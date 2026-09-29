@@ -17,3 +17,14 @@ serde_json = "1"
 #   ssh_key_from_memory は本体では未使用で、0.21 で feature 自体が廃止されている。）
 git2 = { version = "0.21", features = ["ssh", "https"] }
 thiserror = "2"
+
+# 開発ビルド（`npm run tauri dev`）でも Git エンジン（libgit2 の C コードと
+# git2 クレート）だけは最適化してビルドする。未最適化だと status や履歴の
+# 走査が数倍遅くなり、dev での起動・操作が実際のアプリより大きく重く見えるため。
+# 自前のクレート（core / src-tauri）は最適化しないので、デバッグのしやすさと
+# 再ビルドの速さはそのまま。
+[profile.dev.package.libgit2-sys]
+opt-level = 2
+
+[profile.dev.package.git2]
+opt-level = 2

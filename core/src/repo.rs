@@ -60,9 +60,25 @@ fn strip_branch_prefix(refname: &str) -> String {
 }
 
 /// 作業ツリーに未コミットの変更（ステージ済み含む）があるか。
+///
+/// 判定結果は [`status`] の `!is_clean` と同じだが、「変更が 1 つでもあるか」
+/// だけ分かればよいので、より軽い条件で調べる（危険度の評価などで何度も
+/// 呼ばれるため、起動時の待ち時間に直結する）:
+/// - 未追跡フォルダの中までは辿らない（フォルダ 1 件として報告されれば十分）。
+/// - サブモジュール一覧の取得（`.gitmodules` の読み込み）をしない。
 pub fn is_dirty(repo: &Repository) -> Result<bool> {
-    let status = status(repo)?;
-    Ok(!status.is_clean)
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&mut opts))?;
+    Ok(statuses.iter().any(|entry| {
+        let s = entry.status();
+        s.contains(Status::CONFLICTED)
+            || s.contains(Status::WT_NEW)
+            || staged_kind(s).is_some()
+            || unstaged_kind(s).is_some()
+    }))
 }
 
 /// 直前のコミット（HEAD）がすでにリモートへ送信（公開）済みとみなせるか。
@@ -1592,6 +1608,43 @@ pub fn suggest_commit_messages(repo: &Repository, prefix: &str, max: usize) -> R
 mod tests {
     use super::*;
     use crate::test_support::*;
+
+    // is_dirty は status() より軽い条件で調べるが、判定結果は常に
+    // `!status().is_clean` と一致しなければならない（危険度の評価に使うため）。
+    fn assert_is_dirty_matches_status(fx: &TestRepo, expected: bool) {
+        let repo = fx.open();
+        let quick = is_dirty(&repo).unwrap();
+        let full = !status(&repo).unwrap().is_clean;
+        assert_eq!(quick, full, "is_dirty と status の判定が食い違っている");
+        assert_eq!(quick, expected);
+    }
+
+    #[test]
+    fn is_dirty_matches_status_in_each_state() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "1");
+        fx.stage_all();
+        fx.commit("最初");
+        // 変更なし。
+        assert_is_dirty_matches_status(&fx, false);
+
+        // 未追跡フォルダの奥にだけ新規ファイルがある（中まで辿らなくても検出できる）。
+        fx.write_file("new/deep/b.txt", "x");
+        assert_is_dirty_matches_status(&fx, true);
+        std::fs::remove_dir_all(fx.path().join("new")).unwrap();
+        assert_is_dirty_matches_status(&fx, false);
+
+        // 未ステージの変更。
+        fx.write_file("a.txt", "2");
+        assert_is_dirty_matches_status(&fx, true);
+
+        // ステージ済みの変更。
+        fx.stage_all();
+        assert_is_dirty_matches_status(&fx, true);
+
+        fx.commit("二番目");
+        assert_is_dirty_matches_status(&fx, false);
+    }
 
     // git2 0.21 で summary()/message() が Option から Result へ変わり、
     // デコードできないメッセージはエラーとして表に出るようになった。noobGit は

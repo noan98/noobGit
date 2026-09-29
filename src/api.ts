@@ -454,6 +454,20 @@ export const api = {
       op,
       targetBranch: targetBranch ?? null,
     }),
+  // 複数の操作の危険度をまとめて評価する（ボタンの危険度カラー用, #274）。
+  // リポジトリの状態を 1 回だけ調べるので、assess を件数分呼ぶより大幅に軽い。
+  // 結果は requests と同じ順序・同じ件数で返る。
+  assessMany: (
+    repoPath: string,
+    requests: { op: OperationKind; targetBranch?: string }[],
+  ) =>
+    invoke<RiskAssessment[]>("assess_operations", {
+      repoPath,
+      requests: requests.map((r) => ({
+        op: r.op,
+        target_branch: r.targetBranch ?? null,
+      })),
+    }),
 
   stageAll: (repoPath: string) => invoke<void>("stage_all", { repoPath }),
   stagePath: (repoPath: string, path: string) =>

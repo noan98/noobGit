@@ -20,10 +20,10 @@ if not LIB_PATH.exists():
 
 source = LIB_PATH.read_text(encoding="utf-8")
 
-# #[tauri::command] の直後に来る fn NAME( のパターンを抽出。
+# #[tauri::command] / #[tauri::command(async)] の直後に来る fn NAME( のパターンを抽出。
 # 属性とfn宣言の間には改行・空白のみ（コメントは入らない）。
 command_fns = set(re.findall(
-    r'#\[tauri::command\]\s+(?:async\s+)?fn\s+(\w+)\s*\(',
+    r'#\[tauri::command(?:\([^)]*\))?\]\s+(?:async\s+)?fn\s+(\w+)\s*\(',
     source,
 ))
 

@@ -161,6 +161,26 @@ describe("api ラッパー", () => {
     });
   });
 
+  describe("assessMany", () => {
+    it("assess_operations コマンドを、Rust 側の snake_case のフィールド名で 1 回だけ呼ぶこと", async () => {
+      mockInvoke.mockResolvedValueOnce([]);
+
+      await api.assessMany("/path/to/repo", [
+        { op: "discard" },
+        { op: "push", targetBranch: "main" },
+      ]);
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith("assess_operations", {
+        repoPath: "/path/to/repo",
+        requests: [
+          { op: "discard", target_branch: null },
+          { op: "push", target_branch: "main" },
+        ],
+      });
+    });
+  });
+
   describe("getLog", () => {
     it("get_log コマンドを skip・max・filter なしで呼ぶこと", async () => {
       mockInvoke.mockResolvedValueOnce([]);
