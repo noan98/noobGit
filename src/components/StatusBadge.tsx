@@ -56,9 +56,9 @@ const badgeByKind: Record<
   },
   // コンフリクト = 黄
   conflicted: {
-    label: "競合",
+    label: "コンフリクト",
     tone: "warning",
-    description: "マージで競合が発生しています。解決してからコミットしてください。",
+    description: "マージでコンフリクトが発生しています。解決してからコミットしてください。",
   },
 };
 

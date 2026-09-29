@@ -1,5 +1,6 @@
 import type { ConflictFile } from "../api";
 import { Icon } from "./Icon";
+import { Term } from "./Term";
 
 interface Props {
   // コンフリクト中のファイル一覧（status.conflicted から組み立てる）。
@@ -32,7 +33,7 @@ export function ConflictWizard({
     <div className="panel conflict-wizard">
       <div className="panel-head">
         <h2>
-          <Icon name="warning" /> コンフリクトの解消
+          <Icon name="warning" /> <Term k="conflict">コンフリクト</Term>の解消
         </h2>
         <span className="conflict-count">{conflicts.length} 件</span>
       </div>
@@ -43,9 +44,9 @@ export function ConflictWizard({
           あわてなくて大丈夫です。次の手順で 1 つずつ直していきましょう。
         </p>
         <ol>
-          <li>下のファイル名をクリックして、競合している中身を確認します。</li>
+          <li>下のファイル名をクリックして、コンフリクトしている中身を確認します。</li>
           <li>
-            ファイルを開くと、次の目印で競合箇所が囲まれています。
+            ファイルを開くと、次の目印でコンフリクト箇所が囲まれています。
             <ul>
               <li>
                 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> 〜{" "}
@@ -84,14 +85,14 @@ export function ConflictWizard({
                 type="button"
                 className="conflict-path"
                 onClick={() => onSelect(c.path)}
-                title="クリックで競合箇所を差分プレビューに表示します"
+                title="クリックでコンフリクト箇所を差分プレビューに表示します"
               >
                 {c.path}
               </button>
               {!c.has_ancestor && (
                 <span
                   className="conflict-note"
-                  title="共通の元が無い競合です（両側で新しく追加された等）。どちらの内容にするか選んでください。"
+                  title="共通の元が無いコンフリクトです（両側で新しく追加された等）。どちらの内容にするか選んでください。"
                 >
                   共通の元なし
                 </span>

@@ -42,7 +42,7 @@ function resolveBadge(ahead: number, behind: number, upstream: string | null): B
     return {
       tone: "neutral",
       label: "リモートなし",
-      tooltip: "リモート追跡ブランチが設定されていません。「送信」でリモートに登録できます。",
+      tooltip: "リモート追跡ブランチが設定されていません。「プッシュ」でリモートに登録できます。",
     };
   }
   if (ahead === 0 && behind === 0) {
@@ -58,10 +58,10 @@ function resolveBadge(ahead: number, behind: number, upstream: string | null): B
       label: (
         <>
           <Icon name="push" />
-          {ahead} 送信待ち
+          {ahead} プッシュ待ち
         </>
       ),
-      tooltip: `まだリモートに送っていないコミットが ${ahead} 件あります。「送信」でリモートに反映できます。`,
+      tooltip: `まだリモートに送っていないコミットが ${ahead} 件あります。「プッシュ」でリモートに反映できます。`,
     };
   }
   if (ahead === 0 && behind > 0) {
@@ -73,7 +73,7 @@ function resolveBadge(ahead: number, behind: number, upstream: string | null): B
           {behind} 取り込み待ち
         </>
       ),
-      tooltip: `リモートに ${behind} 件の新しいコミットがあります。「取得」でローカルに取り込めます。`,
+      tooltip: `リモートに ${behind} 件の新しいコミットがあります。「プル」でローカルに取り込めます。`,
     };
   }
   // ahead > 0 && behind > 0

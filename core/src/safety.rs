@@ -292,7 +292,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
                     reversible: true,
                     permanent_data_loss: false,
                     recommended_alternative: Some(
-                        "先に変更をコミットするか、一時退避(stash)してから切り替えると安全です。".to_string(),
+                        "先に変更をコミットするか、退避（stash）してから切り替えると安全です。".to_string(),
                     ),
                 }
             } else {

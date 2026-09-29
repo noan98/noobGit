@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DetachedHeadInfo } from "../api";
 import { Icon } from "./Icon";
+import { Term } from "./Term";
 
 // #197 detached HEAD 復帰ガイド。
 // 「今どういう状態か / このままコミットするとどうなるか / どう戻るか」を平易に示し、
@@ -35,10 +36,11 @@ export function DetachedHeadBanner({ info, onRescue, onReturn, busy }: Props) {
     <div className="banner setup detached-banner" role="alert">
       <div className="detached-banner-text">
         <strong>
-          <Icon name="warning" /> いまは「見学モード」（detached HEAD）です
+          <Icon name="warning" /> いまは「見学モード」（
+          <Term k="detached_head">detached HEAD</Term>）です
         </strong>
         <span>
-          どのブランチにも乗っていない状態です。ここでコミットしても、そのコミットはどのブランチにも属さず、
+          どのブランチにも乗っていない状態（<Term k="head">HEAD</Term> が特定のコミットを直接指している状態）です。ここでコミットしても、そのコミットはどのブランチにも属さず、
           別のブランチへ切り替えると見失いやすくなります。
           {unsaved > 0 &&
             ` 現在、どのブランチにも属していないコミットが ${unsaved} 件あります。`}

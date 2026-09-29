@@ -8,6 +8,7 @@ import type {
 import { EmptyState } from "./EmptyState";
 import { AheadBehindBadge } from "./AheadBehindBadge";
 import { Icon } from "./Icon";
+import { Term } from "./Term";
 // #274 危険度カラー: push・delete_branch はブランチごとに結果が変わりうる
 // （保護ブランチかどうか）ため、raw な riskLevels マップを受け取ってこの中で引く。
 import { riskTriggerClassFor, type RiskLevels } from "../lib/risk";
@@ -128,7 +129,9 @@ export function BranchPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>ブランチ</h2>
+        <h2>
+          <Term k="branch">ブランチ</Term>
+        </h2>
       </div>
 
       <div className="branch-create">
@@ -257,7 +260,7 @@ export function BranchPanel({
                         : "このブランチのコミットをリモート（origin）へ送信します"
                     }
                   >
-                    {networkBusy ? "送信中…" : "送信"}
+                    {networkBusy ? "プッシュ中…" : "プッシュ"}
                   </button>
                   {!b.is_head && (
                     <button
@@ -295,7 +298,7 @@ export function BranchPanel({
                         : "リモートの履歴を上書きします（強制push）。とても危険です。"
                     }
                   >
-                    {networkBusy ? "送信中…" : "強制送信"}
+                    {networkBusy ? "プッシュ中…" : "強制プッシュ"}
                   </button>
                 </span>
               </div>
@@ -345,7 +348,9 @@ export function BranchPanel({
 
       {remote.length > 0 && (
         <div className="group">
-          <h3>リモート</h3>
+          <h3>
+            <Term k="remote">リモート</Term>
+          </h3>
           <ul className="branches">
             {remote.map((b) => (
               <li key={b.name}>
@@ -361,7 +366,7 @@ export function BranchPanel({
           <Icon name="protected" /> 保護ブランチの設定
         </h3>
         <p className="settings-field-help">
-          保護ブランチへの削除・強制送信（force push）は「破壊的」操作として強く警告されます。
+          保護ブランチへの削除・強制プッシュ（force push）は「破壊的」操作として強く警告されます。
           一覧を空にすると既定値（main / master）に戻ります。
         </p>
 
@@ -374,7 +379,7 @@ export function BranchPanel({
                 {pendingUnprotect === name ? (
                   <>
                     <span className="protected-unprotect-confirm">
-                      保護を外すと、削除や強制送信の警告が弱まります。
+                      保護を外すと、削除や強制プッシュの警告が弱まります。
                     </span>
                     <button
                       className="link"

@@ -123,6 +123,17 @@ noobGit/
   専用で、`RepoWorkspace.tsx`（タブバー・タイトルバーは `App.tsx`）から
   渡されたコールバックを呼ぶ。
 - `components/LocalErrorDialog.tsx` — ローカル操作エラーの解決手順ダイアログ（#204）。`RepoWorkspace.tsx` が `error` に入った文字列を `api.explainLocalError`（`explain_local_error_cmd`）に通し、日本語に包まれたローカルエラーならバナーの代わりに表示する。`NetworkErrorDialog` のローカル版。
+- `glossary.ts` — Git 用語グロッサリー (#207)。用語キー → 表示名・短い定義・
+  ひとこと比喩・詳しい解説・別表記の辞書（22 語）。用語解説の唯一の出典で、
+  ファイル先頭コメントに `explain.rs`（操作の説明）との役割分担と**表記統一方針**
+  （退避（stash）／ステージ／コンフリクト／プッシュ・プル・フェッチ／作業ツリー 等）
+  を記す。新しい UI 文言を書くときはこの方針に従うこと。
+- `components/Term.tsx` — `<Term k="stage">ステージ</Term>` で対象語に点線下線 +
+  ホバー / フォーカスの解説ポップオーバー（ExplainTooltip と同じ見た目、CSS 変数
+  のみ）。`<TermText text="…"/>` は文章中の用語を自動で `<Term>` にする（同じ用語は
+  最初の 1 回だけ。検出パターンは `glossary.ts` の `TERM_PATTERNS`）。**ボタンの
+  ラベル内には置かない**（誤クリック防止）。折りたたみ内など、フォーカスできない
+  領域にも置かない（モーダルのフォーカストラップに影響する）。
 - `components/ActivityLog.tsx` / `lib/activityLog.ts` — 操作ログ（#208）。サイドバーの
   「操作ログ」/ コマンドパレットの「操作ログを開く」から表示し、「テキストとしてコピー」用の
   整形（`formatActivityText`）は純粋関数として vitest でテストしている。
