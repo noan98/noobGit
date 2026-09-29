@@ -652,6 +652,14 @@ fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, 
     ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
 }
 
+/// 指定したコミットの変更を打ち消す新しいコミットを積む（revert）。履歴は書き換えない。
+#[tauri::command(async)]
+fn revert_commit(repo_path: String, oid: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    ops::revert_commit(&r, &oid).map_err(|e| e.to_string())
+}
+
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
 #[tauri::command(async)]
 fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
@@ -910,6 +918,7 @@ pub fn run() {
             push,
             clone_repo,
             cherry_pick,
+            revert_commit,
             merge_branch,
             list_tags,
             create_tag,

@@ -2105,6 +2105,110 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
     Ok(commit_info(&new_commit))
 }
 
+/// 指定したコミットの変更を打ち消す新しいコミットを、いまのブランチの先頭に積む（revert）。
+///
+/// `oid` は打ち消したいコミットのハッシュ。履歴は書き換えず、逆向きの変更を持つ
+/// コミットを 1 つ**追加**するだけなので、すでに push 済みのコミットにも安全に使える
+/// （reset や amend のような履歴書き換えとの最大の違い）。メッセージは git の
+/// `git revert` と同じ形式（`Revert "元の件名"` と `This reverts commit <id>.`）にする。
+///
+/// 次の場合は**何も変えずに** [`CoreError::Blocked`] で中断する: マージコミット
+/// （親が 2 つ以上。どちらの親側へ戻すか選ぶ必要があり、v1 では非対応）、ステージ済みの
+/// 変更があるとき、コンフリクト（競合）が起きたとき、打ち消し内容が未コミットの変更と
+/// 同じファイルに触れているとき。作業ツリーへの反映は安全（safe）チェックアウトで行い、
+/// 無関係なファイルのローカル変更は保たれる（[`cherry_pick`] と同じ方針）。
+/// 成功時は、revert 直前の HEAD への soft reset を undo に記録する。
+pub fn revert_commit(repo: &Repository, oid: &str) -> Result<CommitInfo> {
+    let target = git2::Oid::from_str(oid.trim())
+        .map_err(|_| CoreError::InvalidInput(format!("コミットの指定が不正です: {oid}")))?;
+    let commit = repo.find_commit(target).map_err(|_| {
+        CoreError::InvalidInput(format!("指定したコミットが見つかりませんでした: {oid}"))
+    })?;
+
+    if commit.parent_count() > 1 {
+        return Err(CoreError::Blocked(
+            "マージコミットは、どちらの側へ戻すかを選ぶ必要があるため、まだ打ち消せません。"
+                .to_string(),
+        ));
+    }
+
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、打ち消し（revert）できません。先に最初のコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let previous = head_commit.id();
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "打ち消し（revert）には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // git と同様、ステージ済みの変更があるときは実行しない（打ち消しの結果と混ざるため）。
+    let head_tree = head_commit.tree()?;
+    let staged = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+    if staged.deltas().len() > 0 {
+        return Err(CoreError::Blocked(
+            "ステージ済みの変更があるため、打ち消し（revert）できません。先にコミットするか退避(stash)してください。"
+                .to_string(),
+        ));
+    }
+
+    // HEAD を土台に、対象コミットの逆向きの変更を当てたインデックスをメモリ上に作る
+    // （作業ツリー・実インデックスにはまだ触れない）。
+    let mut merged = repo
+        .revert_commit(&commit, &head_commit, 0, None)
+        .map_err(|e| {
+            CoreError::Git(format!("打ち消し（revert）に失敗しました: {}", e.message()))
+        })?;
+
+    if merged.has_conflicts() {
+        return Err(CoreError::Blocked(
+            "いまの内容と打ち消したい変更が同じ箇所に触れていて、コンフリクト（競合）のため打ち消せませんでした。状態は元のままです。"
+                .to_string(),
+        ));
+    }
+
+    let tree_id = merged.write_tree_to(repo)?;
+    let tree = repo.find_tree(tree_id)?;
+
+    // 未コミットの変更を黙って消さないため、force ではなく safe チェックアウトで反映する。
+    let mut co = CheckoutBuilder::new();
+    repo.checkout_tree(tree.as_object(), Some(&mut co)).map_err(|_| {
+        CoreError::Blocked(
+            "未コミットの変更と打ち消し内容が同じファイルに触れているため、打ち消し（revert）を中断しました。先にコミットか退避(stash)をしてください。"
+                .to_string(),
+        )
+    })?;
+
+    let summary = first_line(commit.message().unwrap_or("")).to_string();
+    let message = format!(
+        "Revert \"{}\"\n\nThis reverts commit {}.\n",
+        summary,
+        commit.id()
+    );
+    let new_oid = repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &[&head_commit])?;
+
+    let _ = repo.cleanup_state();
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Revert,
+            description: format!("コミット「{summary}」の打ち消し（revert）を取り消す"),
+            action: UndoAction::SoftResetTo {
+                previous: previous.to_string(),
+            },
+        },
+    );
+
+    let new_commit = repo.find_commit(new_oid)?;
+    Ok(commit_info(&new_commit))
+}
+
 /// ローカルのコミットをリモートへ送信（push）する。
 ///
 /// `remote` はリモート名（例: `origin`）、`refspec` は送信するブランチの指定
@@ -5172,6 +5276,138 @@ mod tests {
             "main change\n"
         );
         assert!(status(&repo).unwrap().is_clean);
+    }
+
+    // revert: 打ち消しコミットが積まれ、内容が戻り、undo で取り消せること（#195）。
+    #[test]
+    fn revert_commit_adds_inverse_commit_then_undo_restores() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("b.txt", "added\n");
+        fx.stage_all();
+        let target = fx.commit("b.txt を追加");
+        fx.write_file("c.txt", "later\n");
+        fx.stage_all();
+        fx.commit("c.txt を追加");
+
+        let repo = fx.open();
+        let info = revert_commit(&repo, &target.to_string()).unwrap();
+        assert_eq!(info.summary, "Revert \"b.txt を追加\"");
+        // 履歴は書き換わらず 1 つ増える。b.txt だけ消え、c.txt は残る。
+        assert_eq!(log(&repo, 10).unwrap().len(), 4);
+        assert!(!fx.path().join("b.txt").exists());
+        assert!(fx.path().join("c.txt").exists());
+        assert!(status(&repo).unwrap().is_clean);
+
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 3);
+        // soft reset なので打ち消しの変更はステージ済みで残る（cherry-pick の undo と同じ挙動）。
+        assert!(status(&repo)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|f| f.path == "b.txt"));
+    }
+
+    #[test]
+    fn revert_commit_invalid_oid_is_input_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        assert!(matches!(
+            revert_commit(&repo, "not-a-valid-oid").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    // 後続コミットが同じ箇所を変えていると競合し、Blocked で状態が保全されること（#195）。
+    #[test]
+    fn revert_commit_conflict_is_blocked_and_preserves_state() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "first change\n");
+        fx.stage_all();
+        let target = fx.commit("a.txt を変更");
+        fx.write_file("a.txt", "second change\n");
+        fx.stage_all();
+        fx.commit("a.txt をさらに変更");
+        let head_before = fx.head_oid();
+
+        let repo = fx.open();
+        let err = revert_commit(&repo, &target.to_string()).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+
+        let repo = fx.open();
+        assert_eq!(fx.head_oid(), head_before);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "second change\n"
+        );
+        assert!(status(&repo).unwrap().is_clean);
+        assert!(status(&repo).unwrap().conflicted.is_empty());
+    }
+
+    // マージコミットは v1 では対象外で Blocked（#195）。
+    #[test]
+    fn revert_commit_merge_commit_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        {
+            let repo = fx.open();
+            create_branch(&repo, "feature").unwrap();
+            switch_branch(&repo, "feature").unwrap();
+        }
+        fx.write_file("f.txt", "1\n");
+        fx.stage_all();
+        fx.commit("feature");
+        {
+            let repo = fx.open();
+            switch_branch(&repo, "main").unwrap();
+        }
+        fx.write_file("m.txt", "1\n");
+        fx.stage_all();
+        fx.commit("main");
+        let repo = fx.open();
+        let merge_oid = match merge_branch(&repo, "feature").unwrap() {
+            MergeOutcome::Merged { commit } => commit.id,
+            other => panic!("Merged を期待したが {other:?} だった"),
+        };
+        let head_before = fx.head_oid();
+        let err = revert_commit(&repo, &merge_oid).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        assert_eq!(fx.head_oid(), head_before);
+    }
+
+    // ステージ済みの変更があると Blocked で、ステージは保たれること（#195）。
+    #[test]
+    fn revert_commit_with_staged_changes_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("b.txt", "x\n");
+        fx.stage_all();
+        let target = fx.commit("b.txt を追加");
+        fx.write_file("c.txt", "staged\n");
+        fx.stage_all();
+        let repo = fx.open();
+        let err = revert_commit(&repo, &target.to_string()).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        assert!(fx.path().join("b.txt").exists());
+        assert!(status(&repo)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|f| f.path == "c.txt"));
     }
 
     #[test]

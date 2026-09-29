@@ -175,6 +175,7 @@ export type OperationKind =
   | "push"
   | "force_push"
   | "cherry_pick"
+  | "revert"
   | "create_tag"
   | "delete_tag"
   | "rebase"
@@ -594,6 +595,8 @@ export const api = {
 
   cherryPick: (repoPath: string, oid: string) =>
     invoke<CommitInfo>("cherry_pick", { repoPath, oid }),
+  revertCommit: (repoPath: string, oid: string) =>
+    invoke<CommitInfo>("revert_commit", { repoPath, oid }),
   mergeBranch: (repoPath: string, branchName: string) =>
     invoke<MergeOutcome>("merge_branch", { repoPath, branchName }),
   listTags: (repoPath: string) => invoke<TagInfo[]>("list_tags", { repoPath }),

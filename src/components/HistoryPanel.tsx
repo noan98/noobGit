@@ -13,6 +13,8 @@ interface Props {
   currentBranch: string | null;
   onReset: (commit: CommitInfo) => void;
   onCherryPick: (commit: CommitInfo) => void;
+  // コミットの打ち消し（revert）。履歴を書き換えないので公開済みのコミットにも使える。
+  onRevert: (commit: CommitInfo) => void;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -44,6 +46,7 @@ interface Props {
   // 未取得の間は空文字（Safe相当の通常スタイル）。
   resetRiskClass?: string;
   cherryPickRiskClass?: string;
+  revertRiskClass?: string;
 }
 
 // 入力の遅延（ミリ秒）。打鍵のたびに再取得せず、入力が落ち着いてから 1 回だけ呼ぶ。
@@ -135,6 +138,7 @@ export function HistoryPanel({
   currentBranch,
   onReset,
   onCherryPick,
+  onRevert,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -152,6 +156,7 @@ export function HistoryPanel({
   // #274 危険度カラー
   resetRiskClass = "",
   cherryPickRiskClass = "",
+  revertRiskClass = "",
 }: Props) {
   // #51 / #168 DAG グラフ — ON/OFF トグル状態。ON のとき各行の左端に
   // グラフ列（レーン線・ノード）を表示する。
@@ -560,6 +565,17 @@ export function HistoryPanel({
                         >
                           <Icon name="cherryPick" />
                         </button>
+                        {/* マージコミット（親が 2 つ以上）は revert の対象外なので出さない。 */}
+                        {c.parent_ids.length <= 1 && (
+                          <button
+                            className={`icon-btn commit-revert-btn ${revertRiskClass}`}
+                            title="打ち消す: このコミットの変更を取り消す新しいコミットを追加します（revert）。履歴は書き換えないので push 済みでも安全です"
+                            aria-label="このコミットを打ち消す"
+                            onClick={() => onRevert(c)}
+                          >
+                            <Icon name="revert" />
+                          </button>
+                        )}
                         <button
                           className={`icon-btn commit-reset-btn ${resetRiskClass}`}
                           title="戻す: このコミットの状態まで作業ツリーを戻します（ハードリセット）"
