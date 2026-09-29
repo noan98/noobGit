@@ -205,7 +205,17 @@ export interface Explanation {
 export interface UndoEntry {
   op: OperationKind;
   description: string;
+  // 記録時点の HEAD コミット id。旧形式のジャーナルには無い（#201）。
+  head_at_record?: string | null;
 }
+
+// #201 undo エントリを今のリポジトリ状態で適用してよいかの検証結果。
+// core の UndoApplicability（serde tag = "status"）のミラー。
+export type UndoApplicability =
+  | { status: "applicable" }
+  | { status: "already_undone" }
+  | { status: "unresolvable"; reason: string }
+  | { status: "risky"; reason: string };
 
 // 退避（stash）1件の情報。index は一覧での位置（0 が最新）。
 export interface StashInfo {
@@ -627,7 +637,15 @@ export const api = {
     invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
-  undoLast: (repoPath: string) => invoke<string>("undo_last", { repoPath }),
+  // confirmRisky: 履歴が進んでいて新しい作業も巻き戻る場合に、確認済みとして進める（#201）。
+  undoLast: (repoPath: string, confirmRisky = false) =>
+    invoke<string>("undo_last", { repoPath, confirmRisky }),
+  // 各エントリの適用可否（getUndoJournal と同じ古い順）。
+  getUndoApplicability: (repoPath: string) =>
+    invoke<UndoApplicability[]>("get_undo_applicability", { repoPath }),
+  // 適用不能な履歴を整理し、取り除いた件数を返す。
+  pruneUndoJournal: (repoPath: string) =>
+    invoke<number>("prune_undo_journal", { repoPath }),
 
   // #126 ネットワーク診断: エラーメッセージを種別に分類する。
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。

@@ -194,6 +194,7 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Stage,
             description: format!("「{file_path}」の一部（hunk）のステージを取り消す"),
             action: UndoAction::UnstagePath {
@@ -321,6 +322,7 @@ pub fn unstage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Re
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Unstage,
             description: format!("「{file_path}」の一部（hunk）のアンステージを取り消す"),
             action: UndoAction::RestoreIndexEntry {
@@ -431,6 +433,7 @@ pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Commit,
             description: format!("コミット「{}」を取り消す", first_line(message)),
             action,
@@ -507,6 +510,7 @@ pub fn amend_commit(repo: &Repository, new_message: &str) -> Result<CommitInfo> 
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::AmendCommit,
             description: "直前のコミットの修正（amend）を取り消す".to_string(),
             action: UndoAction::SoftResetTo {
@@ -628,6 +632,7 @@ pub fn squash_commits(repo: &Repository, commit_oids: &[&str], message: &str) ->
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Rebase,
             description: format!(
                 "コミットの統合（squash）を取り消す（{} 個を1つにまとめる前へ）",
@@ -684,6 +689,7 @@ pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Rebase,
             description: "コミットメッセージの書き換え（reword）を取り消す".to_string(),
             action: UndoAction::SoftResetTo {
@@ -1046,6 +1052,7 @@ pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::StashSave,
             description: "退避（stash）を取り消す（しまった変更を作業ツリーに戻す）".to_string(),
             action: UndoAction::PopStash {
@@ -1281,6 +1288,7 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CreateBranch,
             description: format!("ブランチ「{name}」の作成を取り消す"),
             action: UndoAction::DeleteBranch {
@@ -1335,6 +1343,7 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::DeleteBranch,
             description: format!("ブランチ「{name}」の削除を取り消す"),
             action: UndoAction::RecreateBranch {
@@ -1496,6 +1505,7 @@ pub fn create_tag(
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CreateTag,
             description: format!("タグ「{name}」の作成を取り消す"),
             action: UndoAction::DeleteTag {
@@ -1542,6 +1552,7 @@ pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::DeleteTag,
             description: format!("タグ「{name}」の削除を取り消す"),
             action: UndoAction::RecreateTag {
@@ -1983,6 +1994,7 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::ResetHard,
             description: "ハードリセットを取り消す（リセット前の位置に戻す）".to_string(),
             action: UndoAction::HardResetTo {
@@ -2090,6 +2102,7 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CherryPick,
             description: format!(
                 "コミット「{}」のコピー（cherry-pick）を取り消す",
@@ -2446,6 +2459,7 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
         record_undo(
             repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::Merge,
                 description: format!("ブランチ「{branch_name}」のマージ（fast-forward）を取り消す"),
                 action: UndoAction::HardResetTo {
@@ -2498,6 +2512,7 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Merge,
             description: format!("ブランチ「{branch_name}」のマージを取り消す"),
             action: UndoAction::SoftResetTo {
@@ -2591,6 +2606,7 @@ pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::RestoreFile,
             description: format!("「{file_path}」のコミット時点への復元を取り消す（アンステージ）"),
             action: UndoAction::UnstagePath {
@@ -2696,6 +2712,7 @@ mod tests {
         let probe = undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::Commit,
                 description: "probe".into(),
                 action: UndoAction::SoftResetTo {
@@ -2734,6 +2751,7 @@ mod tests {
         let probe = undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateBranch,
                 description: "probe".into(),
                 action: UndoAction::DeleteBranch {
@@ -4859,6 +4877,7 @@ mod tests {
         undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateTag,
                 description: "タグ「v1.0.0」の作成を取り消す".into(),
                 action: UndoAction::DeleteTag {
@@ -4874,6 +4893,7 @@ mod tests {
         undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateTag,
                 description: "タグ「v1.0.0」の作成を取り消す".into(),
                 action: UndoAction::DeleteTag {
