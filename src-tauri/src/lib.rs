@@ -16,14 +16,14 @@ use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
-    GitignoreSuggestion, LfsCandidate, LogPage, MergeOutcome, MergedBranchInfo, NetworkProgress,
-    PullOutcome, ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo,
-    StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
+    GitignoreSuggestion, ImpactPreview, ImpactRequest, LfsCandidate, LogPage, MergeOutcome,
+    MergedBranchInfo, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::{UndoApplicability, UndoEntry};
-use noobgit_core::{bisect, identity, ops, repo, undo};
+use noobgit_core::{bisect, identity, impact, ops, repo, undo};
 
 /// 書き込み系コマンドを 1 つずつ順番に実行するためのロック。
 ///
@@ -504,6 +504,14 @@ fn stash_diff(repo_path: String, index: usize) -> Result<Vec<FileChange>, String
     ops::stash_diff(&mut r, index).map_err(|e| e.to_string())
 }
 
+/// 操作の影響プレビュー（何が失われるか）を計算する（読み取り専用、#196）。
+/// 失敗してもフロントは「プレビューなし」として確認ダイアログを出すだけで、操作は止めない。
+#[tauri::command(async)]
+fn get_impact_preview(repo_path: String, request: ImpactRequest) -> Result<ImpactPreview, String> {
+    let mut r = open(&repo_path)?;
+    impact::preview(&mut r, &request).map_err(|e| e.to_string())
+}
+
 /// 現在の identity（user.name / user.email）を取得する。初回セットアップ案内に使う。
 #[tauri::command(async)]
 fn get_identity(repo_path: String) -> Result<Identity, String> {
@@ -969,6 +977,7 @@ pub fn run() {
             stash_drop,
             get_stashes,
             stash_diff,
+            get_impact_preview,
             get_identity,
             set_identity,
             create_branch,

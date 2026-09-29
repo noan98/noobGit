@@ -3083,6 +3083,34 @@ textarea {
 .alt > svg {
   margin-top: 3px;
 }
+/* #196 影響プレビュー（ConfirmDialog の操作別プレビュー） */
+.impact-file {
+  margin: 0 0 8px;
+}
+.impact-diff {
+  margin: 4px 0 0;
+}
+.impact-diff-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.impact-diff-scroll {
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--destructive-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.impact-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.impact-note-warn {
+  color: var(--destructive);
+}
 
 /* ---- #197 detached HEAD 復帰ガイド ---- */
 .detached-banner {

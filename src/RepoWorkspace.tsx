@@ -23,6 +23,8 @@ import {
   type ConflictFile,
   type Explanation,
   type FileChange,
+  type ImpactPreview,
+  type ImpactRequest,
   type FileDiff,
   type Identity,
   type IdentityScope,
@@ -253,8 +255,8 @@ interface Guard {
   refresh: RefreshParts;
   // ネットワーク操作の場合 true。確認ダイアログ経由で exec を呼ぶときに isNetworkBusy を立てる。
   networkOp?: boolean;
-  // reset_hard 時のみ設定。ConfirmDialog に失われる変更ファイル一覧を渡す。
-  affectedFiles?: FileChange[];
+  // #196 操作別の影響プレビュー。ConfirmDialog にそのまま渡す（取得失敗時は未設定）。
+  preview?: ImpactPreview;
   // #269 マージ済みブランチの一括削除時のみ設定。ConfirmDialog に削除対象のブランチ名一覧を渡す。
   affectedBranches?: string[];
 }
@@ -1102,6 +1104,8 @@ export function RepoWorkspace({
     networkOp?: boolean,
     // #269 マージ済みブランチの一括削除時に、確認ダイアログへそのまま渡す削除対象一覧。
     affectedBranches?: string[],
+    // #196 影響プレビューの計算依頼。reset_hard は省略しても自動で補う。
+    impact?: ImpactRequest,
   ) {
     try {
       const [assessment, explanation] = await Promise.all([
@@ -1112,15 +1116,17 @@ export function RepoWorkspace({
       if (assessment.level === "safe") {
         await exec(action, { refresh: parts, networkOp });
       } else {
-        // reset_hard の場合のみ失われる変更ファイル一覧を取得してダイアログに渡す。
-        // 取得失敗はベストエフォートで無視（ファイルリストなしでダイアログを表示）。
-        let affectedFiles: FileChange[] | undefined;
-        if (op === "reset_hard") {
+        // #196 操作別の影響プレビューを取得してダイアログに渡す。読み取り専用で、
+        // 取得失敗はベストエフォートで無視する（プレビューなしでダイアログを表示し、
+        // 操作自体はブロックしない）。
+        const request: ImpactRequest | undefined =
+          impact ?? (op === "reset_hard" ? { op: "reset_hard" } : undefined);
+        let preview: ImpactPreview | undefined;
+        if (request) {
           try {
-            const s = await api.getStatus(repoPath);
-            affectedFiles = [...s.staged, ...s.unstaged];
+            preview = await api.getImpactPreview(repoPath, request);
           } catch {
-            affectedFiles = undefined;
+            preview = undefined;
           }
         }
         setGuard({
@@ -1130,7 +1136,7 @@ export function RepoWorkspace({
           action,
           refresh: parts,
           networkOp,
-          affectedFiles,
+          preview,
           affectedBranches,
         });
       }
@@ -1597,8 +1603,14 @@ export function RepoWorkspace({
 
   // 変更の破棄。元に戻せない破壊的操作なので必ず guarded を通す。
   function doDiscard(path: string) {
-    void guarded(`「${path}」の変更を破棄`, "discard", () =>
-      api.discardPath(repoPath, path),
+    void guarded(
+      `「${path}」の変更を破棄`,
+      "discard",
+      () => api.discardPath(repoPath, path),
+      undefined,
+      undefined,
+      undefined,
+      { op: "discard", paths: [path] },
     );
   }
 
@@ -1733,17 +1745,25 @@ export function RepoWorkspace({
   // 誘導を伝える（status の再取得は REFRESH_BY_OP.stash_apply が担うので、
   // conflicts が検出されると ConflictWizard が自動表示される）。
   function doStashApply(index: number) {
-    void guarded("退避を適用", "stash_apply", async () => {
-      const outcome = await api.stashApply(repoPath, index);
-      if (outcome.conflicted) {
-        showToast(
-          "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください。",
-          "warning",
-        );
-      } else {
-        showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
-      }
-    });
+    void guarded(
+      "退避を適用",
+      "stash_apply",
+      async () => {
+        const outcome = await api.stashApply(repoPath, index);
+        if (outcome.conflicted) {
+          showToast(
+            "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください。",
+            "warning",
+          );
+        } else {
+          showToast("退避した変更を取り出しました（退避は一覧に残しています）。", "success");
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      { op: "stash_apply", index },
+    );
   }
 
   // ブランチ切り替え。未コミットの変更が邪魔で切り替えできなかった（core が Blocked を
@@ -1817,18 +1837,26 @@ export function RepoWorkspace({
   function doStashPop(index: number) {
     const target = stashes.find((s) => s.index === index);
     const message = target?.message ?? "";
-    void guarded("退避を取り出す", "stash_pop", async () => {
-      const outcome = await api.stashPop(repoPath, index);
-      if (outcome.conflicted && target) {
-        setStashPopConflict({ id: target.id, message, seenConflicts: false });
-        showToast(
-          "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避はいったん一覧に残しています）。",
-          "warning",
-        );
-      } else {
-        showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
-      }
-    });
+    void guarded(
+      "退避を取り出す",
+      "stash_pop",
+      async () => {
+        const outcome = await api.stashPop(repoPath, index);
+        if (outcome.conflicted && target) {
+          setStashPopConflict({ id: target.id, message, seenConflicts: false });
+          showToast(
+            "退避の取り出し中にコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避はいったん一覧に残しています）。",
+            "warning",
+          );
+        } else {
+          showToast("退避した変更を取り出し、一覧から取り除きました。", "success");
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      { op: "stash_pop", index },
+    );
   }
 
   // #156 stash_pop のコンフリクトを解消し終えたあと、不要になった退避を削除する。
@@ -1917,21 +1945,37 @@ export function RepoWorkspace({
   // squash: 選んだ連続コミットを1つにまとめる。破壊的なので guarded を通す。
   function doSquash(commitOids: string[], message: string) {
     setShowRebase(false);
-    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
-      await api.squashCommits(repoPath, commitOids, message);
-      clearCommitSelection();
-      showToast("選んだコミットを1つにまとめました。", "success");
-    });
+    void guarded(
+      "コミット履歴の整理（リベース）",
+      "rebase",
+      async () => {
+        await api.squashCommits(repoPath, commitOids, message);
+        clearCommitSelection();
+        showToast("選んだコミットを1つにまとめました。", "success");
+      },
+      undefined,
+      undefined,
+      undefined,
+      { op: "rebase", commit_ids: commitOids },
+    );
   }
 
   // reword: 最新コミットのメッセージを書き換える。破壊的なので guarded を通す。
   function doReword(message: string) {
     setShowRebase(false);
-    void guarded("コミット履歴の整理（リベース）", "rebase", async () => {
-      await api.rewordCommit(repoPath, message);
-      clearCommitSelection();
-      showToast("コミットメッセージを書き換えました。", "success");
-    });
+    void guarded(
+      "コミット履歴の整理（リベース）",
+      "rebase",
+      async () => {
+        await api.rewordCommit(repoPath, message);
+        clearCommitSelection();
+        showToast("コミットメッセージを書き換えました。", "success");
+      },
+      undefined,
+      undefined,
+      undefined,
+      { op: "rebase", commit_ids: [] },
+    );
   }
 
   // #105 コマンドパレット: リポジトリが開かれているときだけ使えるコマンド一覧。
@@ -2411,6 +2455,10 @@ export function RepoWorkspace({
                         async () => {
                           for (const p of paths) await api.discardPath(repoPath, p);
                         },
+                        undefined,
+                        undefined,
+                        undefined,
+                        { op: "discard", paths },
                       )
                     }
                     // #125 hunk ステージ
@@ -2749,6 +2797,9 @@ export function RepoWorkspace({
                     "delete_branch",
                     () => api.deleteBranch(repoPath, name),
                     name,
+                    undefined,
+                    undefined,
+                    { op: "delete_branch", name },
                   )
                 }
                 onMerge={(name) => doMergeBranch(name)}
@@ -2780,6 +2831,8 @@ export function RepoWorkspace({
                       ),
                     name,
                     true, // networkOp
+                    undefined,
+                    { op: "force_push", remote: "origin", branch: name },
                   )
                 }
               />
@@ -2891,7 +2944,7 @@ export function RepoWorkspace({
           title={guard.title}
           assessment={guard.assessment}
           explanation={guard.explanation}
-          affectedFiles={guard.affectedFiles}
+          preview={guard.preview}
           affectedBranches={guard.affectedBranches}
           onConfirm={() => void confirmGuard()}
           onCancel={() => setGuard(null)}
