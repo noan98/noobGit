@@ -400,6 +400,19 @@ pub fn validate_entry(repo: &Repository, entry: &UndoEntry) -> UndoApplicability
                 AlreadyUndone
             }
         }
+        UndoAction::RestoreDetachedHead { commit, branch } => {
+            // 救出で作ったブランチが既に無ければ取り消し済み（apply も何もしない）。
+            if repo.find_branch(branch, git2::BranchType::Local).is_err() {
+                return AlreadyUndone;
+            }
+            if !commit_exists(repo, commit) {
+                return missing("救出したコミット");
+            }
+            // 救出後にブランチへコミットが積まれていても、ここでは適用不能にしない。
+            // 適用不能にすると undo_last が履歴から整理してしまうが、ブランチを戻せば
+            // 再び取り消せるので、履歴は残したまま apply 側で Blocked にする（#197 の設計）。
+            Applicable
+        }
         UndoAction::UnstagePath { .. } => Applicable,
         UndoAction::RestoreIndexEntry { path, blob, .. } => {
             let Ok(index) = repo.index() else {

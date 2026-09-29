@@ -1354,6 +1354,7 @@ pub fn rescue_detached_head(repo: &Repository, name: &str) -> Result<()> {
                 commit: head_commit.id().to_string(),
                 branch: name.to_string(),
             },
+            head_at_record: None,
         },
     );
     Ok(())
@@ -6527,6 +6528,44 @@ mod tests {
         }
 
         #[test]
+        fn validate_entry_for_rescue_reflects_later_commits() {
+            use crate::undo::{self, UndoApplicability};
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            rescue_detached_head(&repo, "rescue").unwrap();
+            let entry = undo::list(&repo)
+                .unwrap()
+                .pop()
+                .expect("救出の undo が記録される");
+
+            // 救出直後はそのまま取り消せる。
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::Applicable
+            ));
+
+            // 救出したブランチにコミットを積んでも、履歴は整理せず残す（apply が Blocked で止める）。
+            fx.write_file("a.txt", "3");
+            fx.stage_all();
+            fx.commit("after rescue");
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::Applicable
+            ));
+
+            // ブランチが無くなっていれば取り消し済み。
+            repo.set_head_detached(fx.head_oid()).unwrap();
+            repo.find_branch("rescue", BranchType::Local)
+                .unwrap()
+                .delete()
+                .unwrap();
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::AlreadyUndone
+            ));
+        }
+
+        #[test]
         fn status_on_a_branch_is_not_detached() {
             let fx = TestRepo::new();
             fx.write_file("a.txt", "1");
@@ -6595,6 +6634,7 @@ mod tests {
                         commit: c2.to_string(),
                         branch: "rescue".to_string(),
                     },
+                    head_at_record: None,
                 },
             )
             .unwrap();
