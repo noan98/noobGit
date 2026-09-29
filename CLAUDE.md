@@ -184,6 +184,29 @@ npm run build                 # フロントエンドがコンパイルできる
 Rust の変更を完了と報告する前に `cargo test -p noobgit-core` を実行すること。
 フロントエンドの変更を完了と報告する前に `npm run typecheck` を実行すること。
 
+### プロパティベーステスト（proptest, #200）
+
+`core/src/undo/proptests.rs` に、ランダムな書き込み操作列（ステージ・コミット・
+ブランチ作成/切替/削除・`reset_hard`・stash・タグ・discard）を実リポジトリ
+（`TestRepo`）で実行し、undo とジャーナルの不変条件を検証する
+[proptest](https://docs.rs/proptest) のテストがある。検証するのは、(1) `apply` の
+冪等性（2回続けて実行しても状態が同じ）、(2) `.git/noobgit_undo.json` が常にパース
+可能で、参照する oid が ODB に存在すること、(3) undo を記録した操作の直後に undo
+すると HEAD / index / ブランチ / タグ / stash が操作前に戻ること（不可逆な
+`reset_hard`＝未コミット変更ありからのリセットは対象外）、(4) どの操作列でも
+パニックしないこと。private な `undo::apply` を直接呼ぶため、`undo.rs` の子モジュール
+として置いている。`cargo test -p noobgit-core` に含まれる。
+
+ケース数の既定は 32（CI で数秒〜十数秒）。環境変数 `PROPTEST_CASES` で調整できる:
+
+```bash
+PROPTEST_CASES=1000 cargo test -p noobgit-core proptests   # 手元で網羅的に探索（1分程度）
+```
+
+失敗すると proptest が入力を最小ケースへ縮小（shrink）し、`core/proptest-regressions/`
+に seed を保存する。**このファイルはコミットする**（以後は毎回そのケースを先に再実行
+する）。あわせて縮小結果を `proptests.rs` の個別の回帰テストとして固定すること。
+
 ### E2E テスト（tauri-driver + WebdriverIO, #177）
 
 `e2e/` に、実際にビルドしたデスクトップアプリを操作する E2E テストがある

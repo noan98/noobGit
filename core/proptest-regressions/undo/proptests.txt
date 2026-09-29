@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3b62634affc81e8971deb2507cb7a10dc953af46d9f8711b99e640cf6948d26c # shrinks to with_initial_commit = true, ops_seq = [Write(0, 0), StageAll, ResetHard(false)]
+cc efa9229725209f810bbf53eec31c388617f8cb6505ee25f03297c0fee619fd44 # shrinks to with_initial_commit = true, ops_seq = [Write(0, 0), StageAll, StashSave]
