@@ -37,4 +37,6 @@ pub use model::{
     RepoStatus, SensitiveWarning, StashInfo,
 };
 pub use safety::{assess, OperationKind, RiskAssessment, RiskLevel, SafetyContext};
-pub use undo::{can_undo, peek, undo_last, UndoAction, UndoEntry};
+pub use undo::{
+    can_undo, peek, undo_last, undo_last_confirmed, UndoAction, UndoApplicability, UndoEntry,
+};

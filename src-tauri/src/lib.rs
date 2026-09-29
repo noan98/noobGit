@@ -20,7 +20,7 @@ use noobgit_core::model::{
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
-use noobgit_core::undo::UndoEntry;
+use noobgit_core::undo::{UndoApplicability, UndoEntry};
 use noobgit_core::{bisect, identity, impact, ops, repo, undo};
 
 /// 書き込み系コマンドを 1 つずつ順番に実行するためのロック。
@@ -770,11 +770,29 @@ fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     Ok(undo::peek(&r).ok().flatten())
 }
 
+/// 直前の操作を取り消す。履歴が進んでいて新しい作業も巻き戻る恐れがある場合は、
+/// `confirm_risky` が true でない限り何も変えずにエラーを返す（#201）。
 #[tauri::command(async)]
-fn undo_last(repo_path: String) -> Result<String, String> {
+fn undo_last(repo_path: String, confirm_risky: Option<bool>) -> Result<String, String> {
     let _write = write_lock();
     let r = open(&repo_path)?;
-    undo::undo_last(&r).map_err(|e| e.to_string())
+    undo::undo_last_confirmed(&r, confirm_risky.unwrap_or(false)).map_err(|e| e.to_string())
+}
+
+/// 取り消し履歴の各エントリが今のリポジトリ状態で適用できるかを検証する
+/// （`get_undo_journal` と同じ古い順）。読み取り専用（#201）。
+#[tauri::command(async)]
+fn get_undo_applicability(repo_path: String) -> Result<Vec<UndoApplicability>, String> {
+    let r = open(&repo_path)?;
+    undo::validate_journal(&r).map_err(|e| e.to_string())
+}
+
+/// 適用不能になった取り消し履歴を整理し、取り除いた件数を返す（#201）。
+#[tauri::command(async)]
+fn prune_undo_journal(repo_path: String) -> Result<usize, String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    undo::prune_unresolvable(&r).map_err(|e| e.to_string())
 }
 
 /// 指定したコミット時点のファイル内容を作業ツリーに復元し、ステージする。
@@ -953,6 +971,8 @@ pub fn run() {
             get_undo_journal,
             peek_undo,
             undo_last,
+            get_undo_applicability,
+            prune_undo_journal,
             check_sensitive,
             check_lfs_candidates,
             restore_file_from_commit,
