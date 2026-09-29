@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use git2::{BranchType, Repository};
 
 use crate::error::{CoreError, Result};
-use crate::model::{CommitInfo, DiscardedDiff, FileDiff, ImpactPreview, ImpactRequest};
+use crate::model::{CommitInfo, DiscardedDiff, FileDiff, ImpactPreview, ImpactRequest, RebaseStep};
 use crate::{ops, repo};
 
 /// プレビューに載せるコミット数の上限。超えた分は `truncated` で示す。
@@ -38,6 +38,7 @@ pub fn preview(repo: &mut Repository, request: &ImpactRequest) -> Result<ImpactP
             stash_restore_preview(repo, *index)
         }
         ImpactRequest::Rebase { commit_ids } => rewrite_preview(repo, commit_ids),
+        ImpactRequest::RebasePlan { plan } => rebase_plan_preview(repo, plan),
     }
 }
 
@@ -227,6 +228,41 @@ pub fn rewrite_preview(repo: &Repository, commit_ids: &[String]) -> Result<Impac
     }
     let published = repo::head_is_published(repo)?;
     Ok(ImpactPreview::RewrittenCommits { commits, published })
+}
+
+/// リベースプラン（並べ替え・削除・reword・squash）の実行前後の履歴。
+///
+/// `before` は変更前（新しい順）、`after` は実行後の予想（新しい順）、`dropped` は履歴から
+/// 消えるコミット。プランが不正なら検証エラーをそのまま返す（＝プレビューなし）。
+pub fn rebase_plan_preview(repo: &Repository, plan: &[RebaseStep]) -> Result<ImpactPreview> {
+    let v = ops::validate_rebase_plan(repo, plan)?;
+    let info = |c: &git2::Commit| repo::commit_info_from(c.id(), c);
+
+    let before: Vec<CommitInfo> = v.range.iter().map(info).collect();
+    let mut dropped = Vec::new();
+    let mut after_oldest_first: Vec<CommitInfo> = Vec::new();
+    for (step, commit) in plan.iter().zip(v.steps.iter()) {
+        match step {
+            RebaseStep::Drop { .. } => dropped.push(info(commit)),
+            // squash は直前のエントリに取り込まれるので、履歴の行は増えない。
+            RebaseStep::Squash { .. } => {}
+            RebaseStep::Reword { message, .. } => {
+                let mut i = info(commit);
+                i.summary = message.lines().next().unwrap_or("").trim().to_string();
+                after_oldest_first.push(i);
+            }
+            RebaseStep::Pick { .. } => after_oldest_first.push(info(commit)),
+        }
+    }
+    after_oldest_first.reverse();
+    dropped.reverse();
+    let published = repo::head_is_published(repo)?;
+    Ok(ImpactPreview::RebasePlan {
+        before,
+        after: after_oldest_first,
+        dropped,
+        published,
+    })
 }
 
 /// revwalk から最大 [`MAX_PREVIEW_COMMITS`] 件を取り出す。超過は `truncated`。
@@ -542,6 +578,76 @@ mod tests {
         let ImpactPreview::RewrittenCommits { published, .. } =
             rewrite_preview(&repo, &[]).unwrap()
         else {
+            panic!();
+        };
+        assert!(published);
+    }
+
+    #[test]
+    fn rebase_plan_preview_shows_before_after_and_dropped() {
+        use crate::model::RebaseStep;
+        let fx = TestRepo::new();
+        let mut ids = Vec::new();
+        for (i, f) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            fx.write_file(f, "x\n");
+            fx.stage_all();
+            ids.push(fx.commit(&format!("c{}", i + 1)));
+        }
+        let repo = fx.open();
+        let plan = vec![
+            RebaseStep::Drop {
+                oid: ids[1].to_string(),
+            },
+            RebaseStep::Reword {
+                oid: ids[2].to_string(),
+                message: "新しい件名\n\n本文".to_string(),
+            },
+        ];
+        let ImpactPreview::RebasePlan {
+            before,
+            after,
+            dropped,
+            published,
+        } = rebase_plan_preview(&repo, &plan).unwrap()
+        else {
+            panic!("RebasePlan のはず");
+        };
+        let s = |v: &[CommitInfo]| v.iter().map(|c| c.summary.clone()).collect::<Vec<_>>();
+        assert_eq!(s(&before), ["c3", "c2"]);
+        assert_eq!(s(&after), ["新しい件名"]);
+        assert_eq!(s(&dropped), ["c2"]);
+        assert!(!published);
+        // 不正なプランはエラー（プレビューなし）。
+        assert!(rebase_plan_preview(&repo, &[]).is_err());
+        // preview() からも tagged で呼べる。
+        let mut repo = fx.open();
+        let p = preview(&mut repo, &ImpactRequest::RebasePlan { plan }).unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap()["kind"], "rebase_plan");
+    }
+
+    #[test]
+    fn rebase_plan_preview_flags_published_head() {
+        use crate::model::RebaseStep;
+        let (fx, _remote) = diverged_with_remote();
+        fx.write_file("a.txt", "2\n");
+        fx.stage_all();
+        fx.commit("公開済み");
+        let repo = fx.open();
+        ops::push(&repo, "origin", "refs/heads/main:refs/heads/main", false).unwrap();
+        ops::fetch(&repo, "origin").unwrap();
+        repo.find_branch("main", BranchType::Local)
+            .unwrap()
+            .set_upstream(Some("origin/main"))
+            .unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let ImpactPreview::RebasePlan { published, .. } = rebase_plan_preview(
+            &repo,
+            &[RebaseStep::Reword {
+                oid: head.id().to_string(),
+                message: "x".to_string(),
+            }],
+        )
+        .unwrap() else {
             panic!();
         };
         assert!(published);

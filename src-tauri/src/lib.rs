@@ -18,8 +18,8 @@ use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, ImpactPreview, ImpactRequest, LfsCandidate, LogPage, MergeOutcome,
-    MergedBranchInfo, NetworkProgress, PullOutcome, RefLabel, ReflogEntry, RemoteInfo, RepoStatus,
-    SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
+    MergedBranchInfo, NetworkProgress, PullOutcome, RebaseStep, RefLabel, ReflogEntry, RemoteInfo,
+    RepoStatus, SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -475,6 +475,20 @@ fn squash_commits(
         OperationKind::Rebase,
         Some(format!("{}件のコミットを1つにまとめる", refs.len())),
         |r| ops::squash_commits(r, &refs, &message),
+    )
+}
+
+/// HEAD から連続するコミットの範囲を、プラン（並べ替え・削除・reword・squash の混在）どおりに作り直す。
+///
+/// `plan` は古い順（適用する順）。コンフリクト時は何も変えずに中断する。
+#[tauri::command(async)]
+fn rebase_plan(repo_path: String, plan: Vec<RebaseStep>) -> Result<(), String> {
+    let _write = write_lock();
+    logged(
+        &repo_path,
+        OperationKind::Rebase,
+        Some(format!("{}件のコミットの並べ替え・削除", plan.len())),
+        |r| ops::rebase_plan(r, &plan),
     )
 }
 
@@ -1189,6 +1203,7 @@ pub fn run() {
             amend_commit,
             squash_commits,
             reword_commit,
+            rebase_plan,
             discard_path,
             get_gitignore,
             add_to_gitignore,
