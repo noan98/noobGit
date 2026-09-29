@@ -16,7 +16,7 @@ use noobgit_core::model::{
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, LfsCandidate, LogPage, MergeOutcome, MergedBranchInfo, NetworkProgress,
     PullOutcome, ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo,
-    StashRestoreOutcome, TagInfo,
+    StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -516,6 +516,18 @@ fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// 未コミットの変更を退避してからブランチを切り替え、切り替え後に変更を戻す。
+/// コンフリクト時は退避を残し、`SwitchWithStashOutcome.conflicted` で伝える。
+#[tauri::command(async)]
+fn switch_branch_with_stash(
+    repo_path: String,
+    name: String,
+) -> Result<SwitchWithStashOutcome, String> {
+    let _write = write_lock();
+    let mut r = open(&repo_path)?;
+    ops::switch_branch_with_stash(&mut r, &name).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn switch_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
@@ -901,6 +913,7 @@ pub fn run() {
             set_identity,
             create_branch,
             switch_branch,
+            switch_branch_with_stash,
             delete_branch,
             get_merged_branches,
             delete_branches,

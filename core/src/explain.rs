@@ -91,6 +91,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "失敗した場合は、変更をコミットか stash してから再度切り替えてください。"
                 .into(),
         },
+        OperationKind::SwitchBranchWithStash => Explanation {
+            title: "退避して切り替え".into(),
+            what: "服を着替える前に、持ち物をロッカーへ預けるようなものです。未コミットの変更をいったん退避（stash）してからブランチを切り替え、切り替え後に変更を作業ツリーへ戻します。".into(),
+            why: "未コミットの変更があると、そのまま切り替えは安全のため止まります。コミットするほどではない作業中の変更を、手軽に持ち越したいときに使います。".into(),
+            on_trouble: "切り替えに失敗したときは、元のブランチのまま変更を作業ツリーへ戻します。切り替え先が同じ箇所を変更していて戻すときにコンフリクトが起きた場合は、コンフリクト解消ウィザードが開きます。退避は一覧に残るので変更は失われません。".into(),
+        },
         OperationKind::DeleteBranch => Explanation {
             title: "ブランチ削除".into(),
             what: "指定したブランチの「枝」を消します。".into(),
@@ -231,6 +237,7 @@ mod tests {
             OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
+            OperationKind::SwitchBranchWithStash,
             OperationKind::DeleteBranch,
             OperationKind::ResetHard,
             OperationKind::Fetch,

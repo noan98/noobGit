@@ -12,6 +12,7 @@ use crate::model::{
     BulkDeleteBranchesOutcome, ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange,
     GitignorePatternCheck, GitignoreSuggestion, MergeOutcome, NetworkProgress,
     NetworkProgressStage, PullOutcome, SkippedBranch, StashInfo, StashRestoreOutcome,
+    SwitchWithStashOutcome,
 };
 use crate::repo::{current_branch, is_submodule_path, merged_branches, read_gitignore};
 use crate::safety::OperationKind;
@@ -1024,24 +1025,8 @@ pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
 ///
 /// 退避は変更を消さない安全操作。直後に取り出せるよう、PopStash の undo を記録する。
 pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
-    let sig = repo.signature().map_err(|_| {
-        CoreError::InvalidInput(
-            "退避（stash）には名前とメールの設定が必要です（git config user.name / user.email）。"
-                .to_string(),
-        )
-    })?;
-
-    let msg = message.trim();
-    let msg = if msg.is_empty() { None } else { Some(msg) };
-    let flags = StashFlags::INCLUDE_UNTRACKED;
-
-    let stash_oid = repo.stash_save2(&sig, msg, Some(flags)).map_err(|e| {
-        if e.code() == git2::ErrorCode::NotFound {
-            CoreError::Blocked("退避できる変更がありません。".to_string())
-        } else {
-            CoreError::Git(format!("退避（stash）に失敗しました: {}", e.message()))
-        }
-    })?;
+    let stash_oid = stash_save_unrecorded(repo, message)?
+        .ok_or_else(|| CoreError::Blocked("退避できる変更がありません。".to_string()))?;
 
     record_undo(
         repo,
@@ -1054,6 +1039,34 @@ pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// [`stash_save`] の本体（undo を記録しない版）。退避する変更が無ければ `Ok(None)`。
+///
+/// [`switch_branch_with_stash`] のように「退避 → 別の操作 → 取り出し」を 1 つの操作として
+/// 合成する呼び出し側は、途中の退避に対する PopStash undo を残したくない（取り出し済みの
+/// 退避を指す古い undo が残ってしまうため）ので、記録の有無を呼び出し側が選べるように
+/// 分けている。
+fn stash_save_unrecorded(repo: &mut Repository, message: &str) -> Result<Option<git2::Oid>> {
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "退避（stash）には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    let msg = message.trim();
+    let msg = if msg.is_empty() { None } else { Some(msg) };
+    let flags = StashFlags::INCLUDE_UNTRACKED;
+
+    match repo.stash_save2(&sig, msg, Some(flags)) {
+        Ok(oid) => Ok(Some(oid)),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(CoreError::Git(format!(
+            "退避（stash）に失敗しました: {}",
+            e.message()
+        ))),
+    }
 }
 
 /// 退避を作業ツリーに取り出す（一覧には残す）。
@@ -1310,6 +1323,121 @@ pub fn switch_branch(repo: &Repository, name: &str) -> Result<()> {
     })?;
     repo.set_head(&refname)?;
     Ok(())
+}
+
+/// 未コミットの変更を退避（stash）してからブランチを切り替え、切り替え後に変更を戻す
+/// （`git switch` の autostash 相当）。手順・失敗時のロールバック・undo の扱いは
+/// [`switch_with_stash_impl`] を参照。
+pub fn switch_branch_with_stash(
+    repo: &mut Repository,
+    name: &str,
+) -> Result<SwitchWithStashOutcome> {
+    switch_with_stash_impl(repo, name, switch_branch)
+}
+
+/// [`switch_branch_with_stash`] の本体。切り替え処理を差し替えられるようにしてあるのは、
+/// 「切り替えが途中で失敗しても変更が失われない」ことをテストで確かめるため
+/// （通常は [`switch_branch`] を渡す）。
+///
+/// 手順と失敗時の扱い:
+///
+/// 1. 切り替え先が存在するか先に確かめる（無ければ何も退避せず `InvalidInput`）。
+/// 2. 未コミット変更（未追跡ファイル含む）を「〈元ブランチ〉から〈先ブランチ〉への切り替え時に
+///    自動退避」という名前で退避する。退避する変更が無ければ、退避せず普通に切り替える
+///    （`stashed: false`）。
+/// 3. 切り替える。**失敗したら元のブランチのまま、退避した変更を作業ツリーへ戻し**
+///    （ロールバック）、元のエラーをそのまま返す。戻す処理自体が失敗・コンフリクトした場合も
+///    退避は一覧に残るので変更は失われない（その旨をエラーメッセージに加える）。
+/// 4. 切り替え後、退避を取り出す（[`stash_pop`] と同じ）。
+///    - 成功: 退避は一覧から取り除かれる（`conflicted: false`）。
+///    - コンフリクト: 目印を書き込んで成功を返し（`conflicted: true`）、**退避は一覧に残す**。
+///      フロントは既存のコンフリクト解消ウィザードと退避パネルへつなげられる。
+///    - 取り出し自体の失敗: 切り替えは済んでいるが、退避は一覧に残るので、その旨を
+///      エラーメッセージで伝える。
+///
+/// 退避は番号ではなく退避コミットの ID で探す（途中で別の退避が増えても取り違えない）。
+///
+/// undo: この操作は undo を記録しない。[`stash_save`] が記録する PopStash は、直後に
+/// この関数自身が取り出してしまう退避を指す古い undo になるため記録しない（内部では
+/// undo を記録しない版の退避を使う）。また [`switch_branch`] 自体も undo を記録しない
+/// ので、既存操作と一貫している。元のブランチへは、もう一度ブランチ切り替えで戻れる。
+fn switch_with_stash_impl<F>(
+    repo: &mut Repository,
+    name: &str,
+    switch: F,
+) -> Result<SwitchWithStashOutcome>
+where
+    F: FnOnce(&Repository, &str) -> Result<()>,
+{
+    let name = name.trim();
+    repo.find_branch(name, BranchType::Local)
+        .map_err(|_| CoreError::InvalidInput(format!("ブランチ「{name}」が見つかりません。")))?;
+
+    let from = match repo.head() {
+        Ok(h) if h.is_branch() => h.shorthand().unwrap_or("(不明)").to_string(),
+        Ok(h) => h
+            .target()
+            .map(|o| format!("{:.7}", o.to_string()))
+            .unwrap_or_else(|| "(不明)".to_string()),
+        Err(_) => "(コミット前)".to_string(),
+    };
+    let message = format!("{from}から{name}への切り替え時に自動退避");
+
+    let Some(stash_oid) = stash_save_unrecorded(repo, &message)? else {
+        switch(repo, name)?;
+        return Ok(SwitchWithStashOutcome {
+            stashed: false,
+            conflicted: false,
+        });
+    };
+
+    if let Err(switch_err) = switch(repo, name) {
+        // ロールバック: 切り替えが途中まで進んでいた場合に備え、作業ツリーを HEAD に揃えて
+        // から（退避済みなので失われる未コミット変更は無い）、退避を元のブランチへ戻す。
+        let _ = repo.checkout_head(Some(CheckoutBuilder::new().force()));
+        let restored = match find_stash_index(repo, stash_oid) {
+            Ok(Some(index)) => stash_pop(repo, index),
+            Ok(None) => Err(CoreError::InvalidInput(
+                "退避した変更が一覧に見つかりませんでした。".to_string(),
+            )),
+            Err(e) => Err(e),
+        };
+        return match restored {
+            Ok(o) if !o.conflicted => Err(switch_err),
+            _ => Err(CoreError::Git(format!(
+                "{switch_err} 退避した変更を元に戻す処理も完了しませんでしたが、変更は退避（stash）一覧に残っているので失われていません。退避パネルから取り出してください。"
+            ))),
+        };
+    }
+
+    let index = find_stash_index(repo, stash_oid)?.ok_or_else(|| {
+        CoreError::Git(format!(
+            "ブランチ「{name}」へ切り替えましたが、退避した変更が一覧に見つかりませんでした。"
+        ))
+    })?;
+    match stash_pop(repo, index) {
+        Ok(o) => Ok(SwitchWithStashOutcome {
+            stashed: true,
+            conflicted: o.conflicted,
+        }),
+        Err(e) => Err(CoreError::Git(format!(
+            "ブランチ「{name}」へは切り替えましたが、退避した変更を戻せませんでした（{e}）。変更は退避（stash）一覧に残っているので失われていません。退避パネルから取り出してください。"
+        ))),
+    }
+}
+
+/// 退避コミットの ID から、退避一覧での現在の番号を探す。
+fn find_stash_index(repo: &mut Repository, id: git2::Oid) -> Result<Option<usize>> {
+    let mut found = None;
+    repo.stash_foreach(|index, _message, oid| {
+        if *oid == id {
+            found = Some(index);
+            false
+        } else {
+            true
+        }
+    })?;
+    Ok(found)
 }
 
 /// ブランチを削除する。直後に Undo で復元できる。
@@ -4041,6 +4169,190 @@ mod tests {
             1,
             "コンフリクト時は退避を一覧から取り除かないこと"
         );
+    }
+
+    // ---- switch_branch_with_stash（#198） ----
+
+    /// main 相当（初期ブランチ）に a.txt / b.txt を持つコミットを作り、`other` ブランチで
+    /// a.txt だけを変更したコミットを積んだうえで、初期ブランチに戻った状態を作る。
+    /// 戻り値は初期ブランチ名。
+    fn setup_two_branches(fx: &TestRepo) -> String {
+        fx.write_file("a.txt", "base");
+        fx.write_file("b.txt", "base-b");
+        fx.stage_all();
+        fx.commit("c1");
+        let orig = current_branch(&fx.open()).unwrap();
+        create_branch(&fx.open(), "other").unwrap();
+        switch_branch(&fx.open(), "other").unwrap();
+        fx.write_file("a.txt", "other-change");
+        fx.stage_all();
+        fx.commit("c2 on other");
+        switch_branch(&fx.open(), &orig).unwrap();
+        orig
+    }
+
+    fn read(fx: &TestRepo, rel: &str) -> String {
+        std::fs::read_to_string(fx.path().join(rel)).unwrap()
+    }
+
+    // 成功パス: 退避 → 切り替え → 復元。変更（追跡・未追跡とも）が切り替え先へ持ち越され、
+    // 退避は一覧に残らない。undo は記録しない。
+    #[test]
+    fn switch_with_stash_success_carries_changes_over() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("b.txt", "wip-b");
+        fx.write_file("new.txt", "untracked");
+        let undo_before = crate::undo::list(&fx.open()).unwrap().len();
+
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert_eq!(
+            outcome,
+            SwitchWithStashOutcome {
+                stashed: true,
+                conflicted: false
+            }
+        );
+
+        let repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), "other");
+        assert_eq!(read(&fx, "a.txt"), "other-change");
+        assert_eq!(read(&fx, "b.txt"), "wip-b");
+        assert_eq!(read(&fx, "new.txt"), "untracked");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+        assert_eq!(crate::undo::list(&repo).unwrap().len(), undo_before);
+        // 元のブランチは動いていない。
+        assert!(repo.find_branch(&orig, BranchType::Local).is_ok());
+    }
+
+    // 変更が無ければ退避せず、普通に切り替える。
+    #[test]
+    fn switch_with_stash_on_clean_tree_just_switches() {
+        let fx = TestRepo::new();
+        setup_two_branches(&fx);
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert!(!outcome.stashed && !outcome.conflicted);
+        assert_eq!(read(&fx, "a.txt"), "other-change");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
+    // pop コンフリクトパス: 素の switch_branch は Blocked になる変更でも、退避して切り替えられる。
+    // 戻すときにコンフリクトするが、退避は一覧に残り変更は失われない。
+    #[test]
+    fn switch_with_stash_conflict_keeps_stash() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+
+        // 前提: 素の切り替えは Blocked。
+        assert!(matches!(
+            switch_branch(&fx.open(), "other"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert!(outcome.stashed && outcome.conflicted);
+
+        let mut repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), "other");
+        assert!(repo.index().unwrap().has_conflicts());
+        let stashes = stash_list(&mut repo).unwrap();
+        assert_eq!(stashes.len(), 1, "コンフリクト時は退避を残すこと");
+        // 自動命名（退避メッセージに元ブランチ名と先ブランチ名が入る）。
+        assert!(
+            stashes[0]
+                .message
+                .contains(&format!("{orig}からotherへの切り替え時に自動退避")),
+            "message = {}",
+            stashes[0].message
+        );
+        // 作業ツリーには自分の変更がコンフリクトの目印付きで残っている。
+        assert!(read(&fx, "a.txt").contains("wip-a"));
+    }
+
+    // 途中失敗のロールバック: 切り替えが失敗しても、元のブランチのまま未コミット変更
+    // （追跡・未追跡）が作業ツリーに戻り、退避も残らない。元のエラーがそのまま返る。
+    #[test]
+    fn switch_with_stash_rolls_back_when_switch_fails() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+        fx.write_file("new.txt", "untracked");
+
+        let err = {
+            let mut repo = fx.open();
+            switch_with_stash_impl(&mut repo, "other", |_r, _n| {
+                Err(CoreError::Blocked("テスト用の切り替え失敗".to_string()))
+            })
+            .unwrap_err()
+        };
+        assert!(matches!(err, CoreError::Blocked(ref m) if m == "テスト用の切り替え失敗"));
+
+        let mut repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), orig);
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+        assert_eq!(read(&fx, "new.txt"), "untracked");
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
+    // ロールバックで戻す処理自体がコンフリクトしても、変更は退避一覧に残って失われない。
+    #[test]
+    fn switch_with_stash_rollback_failure_keeps_changes_in_stash() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+
+        let err = {
+            let mut repo = fx.open();
+            // 「切り替え」の途中で HEAD 側のファイルが変わってしまった状況を模す
+            // （戻すときに退避と競合する）。
+            switch_with_stash_impl(&mut repo, "other", |r, _n| {
+                let mut co = CheckoutBuilder::new();
+                co.force();
+                let obj = r.revparse_single("refs/heads/other")?;
+                r.checkout_tree(&obj, Some(&mut co))?;
+                r.set_head("refs/heads/other")?;
+                r.set_head(&format!("refs/heads/{orig}"))?;
+                // 作業ツリーだけ other の内容になったまま失敗する。
+                Err(CoreError::Git("テスト用の中途半端な失敗".to_string()))
+            })
+            .unwrap_err()
+        };
+        assert!(err.to_string().contains("テスト用の中途半端な失敗"));
+
+        // 変更は作業ツリーに戻っているか、少なくとも退避に残っている（どちらかは必ず満たす）。
+        let mut repo = fx.open();
+        let stashed = !stash_list(&mut repo).unwrap().is_empty();
+        let in_tree = read(&fx, "a.txt").contains("wip-a");
+        assert!(stashed || in_tree, "変更が失われた");
+    }
+
+    // 存在しないブランチ: 何も退避せず、未コミット変更もそのまま。
+    #[test]
+    fn switch_with_stash_unknown_branch_changes_nothing() {
+        let fx = TestRepo::new();
+        setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+        let err = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "nope").unwrap_err()
+        };
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
     }
 
     // stash_pop がコンフリクトなく成功する通常時は、従来どおり退避を一覧から
