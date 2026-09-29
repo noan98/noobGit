@@ -1936,7 +1936,7 @@ pub fn fetch_with_options(
         // refspec が空のリモートでは libgit2 が既定の refspec を補う。
         remote.fetch(&refspecs, Some(&mut fo), None).map_err(|e| {
             CoreError::Git(format!(
-                "取得（fetch）に失敗しました: {}",
+                "フェッチ（取得）に失敗しました: {}",
                 describe_git2_error_keep_unknown(&e)
             ))
         })?;
@@ -2077,7 +2077,7 @@ fn fast_forward_unborn(repo: &Repository, target: &Commit) -> Result<PullOutcome
     repo.checkout_tree(target.as_object(), Some(&mut co))
         .map_err(|_| {
             CoreError::Blocked(
-                "作業フォルダの内容と衝突するため取り込めません。先に退避してください。"
+                "作業ツリーの内容とコンフリクトするため取り込めません。先に退避してください。"
                     .to_string(),
             )
         })?;

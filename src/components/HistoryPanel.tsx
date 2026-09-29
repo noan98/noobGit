@@ -4,6 +4,7 @@ import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
 import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
+import { Term, TermText } from "./Term";
 import { computeCommitGraphLayout } from "../lib/commitGraph";
 // #272: 一覧の矢印キー行ナビゲーション（コミット一覧・reflog 一覧で使う）。
 import { useListNav } from "../hooks/useListNav";
@@ -317,7 +318,9 @@ export function HistoryPanel({
           履歴に対する操作は、画面の端に散らばらないよう見出しのすぐ右に 1 つの
           ツールバーとしてまとめる（マウスの移動距離を短くするため）。 */}
       <div className="panel-head history-head">
-        <h2>履歴</h2>
+        <h2>
+          <Term k="commit">履歴</Term>
+        </h2>
         <div className="history-toolbar">
           {/* #131 reflog: タブ切り替えボタン */}
           <div className="history-tabs" role="tablist" aria-label="履歴の表示切り替え">
@@ -610,7 +613,8 @@ export function HistoryPanel({
       {activeTab === "reflog" && (
         <div className="reflog-tab">
           <p className="reflog-description">
-            過去の操作で HEAD が移動した履歴です。「消えた」コミットもここから見つけて戻せます。
+            <TermText text="過去の操作で HEAD が移動した履歴です。" />
+            「消えた」コミットもここから見つけて戻せます。
           </p>
           {reflogLoading && (
             <div className="reflog-loading" role="status">

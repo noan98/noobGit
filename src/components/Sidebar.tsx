@@ -344,7 +344,7 @@ export function Sidebar({
 
       <Section
         icon="stash"
-        title="スタッシュ（退避）"
+        title="退避（stash）"
         count={stashes.length}
         defaultOpen={false}
         onOpenView={() => onSelectView("stashes")}

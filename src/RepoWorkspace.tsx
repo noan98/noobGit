@@ -1343,7 +1343,7 @@ export function RepoWorkspace({
     const name = status?.branch;
     if (!name) return;
     void guarded(
-      `ブランチ「${name}」を送信`,
+      `ブランチ「${name}」をプッシュ`,
       "push",
       () =>
         // #167 進捗フィードバック: 送信オブジェクト数などを流す。
@@ -2022,13 +2022,13 @@ export function RepoWorkspace({
         },
         {
           id: "fetch",
-          label: "取得（fetch）",
+          label: "フェッチ（取得）",
           description: "リモートの最新情報だけを取得する（作業中ファイルは変わらない）",
           run: doFetch,
         },
         {
           id: "pull",
-          label: "取り込む（pull）",
+          label: "プル（取り込み）",
           description: "リモートの変更を安全に取り込む（fast-forward のみ）",
           run: doPull,
         },
@@ -2178,7 +2178,7 @@ export function RepoWorkspace({
             className={`toolbar-btn ${riskTriggerClassFor(riskLevels, "push", status?.branch ?? undefined)}`}
             onClick={doPushCurrentBranch}
             disabled={isNetworkBusy || !status?.branch}
-            title="現在のブランチをリモートへ送信します [Ctrl+P]"
+            title="現在のブランチをリモートへプッシュ（送信）します [Ctrl+P]"
           >
             <span className="toolbar-btn-icon">
               {isNetworkBusy ? (
@@ -2226,12 +2226,12 @@ export function RepoWorkspace({
         <button
           className="toolbar-btn"
           onClick={() => setView("stashes")}
-          title="作業中の変更を一時退避（スタッシュ）します"
+          title="作業中の変更を退避（stash）します"
         >
           <span className="toolbar-btn-icon">
             <Icon name="stash" />
           </span>
-          <span className="toolbar-btn-label">スタッシュ</span>
+          <span className="toolbar-btn-label">退避</span>
         </button>
         <button
           className="toolbar-btn"
@@ -2805,7 +2805,7 @@ export function RepoWorkspace({
                 onMerge={(name) => doMergeBranch(name)}
                 onPush={(name) =>
                   void guarded(
-                    `ブランチ「${name}」を送信`,
+                    `ブランチ「${name}」をプッシュ`,
                     "push",
                     () =>
                       api.push(
@@ -2820,7 +2820,7 @@ export function RepoWorkspace({
                 }
                 onForcePush={(name) =>
                   void guarded(
-                    `ブランチ「${name}」を強制送信`,
+                    `ブランチ「${name}」を強制プッシュ`,
                     "force_push",
                     () =>
                       api.push(
@@ -2889,7 +2889,7 @@ export function RepoWorkspace({
           </div>
           )}
 
-          {/* スタッシュ（退避）: 保存・適用・取り出し */}
+          {/* 退避（stash）: 保存・適用・取り出し */}
           {view === "stashes" && (
           <div className="view-scroll">
           <AnimatePresence mode="wait">

@@ -11,6 +11,7 @@ import { fadeIn, shakeXKeyframes, spring, transitions } from "../theme/motion";
 import { ImpactPreviewSection } from "./ImpactPreviewSection";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { Icon } from "./Icon";
+import { TermText } from "./Term";
 
 const levelLabel: Record<RiskLevel, string> = {
   safe: "安全な操作",
@@ -80,9 +81,11 @@ export function ConfirmDialog({
     })();
   }, [dialogControls, isDestructive]);
 
-  // destructive ではキャンセルを右（優先位置）に置き autoFocus でデフォルトフォーカスを与える。
+  // キャンセルに autoFocus でデフォルトフォーカスを与える（destructive では右＝優先位置）。
+  // 全レベルで付けるのは、説明文中の用語（Term, tabIndex=0）へ初期フォーカスが
+  // 落ちて解説が勝手に開くのを防ぐため。従来も DOM 順で最初のボタン＝キャンセルだった。
   const cancelBtn = (
-    <button className="btn" onClick={onCancel} autoFocus={isDestructive}>
+    <button className="btn" onClick={onCancel} autoFocus>
       やめておく
     </button>
   );
@@ -132,15 +135,21 @@ export function ConfirmDialog({
         </div>
 
         <section className="explain">
-          <p className="explain-what">{explanation.what}</p>
-          <p className="explain-why">{explanation.why}</p>
+          <p className="explain-what">
+            <TermText text={explanation.what} />
+          </p>
+          <p className="explain-why">
+            <TermText text={explanation.why} />
+          </p>
         </section>
 
         <section className="reasons">
           <h3>確認してください</h3>
           <ul>
             {assessment.reasons.map((r, i) => (
-              <li key={i}>{r}</li>
+              <li key={i}>
+                <TermText text={r} />
+              </li>
             ))}
           </ul>
         </section>
@@ -178,7 +187,8 @@ export function ConfirmDialog({
 
         {assessment.recommended_alternative && (
           <p className="alt">
-            <Icon name="hint" /> {assessment.recommended_alternative}
+            <Icon name="hint" />{" "}
+            <TermText text={assessment.recommended_alternative} />
           </p>
         )}
 
@@ -188,6 +198,8 @@ export function ConfirmDialog({
             <Icon name="chevronRight" className="trouble-summary-chevron" />
             困ったときは
           </summary>
+          {/* 折りたたみ中の内容はフォーカスできないため、フォーカストラップの
+              末尾候補にならないよう <Term> は付けずに素のテキストで出す。 */}
           <p className="trouble">{explanation.on_trouble}</p>
         </details>
 

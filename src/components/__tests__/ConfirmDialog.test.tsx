@@ -355,11 +355,11 @@ describe("ConfirmDialog", () => {
       />,
     );
 
-    // ダイアログ内のフォーカス可能な要素（「困ったときは」の summary も含む）を
-    // DOM 順に取得する。
+    // ダイアログ内のフォーカス可能な要素（「困ったときは」の summary と、
+    // 説明文中の用語 <Term>（tabindex=0）も含む）を DOM 順に取得する。
     const dialogEl = container.querySelector(".dialog") as HTMLElement;
     const focusable = Array.from(
-      dialogEl.querySelectorAll<HTMLElement>("button, summary"),
+      dialogEl.querySelectorAll<HTMLElement>("button, summary, [tabindex='0']"),
     );
     expect(focusable.length).toBeGreaterThan(1);
     const first = focusable[0];

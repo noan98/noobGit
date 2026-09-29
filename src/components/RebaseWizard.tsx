@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import type { CommitInfo } from "../api";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { Term } from "./Term";
 
 // リベースの種類。squash は複数コミットを1つにまとめる、reword は1つのメッセージを書き換える。
 type RebaseMode = "squash" | "reword";
@@ -73,13 +74,13 @@ export function RebaseWizard({ selected, onSquash, onReword, onCancel }: Props) 
     <div className="overlay" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="dialog" ref={dialogRef}>
         <div className="dialog-head">
-          <h2 id={titleId}>コミット履歴の整理（リベース）</h2>
+          <h2 id={titleId}>コミット履歴の整理（<Term k="rebase">リベース</Term>）</h2>
         </div>
 
         <section className="explain">
           <p className="explain-what">
             選んだコミットをまとめたり（squash）、メッセージを書き換えたり（reword）できます。
-            まだ送信（push）していないコミットに対して行うのが安全です。
+            まだプッシュ（送信）していないコミットに対して行うのが安全です。
           </p>
         </section>
 

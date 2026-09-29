@@ -92,7 +92,7 @@ export function SensitiveWarningDialog({
             機密情報が含まれている可能性があります。
           </p>
           <p className="explain-why" style={{ fontSize: "13px" }}>
-            Git に機密情報を一度コミットして push すると、
+            Git に機密情報を一度コミットしてプッシュすると、
             <strong>履歴に永久に残り</strong>、削除しても遅すぎることがほとんどです。
             まず .gitignore に追加して管理対象から外すことを強くおすすめします。
           </p>

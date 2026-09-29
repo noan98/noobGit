@@ -150,7 +150,7 @@ export function ImpactPreviewSection({ preview }: { preview: ImpactPreview }) {
     case "stash_overlap":
       return (
         <section className="affected-files-section" data-testid="impact-preview">
-          <h3>衝突しうるファイル</h3>
+          <h3>コンフリクトしうるファイル</h3>
           {preview.overlapping.length === 0 ? (
             <p className="affected-files-clean">
               退避の {preview.stash_file_count} ファイルと、今の変更が重なるものはありません
@@ -173,8 +173,8 @@ export function ImpactPreviewSection({ preview }: { preview: ImpactPreview }) {
           <CommitList commits={preview.commits} />
           {preview.published && (
             <p className="impact-note impact-note-warn">
-              <Icon name="warning" /> すでに公開（push）済みのコミットです。書き換えると、
-              次の送信で強制 push が必要になり、共同作業者に影響します。
+              <Icon name="warning" /> すでにプッシュ（送信）済みのコミットです。書き換えると、
+              次のプッシュで強制プッシュ（force push）が必要になり、共同作業者に影響します。
             </p>
           )}
         </section>

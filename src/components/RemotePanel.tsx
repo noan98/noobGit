@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { RemoteInfo } from "../api";
+import { Term } from "./Term";
 
 interface Props {
   remotes: RemoteInfo[];
@@ -54,7 +55,9 @@ export function RemotePanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>リモート</h2>
+        <h2>
+          <Term k="remote">リモート</Term>
+        </h2>
       </div>
 
       <div className="branch-create">

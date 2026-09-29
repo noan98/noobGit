@@ -7,6 +7,8 @@ import type { DiffSelection, DiffSource } from "./DiffPanel";
 import { StatusBadge } from "./StatusBadge";
 import { EmptyState } from "./EmptyState";
 import { Icon, type IconName } from "./Icon";
+import { Term } from "./Term";
+import type { TermKey } from "../glossary";
 import { slideInFromBottom, transitions } from "../theme/motion";
 // #88 右クリックメニュー
 import { FileContextMenu } from "./FileContextMenu";
@@ -492,6 +494,7 @@ function FileCard({
 // #127 マルチ選択: checkboxRef / checkCount / totalCount を渡すと全選択チェックボックスを表示する。
 function SectionHeader({
   label,
+  termKey,
   checkboxRef,
   checkCount,
   totalCount,
@@ -500,6 +503,8 @@ function SectionHeader({
   toggleAllTitle,
 }: {
   label: string;
+  /** 見出し全体に付ける用語解説（#207）。 */
+  termKey?: TermKey;
   checkboxRef?: React.RefObject<HTMLInputElement | null>;
   checkCount?: number;
   totalCount?: number;
@@ -527,7 +532,7 @@ function SectionHeader({
         color="neutral.muted"
         letterSpacing="0.06em"
       >
-        {label}
+        {termKey ? <Term k={termKey}>{label}</Term> : label}
       </Text>
     </HStack>
   );
@@ -1000,6 +1005,7 @@ export function StatusPanel({
           {/* #127 マルチ選択: ステージ済みセクションの全選択チェックボックス付きヘッダ */}
           <SectionHeader
             label="コミット予定（ステージ済み）"
+            termKey="stage"
             checkboxRef={stagedAllRef}
             checkCount={stagedChecked}
             totalCount={status.staged.length}
@@ -1114,6 +1120,7 @@ export function StatusPanel({
               {/* #127 マルチ選択: 未ステージセクションの全選択チェックボックス付きヘッダ */}
               <SectionHeader
                 label="変更あり（未ステージ）"
+                termKey="stage"
                 checkboxRef={unstagedAllRef}
                 checkCount={unstagedChecked}
                 totalCount={status.unstaged.length}

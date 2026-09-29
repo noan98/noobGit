@@ -88,9 +88,9 @@ describe("ImpactPreviewSection", () => {
       commits: [commit],
       published: true,
     });
-    expect(screen.getByText(/公開（push）済み/)).toBeTruthy();
+    expect(screen.getByText(/プッシュ（送信）済み/)).toBeTruthy();
     unmount();
     renderPreview({ kind: "rewritten_commits", commits: [commit], published: false });
-    expect(screen.queryByText(/公開（push）済み/)).toBeNull();
+    expect(screen.queryByText(/プッシュ（送信）済み/)).toBeNull();
   });
 });

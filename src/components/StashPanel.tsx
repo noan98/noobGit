@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FileChange, StashInfo } from "../api";
 import { changeKindLabel } from "../api";
+import { Term } from "./Term";
 
 interface Props {
   stashes: StashInfo[];
@@ -66,7 +67,9 @@ export function StashPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>退避（stash）</h2>
+        <h2>
+          <Term k="stash">退避（stash）</Term>
+        </h2>
       </div>
 
       <p className="hint">

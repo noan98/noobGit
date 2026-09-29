@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TagInfo } from "../api";
+import { Term } from "./Term";
 
 interface Props {
   tags: TagInfo[];
@@ -34,7 +35,9 @@ export function TagPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>タグ</h2>
+        <h2>
+          <Term k="tag">タグ</Term>
+        </h2>
       </div>
 
       <p className="hint">
