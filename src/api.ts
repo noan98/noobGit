@@ -253,6 +253,55 @@ export interface StashRestoreOutcome {
   conflicted: boolean;
 }
 
+// 破棄する 1 ファイルぶんの差分（ImpactPreview の discarded_diffs の要素）。
+// ステージ済み・未ステージのどちらも失われる。差分が無い側は null。
+export interface DiscardedDiff {
+  path: string;
+  staged: FileDiff | null;
+  unstaged: FileDiff | null;
+}
+
+// 操作の実行前に見せる「影響プレビュー」（#196）。kind で判別する tagged union。
+// core/src/model.rs の ImpactPreview と一致させること。
+export type ImpactPreview =
+  // reset_hard: 失われる未コミットの変更ファイル。
+  | { kind: "lost_changes"; files: FileChange[] }
+  // discard: 失われる差分そのもの（多いときは omitted_files に省略数）。
+  | { kind: "discarded_diffs"; diffs: DiscardedDiff[]; omitted_files: number }
+  // delete_branch: そのブランチにしかないコミット。
+  | {
+      kind: "unique_commits";
+      branch: string;
+      commits: CommitInfo[];
+      truncated: boolean;
+    }
+  // force push: リモート上で上書きされて消えるコミット（remote_ref は最後の fetch 時点）。
+  | {
+      kind: "overwritten_commits";
+      remote_ref: string;
+      commits: CommitInfo[];
+      truncated: boolean;
+    }
+  // stash_apply / stash_pop: 退避と今の作業ツリーで重なる（衝突しうる）ファイル。
+  | {
+      kind: "stash_overlap";
+      stash_file_count: number;
+      overlapping: FileChange[];
+    }
+  // squash / reword: 書き換わるコミット（新しい順）と公開済みか。
+  | { kind: "rewritten_commits"; commits: CommitInfo[]; published: boolean };
+
+// 影響プレビューの計算依頼。core/src/model.rs の ImpactRequest と一致させること。
+export type ImpactRequest =
+  | { op: "reset_hard" }
+  | { op: "discard"; paths: string[] }
+  | { op: "delete_branch"; name: string }
+  | { op: "force_push"; remote: string; branch: string }
+  | { op: "stash_apply"; index: number }
+  | { op: "stash_pop"; index: number }
+  // commit_ids が空なら HEAD の 1 件（reword）。
+  | { op: "rebase"; commit_ids: string[] };
+
 // 「退避して切り替える」（switch_branch_with_stash）の結果。変更は失われない。
 // stashed: 実際に退避したか（変更が無ければ false）。
 // conflicted: 戻すときにコンフリクトが起きたか。true の間は退避を一覧に残す。
@@ -577,6 +626,11 @@ export const api = {
   // 状態には依存しないので repoPath は渡さない）。
   suggestGitignorePatterns: (path: string) =>
     invoke<GitignoreSuggestion[]>("suggest_gitignore_patterns", { path }),
+
+  // #196 操作の影響プレビュー。読み取り専用。失敗しても操作をブロックしないよう、
+  // 呼び出し側は失敗を「プレビューなし」として扱うこと。
+  getImpactPreview: (repoPath: string, request: ImpactRequest) =>
+    invoke<ImpactPreview>("get_impact_preview", { repoPath, request }),
 
   getStashes: (repoPath: string) =>
     invoke<StashInfo[]>("get_stashes", { repoPath }),

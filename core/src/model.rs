@@ -254,6 +254,93 @@ pub struct CommitInfo {
     pub parent_ids: Vec<String>,
 }
 
+/// 破棄する 1 ファイルぶんの差分（[`ImpactPreview::DiscardedDiffs`] の要素）。
+///
+/// `discard_path` は HEAD の状態へ強制的に戻すので、ステージ済みの差分と未ステージの
+/// 差分の両方が失われる。どちらも無ければ（差分が空なら）その側は `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscardedDiff {
+    pub path: String,
+    /// ステージ済みの変更（HEAD↔インデックス）。無ければ `None`。
+    pub staged: Option<FileDiff>,
+    /// 未ステージの変更（インデックス↔作業ツリー）。無ければ `None`。
+    pub unstaged: Option<FileDiff>,
+}
+
+/// 操作を実行する前に見せる「影響プレビュー」（Issue #196）。
+///
+/// 確認ダイアログが「この操作で具体的に何が失われるか」をそのリポジトリのデータで
+/// 表示するための読み取り専用の計算結果。操作ごとに形が違うので `kind` で判別する
+/// tagged enum にしてあり、新しい操作（例: #205 の rebase の並べ替え・削除）は
+/// バリアントを足すだけで拡張できる。計算に失敗してもプレビューが欠けるだけで、
+/// 操作自体はブロックしない（呼び出し側は失敗を「プレビューなし」として扱う）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImpactPreview {
+    /// reset_hard: 失われる未コミットの変更ファイル一覧（ステージ済み + 未ステージ）。
+    LostChanges { files: Vec<FileChange> },
+    /// discard: 失われる差分そのもの。件数が多いときは先頭から一定数だけを返す。
+    DiscardedDiffs {
+        diffs: Vec<DiscardedDiff>,
+        /// 上限を超えたため差分を省略したファイル数。
+        omitted_files: usize,
+    },
+    /// delete_branch: そのブランチにしかないコミット（ブランチを消すと辿れなくなる）。
+    UniqueCommits {
+        branch: String,
+        commits: Vec<CommitInfo>,
+        /// 上限を超えて一部を省略した場合は true。
+        truncated: bool,
+    },
+    /// force push: リモート上で上書きされて消えるコミット。
+    OverwrittenCommits {
+        /// 比較に使ったリモート追跡ブランチ（例: `origin/main`）。最後の fetch 時点の状態。
+        remote_ref: String,
+        commits: Vec<CommitInfo>,
+        truncated: bool,
+    },
+    /// stash_apply / stash_pop: 退避の中身と今の作業ツリーの変更が重なるファイル。
+    StashOverlap {
+        /// 退避に含まれる変更ファイルの総数。
+        stash_file_count: usize,
+        /// 作業ツリー側でも変更されている（衝突しうる）ファイル。
+        overlapping: Vec<FileChange>,
+    },
+    /// squash / reword: 書き換え対象のコミット一覧（新しい順）。
+    RewrittenCommits {
+        commits: Vec<CommitInfo>,
+        /// 直前のコミットがすでに公開（push）済みか。true なら強い警告を出す。
+        published: bool,
+    },
+}
+
+/// 影響プレビューの計算依頼。`op` で操作を判別し、操作ごとの対象を運ぶ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ImpactRequest {
+    ResetHard,
+    Discard {
+        paths: Vec<String>,
+    },
+    DeleteBranch {
+        name: String,
+    },
+    ForcePush {
+        remote: String,
+        branch: String,
+    },
+    StashApply {
+        index: usize,
+    },
+    StashPop {
+        index: usize,
+    },
+    /// squash / reword。`commit_ids` が空なら HEAD の 1 件だけ（reword）。
+    Rebase {
+        commit_ids: Vec<String>,
+    },
+}
+
 /// コミット履歴をカーソルベースでページングしたときの1ページ分の結果。
 ///
 /// `repo::LogCursorStore::first_page` / `LogCursorStore::next_page`（Issue #277）が返す。
