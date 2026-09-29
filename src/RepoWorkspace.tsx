@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  isSwitchBlockedByChanges,
   type BisectStatus,
   type BlameHunk,
   type BranchGraph,
@@ -199,6 +200,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   create_branch: { branches: true, undo: true },
   // 切り替えは HEAD が動くので作業ツリー・ブランチ・履歴すべてが変わりうる。
   switch_branch: FULL_REFRESH,
+  // 退避 → 切り替え → 復元。HEAD・作業ツリー・退避一覧が変わる。
+  switch_branch_with_stash: FULL_REFRESH,
   // 削除はブランチ一覧だけ。
   delete_branch: { branches: true, undo: true },
   // ハードリセットは HEAD が動くので status・log とブランチ関係が変わる。
@@ -213,6 +216,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   force_push: { branches: true },
   // cherry-pick は HEAD に新しいコミットを積む。status・log・ブランチ関係が変わり、undo も積まれる。
   cherry_pick: { status: true, branches: true, log: true, undo: true },
+  // revert も HEAD に新しいコミット（打ち消しコミット）を積む。cherry-pick と同じ再取得が要る。
+  revert: { status: true, branches: true, log: true, undo: true },
   // タグ作成・削除はタグ一覧だけを取り直す。削除は undo も積まれる。
   create_tag: { tags: true, undo: true },
   delete_tag: { tags: true, undo: true },
@@ -314,6 +319,7 @@ export function RepoWorkspace({
     { op: "discard" },
     { op: "reset_hard" },
     { op: "cherry_pick" },
+    { op: "revert" },
     { op: "merge" },
     { op: "switch_branch" },
     { op: "force_push" },
@@ -1418,6 +1424,18 @@ export function RepoWorkspace({
     );
   }
 
+  // コミットの打ち消し（revert）。履歴は書き換えず、逆向きの変更を新しいコミットとして積む。
+  function doRevert(commit: CommitInfo) {
+    void guarded(
+      `「${commit.short_id}」を打ち消す（revert）`,
+      "revert",
+      async () => {
+        await api.revertCommit(repoPath, commit.id);
+        showToast(`コミット ${commit.short_id} を打ち消しました`, "success");
+      },
+    );
+  }
+
   // #184 Bisect: 開始。detached HEAD になり作業ツリーが入れ替わるので guarded を通す。
   // 成功したら返ってきた状態をそのまま保持し、ウィザードは「進行中」画面に自動で切り替わる。
   function doBisectStart(bad: string, good: string) {
@@ -1615,6 +1633,70 @@ export function RepoWorkspace({
       undefined,
       undefined,
       { op: "stash_apply", index },
+    );
+  }
+
+  // ブランチ切り替え。未コミットの変更が邪魔で切り替えできなかった（core が Blocked を
+  // 返した）ときは、エラーにせず「退避して切り替える」提案（確認ダイアログ）を出す。
+  // 変更は core 側で退避 → 切り替え → 復元され、やめる（キャンセル）なら何も変わらない。
+  function doSwitchBranch(name: string) {
+    void guarded(
+      `ブランチ「${name}」へ切り替え`,
+      "switch_branch",
+      async () => {
+        try {
+          await api.switchBranch(repoPath, name);
+        } catch (e) {
+          if (isSwitchBlockedByChanges(e)) {
+            offerSwitchWithStash(name);
+            return;
+          }
+          throw e;
+        }
+      },
+      name,
+    );
+  }
+
+  // 「退避して切り替える」の確認。コンフリクトしたときは退避が一覧に残るので、
+  // stash_pop と同じく stashPopConflict へ記録して既存の後片付け導線に乗せる。
+  function offerSwitchWithStash(name: string) {
+    void guarded(
+      `変更を退避してブランチ「${name}」へ切り替え`,
+      "switch_branch_with_stash",
+      async () => {
+        let outcome;
+        try {
+          outcome = await api.switchBranchWithStash(repoPath, name);
+        } catch (e) {
+          // 「切り替えは済んだが戻せなかった」場合もあるので、状態を取り直してから伝える。
+          await refresh(FULL_REFRESH);
+          throw e;
+        }
+        if (!outcome.stashed) {
+          showToast(`ブランチ「${name}」へ切り替えました。`, "success");
+        } else if (outcome.conflicted) {
+          // 退避は今作ったばかりで先頭（index 0）にある。
+          const list = await api.getStashes(repoPath);
+          if (list[0]) {
+            setStashPopConflict({
+              id: list[0].id,
+              message: list[0].message,
+              seenConflicts: false,
+            });
+          }
+          showToast(
+            "切り替え後、退避した変更を戻すときにコンフリクトが発生しました。コンフリクト解消ウィザードで対処してください（退避は一覧に残しています）。",
+            "warning",
+          );
+        } else {
+          showToast(
+            `変更を退避してブランチ「${name}」へ切り替え、変更を戻しました。`,
+            "success",
+          );
+        }
+      },
+      name,
     );
   }
 
@@ -2140,14 +2222,7 @@ export function RepoWorkspace({
           remotes={remotes}
           stashes={stashes}
           undoCount={undoJournal.length}
-          onSwitchBranch={(name) =>
-            void guarded(
-              `ブランチ「${name}」へ切り替え`,
-              "switch_branch",
-              () => api.switchBranch(repoPath, name),
-              name,
-            )
-          }
+          onSwitchBranch={(name) => doSwitchBranch(name)}
         />
 
         <main className="main-view">
@@ -2499,6 +2574,7 @@ export function RepoWorkspace({
                   onCompareSelect={onCompareSelect}
                   compareBaseId={compareBase?.id ?? null}
                   onCherryPick={doCherryPick}
+                  onRevert={doRevert}
                   selectedIds={selectedCommitIds}
                   onToggleSelect={toggleCommitSelect}
                   onStartRebase={() => setShowRebase(true)}
@@ -2514,6 +2590,7 @@ export function RepoWorkspace({
                   // #274 危険度カラー
                   resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
                   cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
+                  revertRiskClass={riskTriggerClassFor(riskLevels, "revert")}
                 />
               </motion.div>
             )}
@@ -2567,14 +2644,7 @@ export function RepoWorkspace({
                     api.createBranch(repoPath, name),
                   )
                 }
-                onSwitch={(name) =>
-                  void guarded(
-                    `ブランチ「${name}」へ切り替え`,
-                    "switch_branch",
-                    () => api.switchBranch(repoPath, name),
-                    name,
-                  )
-                }
+                onSwitch={(name) => doSwitchBranch(name)}
                 onDelete={(name) =>
                   void guarded(
                     `ブランチ「${name}」を削除`,

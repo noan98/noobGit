@@ -16,7 +16,7 @@ use noobgit_core::model::{
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, ImpactPreview, ImpactRequest, LfsCandidate, LogPage, MergeOutcome,
     MergedBranchInfo, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
-    SensitiveWarning, StashInfo, StashRestoreOutcome, TagInfo,
+    SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
@@ -524,6 +524,18 @@ fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// 未コミットの変更を退避してからブランチを切り替え、切り替え後に変更を戻す。
+/// コンフリクト時は退避を残し、`SwitchWithStashOutcome.conflicted` で伝える。
+#[tauri::command(async)]
+fn switch_branch_with_stash(
+    repo_path: String,
+    name: String,
+) -> Result<SwitchWithStashOutcome, String> {
+    let _write = write_lock();
+    let mut r = open(&repo_path)?;
+    ops::switch_branch_with_stash(&mut r, &name).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn switch_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
@@ -658,6 +670,14 @@ fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, 
     let _write = write_lock();
     let r = open(&repo_path)?;
     ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
+}
+
+/// 指定したコミットの変更を打ち消す新しいコミットを積む（revert）。履歴は書き換えない。
+#[tauri::command(async)]
+fn revert_commit(repo_path: String, oid: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    ops::revert_commit(&r, &oid).map_err(|e| e.to_string())
 }
 
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
@@ -910,6 +930,7 @@ pub fn run() {
             set_identity,
             create_branch,
             switch_branch,
+            switch_branch_with_stash,
             delete_branch,
             get_merged_branches,
             delete_branches,
@@ -919,6 +940,7 @@ pub fn run() {
             push,
             clone_repo,
             cherry_pick,
+            revert_commit,
             merge_branch,
             list_tags,
             create_tag,

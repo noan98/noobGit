@@ -398,6 +398,18 @@ pub struct StashRestoreOutcome {
     pub conflicted: bool,
 }
 
+/// 「退避して切り替える」（`switch_branch_with_stash`）の結果。
+///
+/// 変更が失われることはない。コンフリクト時も退避は一覧に残る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchWithStashOutcome {
+    /// 実際に退避を行ったか。退避する変更が無ければ false（普通の切り替えと同じ）。
+    pub stashed: bool,
+    /// 切り替え後に退避を戻したときコンフリクトが起きたか。true のときは退避を一覧に
+    /// 残したまま、index にコンフリクトが残る（コンフリクト解消ウィザードで対処できる）。
+    pub conflicted: bool,
+}
+
 /// タグ1件の情報。
 ///
 /// 軽量タグ（参照だけ）と注釈付きタグ（メッセージ・作成者を持つ）の両方を表す。
