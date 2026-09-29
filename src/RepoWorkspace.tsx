@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event"; // #199 ファイルシステム監視
 import {
   api,
   isSwitchBlockedByChanges,
@@ -1448,6 +1449,53 @@ export function RepoWorkspace({
     onPush: doPushCurrentBranch,
     onHelp: () => setShowShortcuts(true),
   });
+
+  // #199 ファイルシステム監視: エディタや外部の Git による変更を検知したら、既存の
+  // refresh をそのまま呼んで全パネルを最新にする。監視・デバウンス・noobGit 自身の
+  // 操作による変更の抑制はバックエンド（src-tauri/src/watcher.rs）が行うので、
+  // ここでは通知を受けて再読み込みするだけ。
+  // 確認ダイアログの表示中に外部の変更があった場合は、古い状態を前提にした確認の
+  // まま実行されないよう、ダイアログを閉じて再確認を促す。
+  const guardOpenRef = useRef(false);
+  useEffect(() => {
+    guardOpenRef.current = guard !== null;
+  }, [guard]);
+  const onExternalChangeRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    onExternalChangeRef.current = () => {
+      if (guardOpenRef.current) {
+        setGuard(null);
+        const msg =
+          "リポジトリが外部で変更されました。内容を確認し直してください。";
+        setNotice(msg);
+        showToast(msg, "warning");
+      }
+      void refresh();
+    };
+  }, [refresh]);
+  useEffect(() => {
+    if (!opened || !repoPath) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    // 監視はあくまで補助機能。開始・購読に失敗しても通常の操作は続けられる。
+    void (async () => {
+      try {
+        const fn = await listen<{ repo_path: string }>("repo-changed", (ev) => {
+          if (ev.payload.repo_path === repoPath) onExternalChangeRef.current();
+        });
+        if (disposed) fn();
+        else unlisten = fn;
+        await api.watchRepo(repoPath);
+      } catch {
+        // 監視できない環境（テスト・ブラウザ単体など）では何もしない。
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void Promise.resolve(api.unwatchRepo(repoPath)).catch(() => {});
+    };
+  }, [opened, repoPath]);
 
   // #105 コマンドパレット: Ctrl+K / ⌘K でパレットを開く。
   // テキスト入力中でも開いてよい（issue 要件）ため、inText チェックは行わない。
