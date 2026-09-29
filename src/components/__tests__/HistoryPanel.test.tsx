@@ -155,7 +155,7 @@ describe("HistoryPanel のコミット一覧（仮想スクロール）", () => 
     const onCompareSelect = vi.fn();
     renderHistoryPanel({ commits, onCompareSelect });
 
-    fireEvent.click(screen.getAllByText("比較")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "比較" })[0]);
 
     expect(onCompareSelect).toHaveBeenCalledWith(commits[0]);
   });
@@ -165,9 +165,21 @@ describe("HistoryPanel のコミット一覧（仮想スクロール）", () => 
     const onReset = vi.fn();
     renderHistoryPanel({ commits, onReset });
 
-    fireEvent.click(screen.getAllByText("戻す")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "このコミットの状態まで戻す" })[0]);
 
     expect(onReset).toHaveBeenCalledWith(commits[0]);
+  });
+
+  it("「コピー」アイコンボタンをクリックすると onCherryPick が呼ばれること", () => {
+    const commits = makeCommits(50);
+    const onCherryPick = vi.fn();
+    renderHistoryPanel({ commits, onCherryPick });
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "このコミットをいまのブランチにコピー" })[0],
+    );
+
+    expect(onCherryPick).toHaveBeenCalledWith(commits[0]);
   });
 
   it("「もっと見る」ボタンで onLoadMore が呼ばれること（無限スクロールの読み込みトリガー）", () => {

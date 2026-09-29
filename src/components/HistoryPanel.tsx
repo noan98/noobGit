@@ -308,79 +308,87 @@ export function HistoryPanel({
 
   return (
     <div className="panel">
-      <div className="panel-head">
+      {/* 見出し行。表示切り替え（コミット / reflog）・グラフ切り替え・バグ探しなど
+          履歴に対する操作は、画面の端に散らばらないよう見出しのすぐ右に 1 つの
+          ツールバーとしてまとめる（マウスの移動距離を短くするため）。 */}
+      <div className="panel-head history-head">
         <h2>履歴</h2>
-        {/* #131 reflog: タブ切り替えボタン */}
-        <div className="history-tabs" role="tablist" aria-label="履歴の表示切り替え">
-          <button
-            role="tab"
-            aria-selected={activeTab === "commits"}
-            className={`btn btn-small${activeTab === "commits" ? " active" : ""}`}
-            onClick={() => setActiveTab("commits")}
-            title="コミット一覧を表示します"
-          >
-            コミット
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === "reflog"}
-            className={`btn btn-small${activeTab === "reflog" ? " active" : ""}`}
-            onClick={() => setActiveTab("reflog")}
-            title="HEAD の移動履歴（reflog）を表示します。消えたコミットを復元できます。"
-          >
-            reflog
-          </button>
-        </div>
-        {/* コミットタブ専用のコントロール */}
-        {activeTab === "commits" && (
-          <>
-            {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル */}
+        <div className="history-toolbar">
+          {/* #131 reflog: タブ切り替えボタン */}
+          <div className="history-tabs" role="tablist" aria-label="履歴の表示切り替え">
             <button
-              className={`btn btn-small${showGraph ? " active" : ""}`}
-              onClick={() => setShowGraph((v) => !v)}
-              title={
-                showGraph && isSearching
-                  ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
-                  : showGraph
-                    ? "グラフ列を非表示にする"
-                    : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
-              }
-              aria-pressed={showGraph}
+              role="tab"
+              aria-selected={activeTab === "commits"}
+              className={`btn btn-small${activeTab === "commits" ? " active" : ""}`}
+              onClick={() => setActiveTab("commits")}
+              title="コミット一覧を表示します"
             >
-              {showGraph ? "グラフ 非表示" : "グラフ 表示"}
+              コミット
             </button>
-            {compareBaseId && (
-              <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
-                比較対象を選択中…
-              </span>
-            )}
-            {searching && (
-              <span className="history-searching" role="status">
-                <span className="network-spinner">
-                  <Icon name="fetch" />
-                </span>
-                検索中…
-              </span>
-            )}
-            {selectedCount > 0 && (
+            <button
+              role="tab"
+              aria-selected={activeTab === "reflog"}
+              className={`btn btn-small${activeTab === "reflog" ? " active" : ""}`}
+              onClick={() => setActiveTab("reflog")}
+              title="HEAD の移動履歴（reflog）を表示します。消えたコミットを復元できます。"
+            >
+              reflog
+            </button>
+          </div>
+          {/* コミットタブ専用のコントロール */}
+          {activeTab === "commits" && (
+            <>
+              <span className="history-toolbar-sep" aria-hidden="true" />
+              {/* #51 / #168 DAG グラフ — グラフ列表示の ON/OFF トグル。
+                  押し込み状態（aria-pressed / active）で ON/OFF を表すので、
+                  ラベルは「グラフ」で固定する。 */}
+              <button
+                className={`btn btn-small${showGraph ? " active" : ""}`}
+                onClick={() => setShowGraph((v) => !v)}
+                title={
+                  showGraph && isSearching
+                    ? "検索中はコミットが飛び飛びになるため、グラフ列は表示しません（検索を消すと表示されます）"
+                    : showGraph
+                      ? "グラフ列を非表示にする"
+                      : "各コミットの左に、ブランチの分岐・マージを表すグラフ列を表示する"
+                }
+                aria-pressed={showGraph}
+              >
+                <Icon name="graph" /> グラフ
+              </button>
+              {/* #184 Bisect: バグ混入コミットを二分探索で探すウィザードを開く。 */}
               <button
                 className="btn btn-small"
-                onClick={onStartRebase}
-                title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
+                onClick={onStartBisect}
+                title="「壊れている」コミットと「動いていた」コミットを指定して、バグ混入コミットを二分探索で見つけます"
               >
-                <Icon name="squash" /> 整理する… ({selectedCount})
+                <Icon name="bisect" /> バグ混入コミットを探す
               </button>
-            )}
-            {/* #184 Bisect: バグ混入コミットを二分探索で探すウィザードを開く。 */}
-            <button
-              className="btn btn-small"
-              onClick={onStartBisect}
-              title="「壊れている」コミットと「動いていた」コミットを指定して、バグ混入コミットを二分探索で見つけます"
-            >
-              <Icon name="bisect" /> バグ混入コミットを探す
-            </button>
-          </>
-        )}
+              {selectedCount > 0 && (
+                <button
+                  className="btn btn-small"
+                  onClick={onStartRebase}
+                  title="選んだコミットをまとめたり、メッセージを書き換えたりします（リベース）"
+                >
+                  <Icon name="squash" /> 整理する… ({selectedCount})
+                </button>
+              )}
+              {compareBaseId && (
+                <span className="compare-hint" title="もう 1 つコミットを選ぶと差分を表示します">
+                  比較対象を選択中…
+                </span>
+              )}
+              {searching && (
+                <span className="history-searching" role="status">
+                  <span className="network-spinner">
+                    <Icon name="fetch" />
+                  </span>
+                  検索中…
+                </span>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* コミットタブ */}
@@ -525,35 +533,40 @@ export function HistoryPanel({
                         </div>
                       </div>
 
-                      {/* 操作ボタン */}
+                      {/* 操作ボタン。文字ではなくアイコンで並べ、意味はツールチップ
+                          （title）と読み上げ用ラベル（aria-label）で補う。 */}
                       <div className="commit-actions-inline">
                         {/* 差分比較ボタン。1 つ目で base、2 つ目で target を選ぶ。 */}
                         <button
-                          className={`link commit-compare-btn${isCompareBase ? " active" : ""}`}
+                          className={`icon-btn commit-compare-btn${isCompareBase ? " active" : ""}`}
                           title={
                             isCompareBase
-                              ? "比較対象（基準）に選択中。もう一度押すと解除します"
+                              ? "比較の基準に選択中。もう一度押すと解除します"
                               : compareBaseId
-                                ? "このコミットとの差分を表示します"
-                                : "差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
+                                ? "比較: このコミットとの差分を表示します"
+                                : "比較: 差分比較の基準にします（もう 1 つ選ぶと差分を表示）"
                           }
+                          aria-label={isCompareBase ? "比較の基準を解除" : "比較"}
+                          aria-pressed={isCompareBase}
                           onClick={() => onCompareSelect(c)}
                         >
-                          {isCompareBase ? "基準" : "比較"}
+                          <Icon name="compare" />
                         </button>
                         <button
-                          className={`link commit-cherry-pick-btn ${cherryPickRiskClass}`}
-                          title="このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
+                          className={`icon-btn commit-cherry-pick-btn ${cherryPickRiskClass}`}
+                          title="コピー: このコミットの変更を、いまのブランチにコピーします（cherry-pick）"
+                          aria-label="このコミットをいまのブランチにコピー"
                           onClick={() => onCherryPick(c)}
                         >
-                          コピー
+                          <Icon name="cherryPick" />
                         </button>
                         <button
-                          className={`link commit-reset-btn ${resetRiskClass}`}
-                          title="このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                          className={`icon-btn commit-reset-btn ${resetRiskClass}`}
+                          title="戻す: このコミットの状態まで作業ツリーを戻します（ハードリセット）"
+                          aria-label="このコミットの状態まで戻す"
                           onClick={() => onReset(c)}
                         >
-                          戻す
+                          <Icon name="reset" />
                         </button>
                       </div>
                     </li>

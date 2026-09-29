@@ -22,6 +22,7 @@ import {
   IconArrowBackUp,
   IconArrowDown,
   IconArrowUp,
+  IconArrowsDiff,
   IconArrowsJoin,
   IconBolt,
   IconBraces,
@@ -168,6 +169,10 @@ const ICONS = {
   /** 履歴が分岐した状態（non-fast-forward の説明など）。 */
   diverged: IconGitFork,
   cherryPick: IconGitCherryPick,
+  /** 2 つのコミットの差分比較（履歴の各行の「比較」）。 */
+  compare: IconArrowsDiff,
+  /** 履歴のコミットグラフ列（ブランチの分岐・マージ）の表示切り替え。 */
+  graph: IconGitFork,
   rebase: IconTool,
   reset: IconPlayerTrackPrev,
   /** 複数コミットをまとめる（従来の 🧹 整理する）。 */

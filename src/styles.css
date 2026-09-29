@@ -742,6 +742,44 @@ textarea {
 .link.risk-trigger-destructive {
   color: var(--destructive);
 }
+/* .icon-btn（枠なしのアイコンボタン）も .link と同じく色だけで伝える。 */
+.icon-btn.risk-trigger-caution {
+  color: var(--caution);
+}
+.icon-btn.risk-trigger-destructive {
+  color: var(--destructive);
+}
+
+/* ---- アイコンボタン ----
+   文字を持たない、アイコン 1 つだけの小さな正方形ボタン。意味は title
+   （ツールチップ）と aria-label で補う。ホバーで背景を薄く付けて、
+   押せる場所であることを示す。 */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* ---- カスタムタイトルバー (#273) ---- */
 /* OS 標準タイトルバーはダークテーマで浮いて見えるため、
@@ -1291,6 +1329,32 @@ textarea {
   font-size: 13px;
   color: var(--muted);
   margin: 12px 0 6px;
+}
+
+/* 履歴パネルの見出し行。操作ボタンを右端に飛ばさず、見出しのすぐ右に
+   ツールバーとしてまとめる（.panel-head の space-between を上書きする）。 */
+.history-head {
+  justify-content: flex-start;
+  gap: 12px;
+}
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.history-toolbar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* ツールバー内の区切り線（表示切り替えと操作ボタンの間）。 */
+.history-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border);
 }
 
 /* 履歴の検索バー（メッセージ・作者の絞り込み）。 */
@@ -1988,19 +2052,11 @@ textarea {
   color: var(--muted);
   opacity: 0.7;
 }
-.commit-reset-btn {
-  flex-shrink: 0;
-  align-self: center;
-  font-size: 12px;
-}
-.commit-compare-btn {
-  flex-shrink: 0;
-  align-self: center;
-  font-size: 12px;
-  color: var(--accent);
-}
 .commit-compare-btn.active {
-  font-weight: 700;
+  /* 比較の基準に選択中: 押し込まれた見た目にして、どの行が基準か分かるようにする。 */
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .commit-row.compare-base {
   background: var(--diff-hunk-bg);
@@ -2117,17 +2173,13 @@ textarea {
   white-space: nowrap;
 }
 
-/* 履歴コミット行の操作ボタン（コピー・戻す）を縦並びにまとめる。 */
+/* 履歴コミット行の操作ボタン（比較・コピー・戻す）をアイコンで横一列に並べる。 */
 .commit-actions-inline {
   flex-shrink: 0;
   align-self: center;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.commit-cherry-pick-btn {
-  flex-shrink: 0;
-  font-size: 12px;
+  align-items: center;
+  gap: 2px;
 }
 
 /* ---- stash ---- */
