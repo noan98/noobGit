@@ -8,8 +8,10 @@ use std::sync::Mutex;
 use git2::Repository;
 use tauri::ipc::Channel;
 
-use noobgit_core::error::{classify_network_error, NetworkErrorKind};
-use noobgit_core::explain::{explain as explain_op, Explanation};
+use noobgit_core::error::{classify_local_message, classify_network_error, NetworkErrorKind};
+use noobgit_core::explain::{
+    explain as explain_op, explain_local_error, Explanation, LocalErrorExplanation,
+};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
@@ -254,11 +256,22 @@ struct AssessState {
     protected_branches: Vec<String>,
     /// HEAD が公開（push）済みか。amend / rebase の評価が 1 件も無ければ調べない。
     head_published: bool,
+    /// HEAD が detached か。commit / ブランチ切替の危険度引き上げに使う。
+    head_detached: bool,
+    /// detached HEAD 上の、どのブランチ・タグにも属さないコミット数（detached でなければ 0）。
+    detached_unsaved_commits: usize,
 }
 
 impl AssessState {
     fn load(r: &Repository, needs_head_published: bool) -> Result<Self, String> {
+        let head_detached = repo::is_head_detached(r);
         Ok(Self {
+            head_detached,
+            detached_unsaved_commits: if head_detached {
+                repo::unsaved_commit_count(r).unwrap_or(0)
+            } else {
+                0
+            },
             working_dir_dirty: repo::is_dirty(r).map_err(|e| e.to_string())?,
             protected_branches: protected_branches_or_default(r),
             head_published: needs_head_published && repo::head_is_published(r).unwrap_or(false),
@@ -274,6 +287,8 @@ impl AssessState {
             working_dir_dirty: self.working_dir_dirty,
             protected_branches: self.protected_branches.clone(),
             head_published,
+            head_detached: self.head_detached,
+            detached_unsaved_commits: self.detached_unsaved_commits,
         };
         assess(op, &ctx)
     }
@@ -524,6 +539,14 @@ fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// detached HEAD の今の位置に新しいブランチを作って乗り換え、コミットを安全にする。
+#[tauri::command(async)]
+fn rescue_detached_head(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    ops::rescue_detached_head(&r, &name).map_err(|e| e.to_string())
+}
+
 /// 未コミットの変更を退避してからブランチを切り替え、切り替え後に変更を戻す。
 /// コンフリクト時は退避を残し、`SwitchWithStashOutcome.conflicted` で伝える。
 #[tauri::command(async)]
@@ -757,6 +780,17 @@ fn classify_network_error_cmd(message: String) -> NetworkErrorKind {
     classify_network_error(&message)
 }
 
+/// ローカル操作のエラーメッセージから、初心者向けの解説（見出し・原因・解決手順）を返す。
+///
+/// Tauri の境界でエラーは文字列になるため、フロントは失敗時のメッセージをここに渡す。
+/// noobGit が日本語に包んだメッセージ（ロック競合・権限・破損・ディスク満杯・その他）
+/// なら解説を返し、そうでなければ `None`（ネットワーク系など別ルートのエラー）。
+/// リポジトリ不要の純粋関数なので `repo_path` は取らない。
+#[tauri::command]
+fn explain_local_error_cmd(message: String) -> Option<LocalErrorExplanation> {
+    classify_local_message(&message).map(explain_local_error)
+}
+
 /// 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
 #[tauri::command(async)]
 fn get_undo_journal(repo_path: String) -> Result<Vec<UndoEntry>, String> {
@@ -948,6 +982,7 @@ pub fn run() {
             set_identity,
             create_branch,
             switch_branch,
+            rescue_detached_head,
             switch_branch_with_stash,
             delete_branch,
             get_merged_branches,
@@ -968,6 +1003,7 @@ pub fn run() {
             remove_remote,
             set_remote_url,
             classify_network_error_cmd,
+            explain_local_error_cmd,
             get_undo_journal,
             peek_undo,
             undo_last,

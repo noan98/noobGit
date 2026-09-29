@@ -7,7 +7,9 @@ use git2::{
     RemoteCallbacks, Repository, ResetType, StashFlags,
 };
 
-use crate::error::{CoreError, Result};
+use crate::error::{
+    describe_git2_error, describe_git2_error_keep_unknown, describe_io_error, CoreError, Result,
+};
 use crate::model::{
     BulkDeleteBranchesOutcome, ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange,
     GitignorePatternCheck, GitignoreSuggestion, MergeOutcome, NetworkProgress,
@@ -188,7 +190,7 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
         .map_err(|e| {
             CoreError::Git(format!(
                 "変更の塊（hunk）のステージに失敗しました: {}",
-                e.message()
+                describe_git2_error(&e)
             ))
         })?;
 
@@ -316,7 +318,7 @@ pub fn unstage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Re
     .map_err(|e| {
         CoreError::Git(format!(
             "変更の塊（hunk）のアンステージに失敗しました: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })?;
 
@@ -748,8 +750,12 @@ pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
         }
         let full = workdir.join(rel);
         if full.exists() {
-            std::fs::remove_file(&full)
-                .map_err(|e| CoreError::Git(format!("ファイルを削除できませんでした: {e}")))?;
+            std::fs::remove_file(&full).map_err(|e| {
+                CoreError::Git(format!(
+                    "ファイルを削除できませんでした: {}",
+                    describe_io_error(&e)
+                ))
+            })?;
         }
     }
     Ok(())
@@ -789,7 +795,8 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
             return Err(CoreError::Git(format!(
-                ".gitignore を読み込めませんでした: {e}"
+                ".gitignore を読み込めませんでした: {}",
+                describe_io_error(&e)
             )))
         }
     };
@@ -807,8 +814,12 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
     next.push_str(pattern);
     next.push('\n');
 
-    std::fs::write(&path, next)
-        .map_err(|e| CoreError::Git(format!(".gitignore に書き込めませんでした: {e}")))?;
+    std::fs::write(&path, next).map_err(|e| {
+        CoreError::Git(format!(
+            ".gitignore に書き込めませんでした: {}",
+            describe_io_error(&e)
+        ))
+    })?;
     Ok(())
 }
 
@@ -1071,7 +1082,7 @@ fn stash_save_unrecorded(repo: &mut Repository, message: &str) -> Result<Option<
         Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
         Err(e) => Err(CoreError::Git(format!(
             "退避（stash）に失敗しました: {}",
-            e.message()
+            describe_git2_error(&e)
         ))),
     }
 }
@@ -1146,8 +1157,12 @@ pub fn stash_drop(repo: &mut Repository, stash_id: &str) -> Result<()> {
                 .to_string(),
         )
     })?;
-    repo.stash_drop(index)
-        .map_err(|e| CoreError::Git(format!("退避の削除に失敗しました: {}", e.message())))
+    repo.stash_drop(index).map_err(|e| {
+        CoreError::Git(format!(
+            "退避の削除に失敗しました: {}",
+            describe_git2_error(&e)
+        ))
+    })
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。各退避の変更ファイル数も付ける。
@@ -1272,7 +1287,7 @@ fn map_stash_restore_err(e: git2::Error) -> CoreError {
             "退避を取り出すとコンフリクト（競合）が起きるため、安全のため中断しました。先にいまの変更を整理してから取り出してください。"
                 .to_string(),
         ),
-        _ => CoreError::Git(format!("退避の取り出しに失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!("退避の取り出しに失敗しました: {}", describe_git2_error(&e))),
     }
 }
 
@@ -1307,6 +1322,54 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
             action: UndoAction::DeleteBranch {
                 name: name.to_string(),
             },
+        },
+    );
+    Ok(())
+}
+
+/// detached HEAD の今の位置に新しいブランチを作り、そのブランチへ乗り換えて安全にする。
+///
+/// detached 中に積んだコミットはどのブランチにも属さず、別ブランチへ切り替えると
+/// 見失いやすい。ブランチ名を付けてしまえば、コミットもそのまま残る。
+/// 先端は今の HEAD と同じコミットなので、作業ツリー・インデックス（未コミット変更を含む）
+/// には一切触れない。detached でないとき・Bisect 中・名前が使用済みのときは何も変えずに中断する。
+/// undo は「detached HEAD に戻してブランチを削除」を記録する。
+pub fn rescue_detached_head(repo: &Repository, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::InvalidInput(
+            "ブランチ名を入力してください。".to_string(),
+        ));
+    }
+    if !crate::repo::is_head_detached(repo) {
+        return Err(CoreError::Blocked(
+            "いまはブランチの上にいるため、この操作は不要です。".to_string(),
+        ));
+    }
+    // Bisect 中は調査のために detached にしているだけ。ここでブランチに乗ると調査が壊れる。
+    if repo.path().join("noobgit_bisect.json").exists() {
+        return Err(CoreError::Blocked(
+            "Bisect の調査中です。先に「Bisect を終了」してください。".to_string(),
+        ));
+    }
+    if repo.find_branch(name, BranchType::Local).is_ok() {
+        return Err(CoreError::InvalidInput(format!(
+            "ブランチ「{name}」はすでに存在します。別の名前を使ってください。"
+        )));
+    }
+    let head_commit = repo.head()?.peel_to_commit()?;
+    repo.branch(name, &head_commit, false)?;
+    repo.set_head(&format!("refs/heads/{name}"))?;
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::RescueDetachedHead,
+            description: format!("ブランチ「{name}」の作成を取り消し、detached HEAD に戻す"),
+            action: UndoAction::RestoreDetachedHead {
+                commit: head_commit.id().to_string(),
+                branch: name.to_string(),
+            },
+            head_at_record: None,
         },
     );
     Ok(())
@@ -1714,7 +1777,7 @@ pub fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
     repo.remote(name, url).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」を追加できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })?;
     Ok(())
@@ -1734,7 +1797,7 @@ pub fn remove_remote(repo: &Repository, name: &str) -> Result<()> {
     repo.remote_delete(name).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」を削除できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })
 }
@@ -1759,7 +1822,7 @@ pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
     repo.remote_set_url(name, url).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」の URL を変更できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })
 }
@@ -1871,9 +1934,12 @@ pub fn fetch_with_options(
             .map(|s| s.to_string())
             .collect();
         // refspec が空のリモートでは libgit2 が既定の refspec を補う。
-        remote
-            .fetch(&refspecs, Some(&mut fo), None)
-            .map_err(|e| CoreError::Git(format!("取得（fetch）に失敗しました: {}", e.message())))?;
+        remote.fetch(&refspecs, Some(&mut fo), None).map_err(|e| {
+            CoreError::Git(format!(
+                "取得（fetch）に失敗しました: {}",
+                describe_git2_error_keep_unknown(&e)
+            ))
+        })?;
     }
 
     // fetch 後の `refs/remotes/<remote_name>/*` との差分が、実際に整理された追跡ブランチ。
@@ -2185,7 +2251,7 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
         .map_err(|e| {
             CoreError::Git(format!(
                 "コピー（cherry-pick）に失敗しました: {}",
-                e.message()
+                describe_git2_error(&e)
             ))
         })?;
 
@@ -2303,7 +2369,10 @@ pub fn revert_commit(repo: &Repository, oid: &str) -> Result<CommitInfo> {
     let mut merged = repo
         .revert_commit(&commit, &head_commit, 0, None)
         .map_err(|e| {
-            CoreError::Git(format!("打ち消し（revert）に失敗しました: {}", e.message()))
+            CoreError::Git(format!(
+                "打ち消し（revert）に失敗しました: {}",
+                describe_git2_error(&e)
+            ))
         })?;
 
     if merged.has_conflicts() {
@@ -2455,7 +2524,7 @@ fn map_push_error(e: git2::Error) -> CoreError {
             "リモートへの送信が拒否されました（非fast-forward）。先に取り込み（pull）をしてから、もう一度送信してください。"
                 .to_string(),
         ),
-        _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", describe_git2_error_keep_unknown(&e))),
     }
 }
 
@@ -2539,7 +2608,12 @@ pub fn clone_with_progress(
             )));
         }
         let has_entries = std::fs::read_dir(dest_path)
-            .map_err(|e| CoreError::Git(format!("保存先フォルダを確認できませんでした: {e}")))?
+            .map_err(|e| {
+                CoreError::Git(format!(
+                    "保存先フォルダを確認できませんでした: {}",
+                    describe_io_error(&e)
+                ))
+            })?
             .next()
             .is_some();
         if has_entries {
@@ -2627,7 +2701,10 @@ fn map_clone_error(e: git2::Error) -> CoreError {
         ErrorCode::NotFound => CoreError::InvalidInput(
             "指定したリポジトリが見つかりませんでした。URL を確認してください。".to_string(),
         ),
-        _ => CoreError::Git(format!("クローンに失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!(
+            "クローンに失敗しました: {}",
+            describe_git2_error_keep_unknown(&e)
+        )),
     }
 }
 
@@ -2708,8 +2785,9 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
     }
 
     // 通常マージ: インデックスと作業ツリーにマージ結果を適用する。
-    repo.merge(&[&annotated], None, None)
-        .map_err(|e| CoreError::Git(format!("マージに失敗しました: {}", e.message())))?;
+    repo.merge(&[&annotated], None, None).map_err(|e| {
+        CoreError::Git(format!("マージに失敗しました: {}", describe_git2_error(&e)))
+    })?;
 
     // コンフリクトがあれば、リポジトリをマージ中の状態のまま返す。
     // フロントエンドは status を取り直して ConflictWizard に誘導する。
@@ -2822,17 +2900,28 @@ pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &
         .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
     let dest = workdir.join(rel);
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CoreError::Git(format!("ディレクトリを作成できませんでした: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CoreError::Git(format!(
+                "ディレクトリを作成できませんでした: {}",
+                describe_io_error(&e)
+            ))
+        })?;
     }
-    std::fs::write(&dest, content)
-        .map_err(|e| CoreError::Git(format!("ファイルを書き込めませんでした: {e}")))?;
+    std::fs::write(&dest, content).map_err(|e| {
+        CoreError::Git(format!(
+            "ファイルを書き込めませんでした: {}",
+            describe_io_error(&e)
+        ))
+    })?;
 
     // インデックスにもステージする。
     let mut index = repo.index()?;
-    index
-        .add_path(rel)
-        .map_err(|e| CoreError::Git(format!("ステージに失敗しました: {}", e.message())))?;
+    index.add_path(rel).map_err(|e| {
+        CoreError::Git(format!(
+            "ステージに失敗しました: {}",
+            describe_git2_error(&e)
+        ))
+    })?;
     index.write()?;
 
     // undo: ステージを戻せるよう UnstagePath を記録する（ベストエフォート）。
@@ -6424,6 +6513,264 @@ mod tests {
             };
 
             insta::assert_snapshot!(message);
+        }
+    }
+
+    // #197 detached HEAD: 復帰ガイド（救出・元のブランチ推定・危険度）。
+    mod detached_head {
+        use super::*;
+        use crate::safety::{assess, RiskLevel, SafetyContext};
+
+        /// main に c1 を積み、その c1 で detached にして c2 をコミットした状態を作る。
+        /// 返り値は (fixture, c1, detached 中に積んだ c2)。
+        fn detached_with_commit() -> (TestRepo, git2::Oid, git2::Oid) {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            let c1 = fx.commit("c1");
+            {
+                let repo = fx.open();
+                let commit = repo.find_commit(c1).unwrap();
+                repo.checkout_tree(commit.as_object(), None).unwrap();
+                repo.set_head_detached(c1).unwrap();
+            }
+            fx.write_file("a.txt", "2");
+            fx.stage_all();
+            let c2 = fx.commit("detached work");
+            (fx, c1, c2)
+        }
+
+        #[test]
+        fn status_reports_detached_head_with_previous_branch_and_unsaved_commits() {
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            let st = crate::repo::status(&repo).unwrap();
+            assert!(st.head_detached);
+            let info = st.detached_info.expect("detached なので Some");
+            // 元のブランチ（TestRepo の既定ブランチ）を reflog から推定できる。
+            let main = current_branch_name_of_tip(&repo);
+            assert_eq!(info.previous_branch.as_deref(), Some(main.as_str()));
+            // detached 中に積んだ 1 件だけがどのブランチにも属さない。
+            assert_eq!(info.unsaved_commits, 1);
+        }
+
+        /// c1 を指しているローカルブランチ名（TestRepo の既定ブランチ）を返す。
+        fn current_branch_name_of_tip(repo: &Repository) -> String {
+            repo.branches(Some(BranchType::Local))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .0
+                .name()
+                .unwrap()
+                .unwrap()
+                .to_string()
+        }
+
+        #[test]
+        fn validate_entry_for_rescue_reflects_later_commits() {
+            use crate::undo::{self, UndoApplicability};
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            rescue_detached_head(&repo, "rescue").unwrap();
+            let entry = undo::list(&repo)
+                .unwrap()
+                .pop()
+                .expect("救出の undo が記録される");
+
+            // 救出直後はそのまま取り消せる。
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::Applicable
+            ));
+
+            // 救出したブランチにコミットを積んでも、履歴は整理せず残す（apply が Blocked で止める）。
+            fx.write_file("a.txt", "3");
+            fx.stage_all();
+            fx.commit("after rescue");
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::Applicable
+            ));
+
+            // ブランチが無くなっていれば取り消し済み。
+            repo.set_head_detached(fx.head_oid()).unwrap();
+            repo.find_branch("rescue", BranchType::Local)
+                .unwrap()
+                .delete()
+                .unwrap();
+            assert!(matches!(
+                undo::validate_entry(&repo, &entry),
+                UndoApplicability::AlreadyUndone
+            ));
+        }
+
+        #[test]
+        fn status_on_a_branch_is_not_detached() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+            let st = crate::repo::status(&fx.open()).unwrap();
+            assert!(!st.head_detached);
+            assert!(st.detached_info.is_none());
+        }
+
+        #[test]
+        fn rescue_saves_detached_commit_so_branch_switch_keeps_it() {
+            let (fx, _c1, c2) = detached_with_commit();
+            let repo = fx.open();
+            let main = current_branch_name_of_tip(&repo);
+
+            rescue_detached_head(&repo, "rescue").unwrap();
+
+            // ブランチに乗り、コミットはそのまま・作業ツリーも変わらない。
+            assert_eq!(current_branch(&repo).as_deref(), Some("rescue"));
+            assert!(!crate::repo::is_head_detached(&repo));
+            assert_eq!(
+                repo.find_branch("rescue", BranchType::Local)
+                    .unwrap()
+                    .get()
+                    .target(),
+                Some(c2)
+            );
+            assert_eq!(crate::repo::unsaved_commit_count(&repo).unwrap(), 0);
+
+            // 元のブランチへ切り替えても、救出したコミットは rescue から辿れる。
+            switch_branch(&repo, &main).unwrap();
+            assert_eq!(
+                fx.head_oid(),
+                repo.refname_to_id(&format!("refs/heads/{main}")).unwrap()
+            );
+            assert_eq!(
+                repo.refname_to_id("refs/heads/rescue").unwrap(),
+                c2,
+                "detached 中のコミットが rescue ブランチで残っている"
+            );
+        }
+
+        #[test]
+        fn rescue_can_be_undone_back_to_detached_head() {
+            let (fx, _c1, c2) = detached_with_commit();
+            let repo = fx.open();
+            rescue_detached_head(&repo, "rescue").unwrap();
+            assert_eq!(
+                undo::peek(&repo).unwrap().unwrap().op,
+                OperationKind::RescueDetachedHead
+            );
+
+            undo::undo_last(&repo).unwrap();
+            assert!(crate::repo::is_head_detached(&repo));
+            assert_eq!(fx.head_oid(), c2);
+            assert!(repo.find_branch("rescue", BranchType::Local).is_err());
+
+            // 冪等: 同じ取り消しをもう一度適用しても壊れない。
+            undo::push(
+                &repo,
+                UndoEntry {
+                    op: OperationKind::RescueDetachedHead,
+                    description: "再適用".to_string(),
+                    action: UndoAction::RestoreDetachedHead {
+                        commit: c2.to_string(),
+                        branch: "rescue".to_string(),
+                    },
+                    head_at_record: None,
+                },
+            )
+            .unwrap();
+            undo::undo_last(&repo).unwrap();
+            assert!(crate::repo::is_head_detached(&repo));
+        }
+
+        #[test]
+        fn rescue_undo_is_blocked_when_branch_moved_on() {
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            rescue_detached_head(&repo, "rescue").unwrap();
+            fx.write_file("a.txt", "3");
+            fx.stage_all();
+            fx.commit("after rescue");
+
+            let err = undo::undo_last(&repo).unwrap_err();
+            assert!(matches!(err, CoreError::Blocked(_)), "{err:?}");
+            assert!(repo.find_branch("rescue", BranchType::Local).is_ok());
+        }
+
+        #[test]
+        fn rescue_rejects_non_detached_empty_and_duplicate_names() {
+            let fx = TestRepo::new();
+            fx.write_file("a.txt", "1");
+            fx.stage_all();
+            fx.commit("c1");
+            let repo = fx.open();
+            assert!(matches!(
+                rescue_detached_head(&repo, "x").unwrap_err(),
+                CoreError::Blocked(_)
+            ));
+
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            let main = current_branch_name_of_tip(&repo);
+            assert!(matches!(
+                rescue_detached_head(&repo, "  ").unwrap_err(),
+                CoreError::InvalidInput(_)
+            ));
+            assert!(matches!(
+                rescue_detached_head(&repo, &main).unwrap_err(),
+                CoreError::InvalidInput(_)
+            ));
+            // 失敗しても detached のまま何も変わらない。
+            assert!(crate::repo::is_head_detached(&repo));
+        }
+
+        #[test]
+        fn rescue_is_blocked_during_bisect() {
+            let (fx, _c1, _c2) = detached_with_commit();
+            let repo = fx.open();
+            std::fs::write(repo.path().join("noobgit_bisect.json"), "{}").unwrap();
+            assert!(matches!(
+                rescue_detached_head(&repo, "x").unwrap_err(),
+                CoreError::Blocked(_)
+            ));
+        }
+
+        #[test]
+        fn detached_commit_and_switch_get_caution() {
+            let ctx = SafetyContext {
+                head_detached: true,
+                detached_unsaved_commits: 2,
+                ..Default::default()
+            };
+            let commit = assess(OperationKind::Commit, &ctx);
+            assert_eq!(commit.level, RiskLevel::Caution);
+            assert!(commit
+                .reasons
+                .iter()
+                .any(|r| r.contains("どのブランチにも属しません")));
+            let switch = assess(OperationKind::SwitchBranch, &ctx);
+            assert_eq!(switch.level, RiskLevel::Caution);
+            assert!(switch.reasons[0].contains("2 件"));
+
+            // detached でなければ従来どおり Safe。
+            let normal = SafetyContext::default();
+            assert_eq!(
+                assess(OperationKind::Commit, &normal).level,
+                RiskLevel::Safe
+            );
+            assert_eq!(
+                assess(OperationKind::SwitchBranch, &normal).level,
+                RiskLevel::Safe
+            );
+            // detached でもブランチに属さないコミットが無ければ切替は Safe。
+            let clean_detached = SafetyContext {
+                head_detached: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                assess(OperationKind::SwitchBranch, &clean_detached).level,
+                RiskLevel::Safe
+            );
         }
     }
 }

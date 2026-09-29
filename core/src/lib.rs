@@ -28,8 +28,11 @@ mod adversarial_tests;
 mod test_support;
 
 pub use bisect::{bisect_mark, bisect_reset, bisect_start, bisect_status};
-pub use error::{classify_network_error, CoreError, ErrorKind, NetworkErrorKind, Result};
-pub use explain::{explain, Explanation};
+pub use error::{
+    classify_local_error, classify_local_message, classify_network_error, CoreError, ErrorKind,
+    LocalErrorKind, NetworkErrorKind, Result,
+};
+pub use explain::{explain, explain_local_error, Explanation, LocalErrorExplanation};
 pub use identity::{get_identity, set_identity, Identity, IdentityScope};
 pub use model::{
     BisectStatus, BranchInfo, ChangeKind, CloneOutcome, CommitInfo, DiffLine, DiffLineKind,
