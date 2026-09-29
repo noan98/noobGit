@@ -223,6 +223,25 @@ export interface UndoEntry {
   head_at_record?: string | null;
 }
 
+// #208 操作アクティビティログ。core の ActivityOutcome（serde tag = "status",
+// content = "message"）のミラー。
+export type ActivityOutcome =
+  | { status: "success" }
+  | { status: "failed"; message: string }
+  | { status: "undone" };
+
+// core の ActivityEntry のミラー。取り消し履歴（UndoEntry）とは別物で、戻せない操作や
+// 失敗した操作も含む読み物としての記録。
+export interface ActivityEntry {
+  // 記録した時刻（UNIX 秒）。
+  timestamp: number;
+  // 取り消し（undone）のときは「取り消した操作」の種別。
+  op: OperationKind;
+  // 人が読む 1 行の説明（core が生成）。
+  summary: string;
+  outcome: ActivityOutcome;
+}
+
 // #201 undo エントリを今のリポジトリ状態で適用してよいかの検証結果。
 // core の UndoApplicability（serde tag = "status"）のミラー。
 export type UndoApplicability =
@@ -748,6 +767,11 @@ export const api = {
   // 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
   getUndoJournal: (repoPath: string) =>
     invoke<UndoEntry[]>("get_undo_journal", { repoPath }),
+  // #208 操作アクティビティログ（古い順）。
+  getActivityLog: (repoPath: string) =>
+    invoke<ActivityEntry[]>("get_activity_log", { repoPath }),
+  clearActivityLog: (repoPath: string) =>
+    invoke<void>("clear_activity_log", { repoPath }),
   peekUndo: (repoPath: string) =>
     invoke<UndoEntry | null>("peek_undo", { repoPath }),
   // confirmRisky: 履歴が進んでいて新しい作業も巻き戻る場合に、確認済みとして進める（#201）。

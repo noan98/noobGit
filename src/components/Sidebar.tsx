@@ -64,7 +64,8 @@ export type MainView =
   | "tags"
   | "remotes"
   | "stashes"
-  | "undo";
+  | "undo"
+  | "activity";
 
 interface Props {
   view: MainView;
@@ -257,6 +258,7 @@ export function Sidebar({
             <span className="sidebar-count">{undoCount}</span>
           ) : undefined,
         )}
+        {navItem("activity", "reflog", "操作ログ")}
       </Section>
 
       <Section

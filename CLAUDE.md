@@ -45,6 +45,7 @@ noobGit/
 | `safety.rs` | リスク分類: `assess(op, ctx) -> RiskAssessment`（`RiskLevel::{Safe, Caution, Destructive}`）。`OperationKind` は stage 系・コミット系のほか `CherryPick`（Caution）, `Revert`（Caution。reset / rebase / force push の代替案文言から誘導する）, `CreateTag`（Safe）/ `DeleteTag`（Caution）, `StashDrop`（Caution。undo 不可）, `Rebase`（Destructive。公開済み履歴で警告を強める）, `BisectStart` / `BisectReset`（ともに Caution。detached HEAD になることと、dirty なら core 側で Blocked になる旨を理由に含める）, `Clone`（Safe。新規ディレクトリへの取得のみ）を含む。保護ブランチの既定値（`main`/`master`）と `is_protected` / `parse_protected_branches` / `normalize_protected_branch_names` を定義する（設定の読み書きは `repo.rs` / `ops.rs` を参照）。 |
 | `explain.rs` | `OperationKind` ごとの平易な日本語の説明（`what` / `why` / `on_trouble`）。操作文言の唯一の出典。`LocalErrorKind` ごとの「これは何か / なぜ起きたか / 解決手順」（`explain_local_error`）もここ。 |
 | `undo.rs` | ワンクリック undo。ジャーナルは `.git/noobgit_undo.json` に保存。`UndoAction` の各バリアント（`SoftResetTo`, `HardResetTo`, `RecreateBranch`, `DeleteBranch`, `UncommitInitial`, `PopStash`, `UnstagePath`, `RestoreIndexEntry`, `RecreateTag`, `RestoreBisectHead`, `DeleteTag`）が、各操作をどう巻き戻すかを記述する。`apply` は冪等。Issue #201: `UndoEntry.head_at_record`（記録時の HEAD。`Option` + `serde(default)` で旧ジャーナルと後方互換。`push` が未設定なら自動で埋める）を使い、`validate_entry` が `UndoApplicability`（`Applicable` / `AlreadyUndone` / `Unresolvable` / `Risky`）を返す。`undo_last` は `Risky` なら何も変えず `Blocked`（エントリは残す）、確認済みで進めるなら `undo_last_confirmed(repo, true)`。`Unresolvable` は履歴から取り除いて平易なエラーを返す。`validate_journal` / `prune_unresolvable` は履歴一覧の表示・整理用。 |
+| `activity.rs` | 操作アクティビティログ（Issue #208）。「自分が何をしたか」を時系列で振り返る読み物としての記録で、戻せない操作・失敗・undo も含む全記録（undo ジャーナルとは別物）。`ActivityEntry { timestamp, op, summary, outcome }`、`ActivityOutcome`（`Success` / `Failed(String)` / `Undone`。serde は `{ "status": "failed", "message": ... }` のタグ付き形式）。保存先は `.git/noobgit_activity.json`（undo.rs と同じ tmp + rename の原子的書き込み。`MAX_ENTRIES` 件を超えたら古いものから捨てる。壊れた JSON は空として扱いパニックしない）。`record` はベストエフォート（書き込み失敗は握りつぶし、Git 操作を失敗させない）。`summarize` / `summarize_undo` は `explain.rs` の操作名から summary を作る。記録するのは操作メタデータ（パス名・ブランチ名など）のみで、ファイル内容・差分は含めない。`list` / `clear`。 |
 | `error.rs` | `CoreError`（日本語メッセージ）, `ErrorKind`（シリアライズ可能）, `Result<T>`。ネットワーク系は `NetworkErrorKind` + `classify_network_error`。ローカル操作は `LocalErrorKind`（`lock_busy` / `permission_denied` / `repo_corrupted` / `disk_full` / `other`）+ `classify_local_error`（ErrorCode / ErrorClass / メッセージ / OS エラーで判定する純粋関数）で分類する（Issue #204）。`From<git2::Error> for CoreError` が全経路の共通の変換点で、ネットワーク系（`is_network_git2_error`）は生メッセージのまま通し、それ以外は必ず `【見出し】…（元のエラー: 生メッセージ）` の日本語に包む（分類不能は `Other` の汎用文言）。ファイル操作の `io::Error` は `describe_io_error`。`git2` の生エラーを `e.message()` でそのまま `CoreError::Git` に入れないこと。`classify_local_message` は Tauri 境界で文字列になったエラーから種別を逆引きする。 |
 | `test_support.rs` | `#[cfg(test)]` 専用 — 実際の一時リポジトリを構築する `TestRepo` ヘルパー。 |
 
@@ -66,6 +67,14 @@ noobGit/
   コミット・undo ジャーナルの更新など）が同時に走ることはなかった。`(async)` で
   並行実行されるようになっても、書き込み同士は `WRITE_LOCK` で 1 つずつ実行
   する。読み取り系はロックを取らない。
+- **書き込み系コマンドの成否は `logged()` で操作アクティビティログへ記録する**
+  （Issue #208）。`lib.rs` の小さな共通ヘルパー `logged(repo_path, op, detail, |r| ...)` が
+  「リポジトリを開く → core の関数を呼ぶ → `core::activity::record` で成否を記録 →
+  エラーを `String` に変換」を行う。Git ロジックは持たず、記録も core 側でベストエフォート。
+  `undo_last` は取り消し対象を先に `peek` して `Undone` として記録する。読み取りコマンドは
+  `get_activity_log`、消去は `clear_activity_log`。`OperationKind` に対応しない軽い設定系
+  （identity・リモート追加/URL変更・保護ブランチ設定・`.gitignore` 追記・コンフリクト解消マーク）
+  は記録しない。
 - ボタンの危険度カラー（#274）は `assess_operations` でまとめて評価する（リポ
   ジトリの状態を 1 回だけ調べて全件に使う）。1 件ずつの `assess_operation` は
   操作直前の確認（`guarded()`）用。
@@ -100,6 +109,9 @@ noobGit/
   専用で、`RepoWorkspace.tsx`（タブバー・タイトルバーは `App.tsx`）から
   渡されたコールバックを呼ぶ。
 - `components/LocalErrorDialog.tsx` — ローカル操作エラーの解決手順ダイアログ（#204）。`RepoWorkspace.tsx` が `error` に入った文字列を `api.explainLocalError`（`explain_local_error_cmd`）に通し、日本語に包まれたローカルエラーならバナーの代わりに表示する。`NetworkErrorDialog` のローカル版。
+- `components/ActivityLog.tsx` / `lib/activityLog.ts` — 操作ログ（#208）。サイドバーの
+  「操作ログ」/ コマンドパレットの「操作ログを開く」から表示し、「テキストとしてコピー」用の
+  整形（`formatActivityText`）は純粋関数として vitest でテストしている。
 - `components/Icon.tsx` — アイコンの唯一の出典。[Tabler Icons](https://tabler.io/icons)
   （`@tabler/icons-react`）を用途ベースの名前（`IconName`）で包み、`<Icon
   name="commit" />` のように使う。**絵文字は使わない** — 下記「規約」を参照。
