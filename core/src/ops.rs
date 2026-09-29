@@ -2390,6 +2390,7 @@ pub fn revert_commit(repo: &Repository, oid: &str) -> Result<CommitInfo> {
             action: UndoAction::SoftResetTo {
                 previous: previous.to_string(),
             },
+            head_at_record: None,
         },
     );
 
