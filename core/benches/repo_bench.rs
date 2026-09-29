@@ -55,6 +55,34 @@ fn bench_repo_functions(c: &mut Criterion) {
         b.iter(|| black_box(repo::log_paged(black_box(&repo), 0, LOG_PAGE_SIZE).unwrap()));
     });
 
+    // Issue #320: 全ブランチ（＋リモート追跡ブランチ）を起点にした初回ページ。
+    // ブランチが多くても初回表示が遅くならないことの目安（HEAD のみとの差を見る）。
+    let all_branches = repo::LogFilter {
+        all_branches: true,
+        include_remotes: true,
+        ..Default::default()
+    };
+    c.bench_function(
+        "repo::log_filtered all_branches (0, 100) (10k commits)",
+        |b| {
+            b.iter(|| {
+                black_box(
+                    repo::log_filtered(
+                        black_box(&repo),
+                        0,
+                        LOG_PAGE_SIZE,
+                        black_box(&all_branches),
+                    )
+                    .unwrap(),
+                )
+            });
+        },
+    );
+
+    c.bench_function("repo::commit_refs (10k commits)", |b| {
+        b.iter(|| black_box(repo::commit_refs(black_box(&repo)).unwrap()));
+    });
+
     c.bench_function("repo::diff_unstaged (10k commits)", |b| {
         b.iter(|| black_box(repo::diff_unstaged(black_box(&repo), support::SAMPLE_FILE).unwrap()));
     });

@@ -325,6 +325,34 @@ pub struct TagInfo {
     pub message: Option<String>,
 }
 
+/// コミットに付ける ref（目印）の種類。履歴グラフのラベル表示に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    /// ローカルブランチ（`refs/heads/*`）。
+    LocalBranch,
+    /// リモート追跡ブランチ（`refs/remotes/*`。例: `origin/main`）。
+    RemoteBranch,
+    /// タグ（`refs/tags/*`。注釈付きタグも指すコミットへ解決する）。
+    Tag,
+    /// HEAD が特定のコミットを直接指している（detached HEAD）状態。
+    /// ブランチ上にいるときは、そのローカルブランチの `is_current` で表す。
+    Head,
+}
+
+/// あるコミットを指す ref 1件（ブランチ名・タグ名・HEAD）。
+///
+/// [`crate::repo::commit_refs`] が「コミット id → `RefLabel` の一覧」の形で返す。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefLabel {
+    /// 表示名（`main` / `origin/main` / `v1.0.0` / `HEAD`）。
+    pub name: String,
+    pub kind: RefKind,
+    /// 現在チェックアウト中のブランチ（HEAD が指すローカルブランチ）か。
+    /// `kind` が `Head`（detached HEAD）のときも true。
+    pub is_current: bool,
+}
+
 /// リモート1件の情報。
 ///
 /// `fetch_url` はデータを取得するときのURL（ほとんどの場合 push_url も同じ）。

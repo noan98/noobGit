@@ -1,6 +1,12 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type CommitInfo, type LogFilter, type ReflogEntry } from "../api";
+import {
+  api,
+  type CommitInfo,
+  type LogFilter,
+  type RefLabel,
+  type ReflogEntry,
+} from "../api";
 import { CommitGraphCell } from "./CommitGraph";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
@@ -11,6 +17,12 @@ import { useListNav } from "../hooks/useListNav";
 interface Props {
   commits: CommitInfo[];
   currentBranch: string | null;
+  // #320 全ブランチ表示: true のとき、全ブランチのコミットを 1 つの履歴に並べる。
+  // 状態（と localStorage への記憶）は親が持ち、ここは表示とトグルだけを担う。
+  allBranches: boolean;
+  onToggleAllBranches: () => void;
+  // #320 コミット id → そのコミットを指すブランチ名・タグ・HEAD のラベル一覧。
+  commitRefs: Record<string, RefLabel[]>;
   onReset: (commit: CommitInfo) => void;
   onCherryPick: (commit: CommitInfo) => void;
   hasMore: boolean;
@@ -89,6 +101,43 @@ function authorPalette(name: string) {
   return AVATAR_PALETTES[hash % AVATAR_PALETTES.length];
 }
 
+// #320 ref ラベル（ブランチ名・タグ）の CSS クラスとアイコン・説明文。
+// 現在のブランチ（と detached HEAD）は強調、リモート追跡ブランチ・タグは別色にする。
+function refLabelStyle(label: RefLabel): {
+  className: string;
+  icon: "branch" | "remote" | "tag";
+  title: string;
+} {
+  if (label.kind === "head") {
+    return {
+      className: "ref-label ref-label-current",
+      icon: "branch",
+      title: "HEAD（ブランチに属さず、このコミットを直接見ています）",
+    };
+  }
+  if (label.kind === "tag") {
+    return { className: "ref-label ref-label-tag", icon: "tag", title: `タグ: ${label.name}` };
+  }
+  if (label.kind === "remote_branch") {
+    return {
+      className: "ref-label ref-label-remote",
+      icon: "remote",
+      title: `リモートのブランチ: ${label.name}`,
+    };
+  }
+  return label.is_current
+    ? {
+        className: "ref-label ref-label-current",
+        icon: "branch",
+        title: `現在のブランチ: ${label.name}`,
+      }
+    : {
+        className: "ref-label ref-label-local",
+        icon: "branch",
+        title: `ブランチ: ${label.name}`,
+      };
+}
+
 // ショートハッシュのコピーボタン。クリック後に「コピーしました」表示を一瞬出す。
 function CopyHashButton({ shortId }: { shortId: string }) {
   const [copied, setCopied] = useState(false);
@@ -133,6 +182,9 @@ const VIRTUAL_OVERSCAN = 8;
 export function HistoryPanel({
   commits,
   currentBranch,
+  allBranches,
+  onToggleAllBranches,
+  commitRefs,
   onReset,
   onCherryPick,
   hasMore,
@@ -356,6 +408,19 @@ export function HistoryPanel({
               >
                 <Icon name="graph" /> グラフ
               </button>
+              {/* #320 全ブランチ / 現在のブランチのみ の切り替え。 */}
+              <button
+                className={`btn btn-small${allBranches ? " active" : ""}`}
+                onClick={onToggleAllBranches}
+                title={
+                  allBranches
+                    ? "いまのブランチの履歴だけを表示する"
+                    : "すべてのブランチのコミットを 1 つの履歴に表示する（分岐元の見当をつけやすくなります）"
+                }
+                aria-pressed={allBranches}
+              >
+                <Icon name="branch" /> 全ブランチ
+              </button>
               {/* #184 Bisect: バグ混入コミットを二分探索で探すウィザードを開く。 */}
               <button
                 className="btn btn-small"
@@ -517,7 +582,21 @@ export function HistoryPanel({
                           <span className="summary">
                             {c.summary || "(メッセージなし)"}
                           </span>
-                          {isHead && currentBranch && (
+                          {/* #320 ブランチ名・タグのラベル。ラベル情報が無い間だけ、
+                              従来どおり先頭行に現在ブランチ名のバッジを出す。 */}
+                          {(commitRefs[c.id] ?? []).map((label) => {
+                            const st = refLabelStyle(label);
+                            return (
+                              <span
+                                key={`${label.kind}:${label.name}`}
+                                className={st.className}
+                                title={st.title}
+                              >
+                                <Icon name={st.icon} /> {label.name}
+                              </span>
+                            );
+                          })}
+                          {isHead && currentBranch && !commitRefs[c.id] && (
                             <span className="branch-badge" title="現在のブランチ">
                               {currentBranch}
                             </span>

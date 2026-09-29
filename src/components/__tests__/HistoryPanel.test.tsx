@@ -11,7 +11,7 @@ import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { invoke } from "@tauri-apps/api/core";
 import { vi, describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { HistoryPanel } from "../HistoryPanel";
-import type { CommitInfo, ReflogEntry } from "../../api";
+import type { CommitInfo, RefLabel, ReflogEntry } from "../../api";
 
 // スクロール領域のビューポート高さ（テスト用の仮の値）。
 const VIEWPORT_HEIGHT_PX = 300;
@@ -88,6 +88,9 @@ function renderHistoryPanel(overrides: Partial<PanelProps> = {}) {
   const props: PanelProps = {
     commits: [],
     currentBranch: "main",
+    allBranches: false,
+    onToggleAllBranches: vi.fn(),
+    commitRefs: {},
     onReset: vi.fn(),
     onCherryPick: vi.fn(),
     hasMore: false,
@@ -351,5 +354,61 @@ describe("HistoryPanel の矢印キー行ナビゲーション（#272）", () =>
     fireEvent.keyDown(listbox, { key: " " });
 
     expect(onResetTo).not.toHaveBeenCalled();
+  });
+});
+
+describe("HistoryPanel の全ブランチ表示とラベル（#320）", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("各コミット行に、そのコミットを指すブランチ・タグのラベルが描画されること", () => {
+    const commits = makeCommits(5);
+    const commitRefs: Record<string, RefLabel[]> = {
+      [commits[0].id]: [
+        { name: "main", kind: "local_branch", is_current: true },
+        { name: "origin/main", kind: "remote_branch", is_current: false },
+      ],
+      [commits[2].id]: [
+        { name: "feature/x", kind: "local_branch", is_current: false },
+        { name: "v1.0.0", kind: "tag", is_current: false },
+      ],
+    };
+    renderHistoryPanel({ commits, commitRefs, allBranches: true });
+
+    const rows = screen.getAllByRole("option");
+    // 行 0: 現在のブランチ（強調）とリモート追跡ブランチ（別色）。
+    const current = screen.getByTitle("現在のブランチ: main");
+    expect(rows[0]).toContainElement(current);
+    expect(current.className).toContain("ref-label-current");
+    const remote = screen.getByTitle("リモートのブランチ: origin/main");
+    expect(rows[0]).toContainElement(remote);
+    expect(remote.className).toContain("ref-label-remote");
+    // 行 2: 他のローカルブランチとタグ。
+    expect(rows[2]).toContainElement(screen.getByTitle("ブランチ: feature/x"));
+    expect(rows[2]).toContainElement(screen.getByTitle("タグ: v1.0.0"));
+    // ラベルの無い行には出ない。
+    expect(rows[1].querySelector(".ref-label")).toBeNull();
+  });
+
+  it("detached HEAD のラベルが強調表示されること", () => {
+    const commits = makeCommits(3);
+    renderHistoryPanel({
+      commits,
+      currentBranch: null,
+      commitRefs: { [commits[1].id]: [{ name: "HEAD", kind: "head", is_current: true }] },
+    });
+    const head = screen.getByTitle(/^HEAD（/);
+    expect(head.className).toContain("ref-label-current");
+  });
+
+  it("「全ブランチ」ボタンの押下状態が反映され、クリックで onToggleAllBranches が呼ばれること", () => {
+    const onToggleAllBranches = vi.fn();
+    renderHistoryPanel({ commits: makeCommits(3), allBranches: true, onToggleAllBranches });
+
+    const btn = screen.getByRole("button", { name: /全ブランチ/ });
+    expect(btn).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(btn);
+    expect(onToggleAllBranches).toHaveBeenCalledTimes(1);
   });
 });

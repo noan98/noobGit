@@ -3,8 +3,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo,
-    ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
+    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo, RefKind,
+    RefLabel, ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -357,6 +357,81 @@ pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
     Ok(out)
 }
 
+/// コミット id → そのコミットを指す ref（ローカルブランチ・リモート追跡ブランチ・タグ・
+/// detached HEAD）の一覧、を返す（Issue #320。履歴グラフのブランチ名・タグラベル用）。
+///
+/// 注釈付きタグは指すコミットへ解決する（コミット以外を指すタグは無視）。
+/// リモートの `origin/HEAD`（デフォルトブランチへの別名）は重複して紛らわしいので
+/// 除外する。各コミットの中の並びは「現在のブランチ／detached HEAD → その他のローカル
+/// ブランチ → リモート追跡ブランチ → タグ」で、同じ種類の中は名前順。
+/// HEAD が無い（コミット0件）リポジトリは空のマップを返す。
+pub fn commit_refs(repo: &Repository) -> Result<std::collections::HashMap<String, Vec<RefLabel>>> {
+    let mut map: std::collections::HashMap<String, Vec<RefLabel>> =
+        std::collections::HashMap::new();
+
+    let head = repo.head().ok();
+    let current_branch: Option<String> = head
+        .as_ref()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().ok().map(str::to_string));
+    if let Some(h) = &head {
+        if !h.is_branch() {
+            if let Ok(commit) = h.peel_to_commit() {
+                map.entry(commit.id().to_string())
+                    .or_default()
+                    .push(RefLabel {
+                        name: "HEAD".to_string(),
+                        kind: RefKind::Head,
+                        is_current: true,
+                    });
+            }
+        }
+    }
+
+    for reference in repo.references()?.flatten() {
+        let Ok(full) = reference.name() else {
+            continue;
+        };
+        let (kind, name) = if let Some(n) = full.strip_prefix("refs/heads/") {
+            (RefKind::LocalBranch, n)
+        } else if let Some(n) = full.strip_prefix("refs/remotes/") {
+            if n.ends_with("/HEAD") {
+                continue;
+            }
+            (RefKind::RemoteBranch, n)
+        } else if let Some(n) = full.strip_prefix("refs/tags/") {
+            (RefKind::Tag, n)
+        } else {
+            continue;
+        };
+        // 注釈付きタグ・シンボリック参照を、最終的に指すコミットへ解決する。
+        let Ok(commit) = reference.peel_to_commit() else {
+            continue;
+        };
+        let is_current = kind == RefKind::LocalBranch && current_branch.as_deref() == Some(name);
+        map.entry(commit.id().to_string())
+            .or_default()
+            .push(RefLabel {
+                name: name.to_string(),
+                kind,
+                is_current,
+            });
+    }
+
+    fn rank(l: &RefLabel) -> u8 {
+        match (l.kind, l.is_current) {
+            (RefKind::Head, _) | (RefKind::LocalBranch, true) => 0,
+            (RefKind::LocalBranch, false) => 1,
+            (RefKind::RemoteBranch, _) => 2,
+            (RefKind::Tag, _) => 3,
+        }
+    }
+    for labels in map.values_mut() {
+        labels.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name)));
+    }
+    Ok(map)
+}
+
 /// リモート一覧を返す（名前順）。
 ///
 /// 各リモートの fetch URL と push URL を取得する。push URL が fetch URL と同じか
@@ -574,6 +649,32 @@ pub struct LogFilter {
     pub since: Option<i64>,
     /// この時刻（Unix エポック秒）以前のコミットだけを残す（その時刻を含む）。
     pub until: Option<i64>,
+    /// true なら HEAD だけでなく、全ローカルブランチ（`refs/heads/*`）の先端からも
+    /// 履歴をたどる（Issue #320）。detached HEAD のコミットも含める。
+    /// 絞り込み条件ではなく「どこから辿るか」の指定なので、[`LogFilter::is_empty`] には
+    /// 影響しない。
+    #[serde(default)]
+    pub all_branches: bool,
+    /// `all_branches` が true のとき、さらにリモート追跡ブランチ（`refs/remotes/*`）の
+    /// 先端からも辿る。`all_branches` が false のときは無視する。
+    #[serde(default)]
+    pub include_remotes: bool,
+}
+
+/// [`log_filtered`] と [`LogCursor`] で共通の、revwalk の起点の登録。
+///
+/// 常に HEAD から辿り、`filter.all_branches` のときは全ローカルブランチ
+/// （＋ `include_remotes` ならリモート追跡ブランチ）も起点に加える。
+/// skip 版とカーソル版で起点が食い違うと出力順が変わってしまうため、必ずここを通す。
+fn push_log_tips(revwalk: &mut git2::Revwalk, filter: &LogFilter) -> Result<()> {
+    revwalk.push_head()?;
+    if filter.all_branches {
+        revwalk.push_glob("refs/heads/*")?;
+        if filter.include_remotes {
+            revwalk.push_glob("refs/remotes/*")?;
+        }
+    }
+    Ok(())
 }
 
 impl LogFilter {
@@ -666,7 +767,7 @@ pub fn log_filtered(
     }
 
     let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
+    push_log_tips(&mut revwalk, filter)?;
     // TOPOLOGICAL を併用して「子は必ず親より先」を保証する。TIME だけだと、
     // 時計ずれ・rebase・GIT_COMMITTER_DATE 指定で親の日時が子より新しい履歴のとき
     // 親が先に並び、履歴グラフ（`src/lib/commitGraph.ts`）が誤表示になる（Issue #306）。
@@ -773,7 +874,7 @@ impl LogCursor {
     fn open(repo_path: &str, filter: LogFilter) -> Result<Self> {
         let repo = Box::new(open(repo_path)?);
         let mut revwalk = repo.revwalk()?;
-        revwalk.push_head()?;
+        push_log_tips(&mut revwalk, &filter)?;
         // `log_filtered` と同じ並び（子が必ず親より先）にする。Issue #306。
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         // SAFETY: 上のドキュメントコメントの通り。`repo` はこの直後に構造体へ
@@ -3439,5 +3540,204 @@ mod tests {
         let got = suggest_commit_messages(&repo, "fix", 5).unwrap();
         // 件名（1行目）のみが候補になり、本文は含まれない。
         assert_eq!(got, vec!["fix: バグを修正".to_string()]);
+    }
+}
+
+// Issue #320: 全ブランチ表示（`LogFilter::all_branches`）と ref ラベル（`commit_refs`）のテスト。
+#[cfg(test)]
+mod all_branches_tests {
+    use super::*;
+    use crate::test_support::TestRepo;
+
+    /// 分岐した履歴を作る。HEAD は `main`。
+    ///
+    /// ```text
+    /// root(100) ── m1(200)                      ← main（HEAD）
+    ///          └── f1(500) ── f2(400)           ← feature（子 f2 の日時が親 f1 より古い）
+    /// ```
+    /// 戻り値は `(root, m1, f1, f2)`。
+    fn diverged(fx: &TestRepo) -> (git2::Oid, git2::Oid, git2::Oid, git2::Oid) {
+        let tree = fx.empty_tree_oid();
+        let root = fx.commit_raw(tree, &[], 100, "root");
+        let m1 = fx.commit_raw(tree, &[root], 200, "m1");
+        let f1 = fx.commit_raw(tree, &[root], 500, "f1");
+        let f2 = fx.commit_raw(tree, &[f1], 400, "f2");
+        fx.set_branch("main", m1);
+        fx.set_branch("feature", f2);
+        (root, m1, f1, f2)
+    }
+
+    fn ids(commits: &[CommitInfo]) -> Vec<String> {
+        commits.iter().map(|c| c.id.clone()).collect()
+    }
+
+    fn all_filter(include_remotes: bool) -> LogFilter {
+        LogFilter {
+            all_branches: true,
+            include_remotes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn current_branch_only_excludes_other_branch_commits() {
+        let fx = TestRepo::new_without_identity();
+        let (root, m1, _, _) = diverged(&fx);
+        let repo = fx.open();
+        let got = log_filtered(&repo, 0, 100, &LogFilter::default()).unwrap();
+        assert_eq!(ids(&got), vec![m1.to_string(), root.to_string()]);
+    }
+
+    #[test]
+    fn all_branches_returns_both_branches_children_before_parents() {
+        let fx = TestRepo::new_without_identity();
+        let (root, m1, f1, f2) = diverged(&fx);
+        let repo = fx.open();
+        let got = log_filtered(&repo, 0, 100, &all_filter(false)).unwrap();
+        assert_eq!(got.len(), 4);
+        let order = ids(&got);
+        for oid in [root, m1, f1, f2] {
+            assert!(order.contains(&oid.to_string()));
+        }
+        // 子が必ず親より先（f2 の日時は親 f1 より古くても崩れない）。
+        for (i, c) in got.iter().enumerate() {
+            for p in &c.parent_ids {
+                let pi = order.iter().position(|id| id == p).unwrap();
+                assert!(i < pi, "子 {} が親 {} より後ろに並んだ", c.summary, p);
+            }
+        }
+    }
+
+    #[test]
+    fn all_branches_pages_match_skip_and_cursor() {
+        let fx = TestRepo::new_without_identity();
+        diverged(&fx);
+        let repo = fx.open();
+        let bulk = ids(&log_filtered(&repo, 0, 100, &all_filter(false)).unwrap());
+
+        // skip 版のページ連結。
+        let mut by_skip = Vec::new();
+        let mut skip = 0;
+        loop {
+            let page = log_filtered(&repo, skip, 3, &all_filter(false)).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            skip += page.len();
+            by_skip.extend(ids(&page));
+        }
+        assert_eq!(by_skip, bulk);
+
+        // カーソル版のページ連結。
+        let mut store = LogCursorStore::new();
+        let path = fx.path().to_str().unwrap();
+        let mut by_cursor = Vec::new();
+        let first = store.first_page(path, all_filter(false), 3).unwrap();
+        by_cursor.extend(ids(&first.commits));
+        let mut cursor = first.cursor;
+        while let Some(id) = cursor {
+            let page = store.next_page(&id, 3).unwrap().unwrap();
+            by_cursor.extend(ids(&page.commits));
+            cursor = page.cursor;
+        }
+        assert_eq!(by_cursor, bulk);
+    }
+
+    #[test]
+    fn remote_tracking_commits_only_with_include_remotes() {
+        let fx = TestRepo::new_without_identity();
+        let (_, _, _, _) = diverged(&fx);
+        let tree = fx.empty_tree_oid();
+        let repo = fx.open();
+        let root = repo.refname_to_id("refs/heads/main").unwrap();
+        let r1 = fx.commit_raw(tree, &[root], 600, "remote only");
+        repo.reference("refs/remotes/origin/topic", r1, true, "test")
+            .unwrap();
+
+        let without = log_filtered(&repo, 0, 100, &all_filter(false)).unwrap();
+        assert!(!ids(&without).contains(&r1.to_string()));
+        let with = log_filtered(&repo, 0, 100, &all_filter(true)).unwrap();
+        assert!(ids(&with).contains(&r1.to_string()));
+        assert_eq!(with.len(), 5);
+    }
+
+    #[test]
+    fn all_branches_flag_does_not_count_as_filter() {
+        assert!(all_filter(true).is_empty());
+    }
+
+    #[test]
+    fn commit_refs_maps_branches_remotes_and_tags() {
+        let fx = TestRepo::new_without_identity();
+        let (root, m1, _, f2) = diverged(&fx);
+        let repo = fx.open();
+        repo.reference("refs/remotes/origin/main", m1, true, "test")
+            .unwrap();
+        // 別名の origin/HEAD は除外される。
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+            true,
+            "t",
+        )
+        .unwrap();
+        repo.tag_lightweight("v0", &repo.find_object(root, None).unwrap(), false)
+            .unwrap();
+        let sig = git2::Signature::now("T", "t@example.com").unwrap();
+        repo.tag(
+            "v1",
+            &repo.find_object(f2, None).unwrap(),
+            &sig,
+            "release",
+            false,
+        )
+        .unwrap();
+
+        let refs = commit_refs(&repo).unwrap();
+        let on_m1: Vec<(&str, RefKind, bool)> = refs[&m1.to_string()]
+            .iter()
+            .map(|l| (l.name.as_str(), l.kind, l.is_current))
+            .collect();
+        assert_eq!(
+            on_m1,
+            vec![
+                ("main", RefKind::LocalBranch, true),
+                ("origin/main", RefKind::RemoteBranch, false),
+            ]
+        );
+        let on_f2: Vec<(&str, RefKind)> = refs[&f2.to_string()]
+            .iter()
+            .map(|l| (l.name.as_str(), l.kind))
+            .collect();
+        // 注釈付きタグはコミットへ解決される。
+        assert_eq!(
+            on_f2,
+            vec![("feature", RefKind::LocalBranch), ("v1", RefKind::Tag)]
+        );
+        assert_eq!(refs[&root.to_string()][0].name, "v0");
+        assert!(!refs.values().flatten().any(|l| l.name.ends_with("/HEAD")));
+    }
+
+    #[test]
+    fn commit_refs_marks_detached_head() {
+        let fx = TestRepo::new_without_identity();
+        let (root, _, _, _) = diverged(&fx);
+        let repo = fx.open();
+        repo.set_head_detached(root).unwrap();
+        let refs = commit_refs(&repo).unwrap();
+        let head = &refs[&root.to_string()][0];
+        assert_eq!(head.kind, RefKind::Head);
+        assert!(head.is_current);
+        // detached のときはどのブランチも「現在」ではない。
+        assert!(!refs
+            .values()
+            .flatten()
+            .any(|l| l.kind == RefKind::LocalBranch && l.is_current));
+    }
+
+    #[test]
+    fn commit_refs_empty_repo_is_empty() {
+        let fx = TestRepo::new_without_identity();
+        assert!(commit_refs(&fx.open()).unwrap().is_empty());
     }
 }

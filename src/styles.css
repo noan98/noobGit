@@ -2015,6 +2015,41 @@ textarea {
   color: var(--border);
   font-size: 11px;
 }
+/* #320 履歴の ref ラベル（ブランチ名・タグ）。色は既存のセマンティック変数のみ。 */
+.ref-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ref-label-current {
+  background: var(--safe-bg);
+  color: var(--safe);
+  border-color: var(--safe-border);
+}
+.ref-label-local {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.ref-label-remote {
+  background: var(--rename-bg);
+  color: var(--text);
+  border-color: var(--rename-border);
+}
+.ref-label-tag {
+  background: var(--caution-bg);
+  color: var(--text);
+  border-color: var(--caution-border);
+}
 .branch-badge {
   display: inline-flex;
   align-items: center;

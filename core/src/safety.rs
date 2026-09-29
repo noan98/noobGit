@@ -283,7 +283,10 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
         OperationKind::ResetHard => RiskAssessment {
             level: RiskLevel::Destructive,
             reasons: {
-                let mut r = vec!["指定地点まで強制的に巻き戻します。".to_string()];
+                let mut r = vec![
+                    "指定地点まで強制的に巻き戻します。".to_string(),
+                    "履歴グラフで別のブランチのコミットを選んだ場合、いまのブランチの位置がそのコミットへ移り、いまのブランチにだけあるコミットはブランチから外れて見えなくなります（reflog や Undo で戻せます）。".to_string(),
+                ];
                 if ctx.working_dir_dirty {
                     r.push("未コミットの変更はすべて消え、元に戻せません。".to_string());
                 }
@@ -365,6 +368,7 @@ pub fn assess(op: OperationKind, ctx: &SafetyContext) -> RiskAssessment {
             reasons: vec![
                 "別の場所にあるコミットの変更を、いまのブランチにコピーして取り込みます（cherry-pick）。".to_string(),
                 "いまの内容とコピー元の変更が同じ箇所に触れていると、コンフリクト（競合）が起きることがあります。".to_string(),
+                "別のブランチのコミットをコピーしても、そのブランチ自体は変わりません。コピーされるのは選んだコミット1つ分の変更だけです。".to_string(),
             ],
             reversible: true,
             permanent_data_loss: false,
