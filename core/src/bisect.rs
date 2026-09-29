@@ -353,6 +353,7 @@ pub fn bisect_start(repo: &Repository, bad: &str, good: &str) -> Result<BisectSt
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::BisectStart,
             description: "Bisect の開始を取り消す（元のブランチに戻す）".to_string(),
             action: UndoAction::RestoreBisectHead {
