@@ -67,7 +67,6 @@ noobGit/
   コミット・undo ジャーナルの更新など）が同時に走ることはなかった。`(async)` で
   並行実行されるようになっても、書き込み同士は `WRITE_LOCK` で 1 つずつ実行
   する。読み取り系はロックを取らない。
-<<<<<<< HEAD
 - **書き込み系コマンドの成否は `logged()` で操作アクティビティログへ記録する**
   （Issue #208）。`lib.rs` の小さな共通ヘルパー `logged(repo_path, op, detail, |r| ...)` が
   「リポジトリを開く → core の関数を呼ぶ → `core::activity::record` で成否を記録 →
@@ -76,7 +75,6 @@ noobGit/
   `get_activity_log`、消去は `clear_activity_log`。`OperationKind` に対応しない軽い設定系
   （identity・リモート追加/URL変更・保護ブランチ設定・`.gitignore` 追記・コンフリクト解消マーク）
   は記録しない。
-=======
 - `src/watcher.rs` — ファイルシステム監視（#199）。`notify` +
   `notify-debouncer-mini`（300ms）で作業ツリーと `.git` を監視し、外部の変更を
   Tauri イベント `repo-changed`（ペイロード `{ repo_path }`）でフロントへ送る。
@@ -91,7 +89,6 @@ noobGit/
     その間の外部変更も捨てられるが、書き込み直後にフロントが必ず再読み込みする。
   - フロント（`RepoWorkspace.tsx`）は通知で既存の `refresh()` を呼ぶだけ。確認
     ダイアログ表示中の通知ではダイアログを閉じ、再確認を促す。
->>>>>>> origin/main
 - ボタンの危険度カラー（#274）は `assess_operations` でまとめて評価する（リポ
   ジトリの状態を 1 回だけ調べて全件に使う）。1 件ずつの `assess_operation` は
   操作直前の確認（`guarded()`）用。
