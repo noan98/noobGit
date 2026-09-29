@@ -8,9 +8,11 @@
 //! - 操作のリスク判定（[`safety`]）
 //! - 平易な日本語説明（[`explain`]）
 //! - 取り消し / Undo（[`undo`]）
+//! - 操作アクティビティログ（[`activity`]）
 //!
 //! という関心ごとに分けて提供する。GUI（Tauri）層はこのクレートを呼ぶだけにする。
 
+pub mod activity;
 pub mod bisect;
 pub mod error;
 pub mod explain;
@@ -27,6 +29,7 @@ mod adversarial_tests;
 #[cfg(test)]
 mod test_support;
 
+pub use activity::{ActivityEntry, ActivityOutcome};
 pub use bisect::{bisect_mark, bisect_reset, bisect_start, bisect_status};
 pub use error::{
     classify_local_error, classify_local_message, classify_network_error, CoreError, ErrorKind,

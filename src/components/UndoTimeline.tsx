@@ -52,7 +52,7 @@ const OP_LABEL: Record<OperationKind, string> = {
 };
 
 // 操作ごとのアイコン。見た目の定義は Icon.tsx に集約している（絵文字は使わない）。
-const OP_ICON: Record<OperationKind, IconName> = {
+export const OP_ICON: Record<OperationKind, IconName> = {
   stage: "stage",
   unstage: "unstage",
   commit: "commit",
