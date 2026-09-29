@@ -8,8 +8,10 @@ use std::sync::Mutex;
 use git2::Repository;
 use tauri::ipc::Channel;
 
-use noobgit_core::error::{classify_network_error, NetworkErrorKind};
-use noobgit_core::explain::{explain as explain_op, Explanation};
+use noobgit_core::error::{classify_local_message, classify_network_error, NetworkErrorKind};
+use noobgit_core::explain::{
+    explain as explain_op, explain_local_error, Explanation, LocalErrorExplanation,
+};
 use noobgit_core::identity::{Identity, IdentityScope};
 use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
@@ -770,6 +772,17 @@ fn classify_network_error_cmd(message: String) -> NetworkErrorKind {
     classify_network_error(&message)
 }
 
+/// ローカル操作のエラーメッセージから、初心者向けの解説（見出し・原因・解決手順）を返す。
+///
+/// Tauri の境界でエラーは文字列になるため、フロントは失敗時のメッセージをここに渡す。
+/// noobGit が日本語に包んだメッセージ（ロック競合・権限・破損・ディスク満杯・その他）
+/// なら解説を返し、そうでなければ `None`（ネットワーク系など別ルートのエラー）。
+/// リポジトリ不要の純粋関数なので `repo_path` は取らない。
+#[tauri::command]
+fn explain_local_error_cmd(message: String) -> Option<LocalErrorExplanation> {
+    classify_local_message(&message).map(explain_local_error)
+}
+
 /// 取り消し履歴のすべてのエントリを古い順で返す（タイムライン表示用）。
 #[tauri::command(async)]
 fn get_undo_journal(repo_path: String) -> Result<Vec<UndoEntry>, String> {
@@ -981,6 +994,7 @@ pub fn run() {
             remove_remote,
             set_remote_url,
             classify_network_error_cmd,
+            explain_local_error_cmd,
             get_undo_journal,
             peek_undo,
             undo_last,

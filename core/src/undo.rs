@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use git2::{Repository, ResetType};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CoreError, Result};
+use crate::error::{describe_io_error, CoreError, Result};
 use crate::safety::OperationKind;
 
 /// 取り消し方法の種別。各書き込み操作が「どう戻すか」を記録する。
@@ -176,7 +176,8 @@ fn load(repo: &Repository) -> Result<Vec<UndoEntry>> {
         // 握りつぶさず返す — こちらはファイル内容ではなく I/O の失敗のため。
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(CoreError::Git(format!(
-            "取り消し履歴の読み取りに失敗しました: {e}"
+            "取り消し履歴の読み取りに失敗しました: {}",
+            describe_io_error(&e)
         ))),
     }
 }
@@ -192,10 +193,18 @@ fn save(repo: &Repository, entries: &[UndoEntry]) -> Result<()> {
     // 一時ファイルへ書いてから rename することで、書き込み途中の中断で
     // ジャーナルが壊れる（＝Undoが消える）のを防ぐ。
     let tmp = path.with_file_name("noobgit_undo.json.tmp");
-    fs::write(&tmp, bytes)
-        .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
-    fs::rename(&tmp, &path)
-        .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
+    fs::write(&tmp, bytes).map_err(|e| {
+        CoreError::Git(format!(
+            "取り消し履歴の保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        CoreError::Git(format!(
+            "取り消し履歴の保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
     Ok(())
 }
 
