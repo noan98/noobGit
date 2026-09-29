@@ -90,6 +90,7 @@ function renderHistoryPanel(overrides: Partial<PanelProps> = {}) {
     currentBranch: "main",
     onReset: vi.fn(),
     onCherryPick: vi.fn(),
+    onRevert: vi.fn(),
     hasMore: false,
     loadingMore: false,
     onLoadMore: vi.fn(),
@@ -180,6 +181,16 @@ describe("HistoryPanel のコミット一覧（仮想スクロール）", () => 
     );
 
     expect(onCherryPick).toHaveBeenCalledWith(commits[0]);
+  });
+
+  it("「打ち消す」アイコンボタンをクリックすると onRevert が呼ばれること", () => {
+    const commits = makeCommits(50);
+    const onRevert = vi.fn();
+    renderHistoryPanel({ commits, onRevert });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "このコミットを打ち消す" })[0]);
+
+    expect(onRevert).toHaveBeenCalledWith(commits[0]);
   });
 
   it("「もっと見る」ボタンで onLoadMore が呼ばれること（無限スクロールの読み込みトリガー）", () => {

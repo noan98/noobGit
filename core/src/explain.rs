@@ -91,6 +91,12 @@ pub fn explain(op: OperationKind) -> Explanation {
             on_trouble: "失敗した場合は、変更をコミットか stash してから再度切り替えてください。"
                 .into(),
         },
+        OperationKind::SwitchBranchWithStash => Explanation {
+            title: "退避して切り替え".into(),
+            what: "服を着替える前に、持ち物をロッカーへ預けるようなものです。未コミットの変更をいったん退避（stash）してからブランチを切り替え、切り替え後に変更を作業ツリーへ戻します。".into(),
+            why: "未コミットの変更があると、そのまま切り替えは安全のため止まります。コミットするほどではない作業中の変更を、手軽に持ち越したいときに使います。".into(),
+            on_trouble: "切り替えに失敗したときは、元のブランチのまま変更を作業ツリーへ戻します。切り替え先が同じ箇所を変更していて戻すときにコンフリクトが起きた場合は、コンフリクト解消ウィザードが開きます。退避は一覧に残るので変更は失われません。".into(),
+        },
         OperationKind::DeleteBranch => Explanation {
             title: "ブランチ削除".into(),
             what: "指定したブランチの「枝」を消します。".into(),
@@ -150,6 +156,16 @@ pub fn explain(op: OperationKind) -> Explanation {
                 .into(),
             on_trouble:
                 "コンフリクトが起きた場合は、取り込みを中止して作業ツリーを元の状態に戻します。直後なら Undo で、コピーしたコミットを取り消せます。"
+                    .into(),
+        },
+        OperationKind::Revert => Explanation {
+            title: "コミットを打ち消す（revert）".into(),
+            what: "選んだコミットの変更を「逆向きに適用した新しいコミット」を追加して、その変更を取り消します。元のコミットは履歴に残ったままです。"
+                .into(),
+            why: "履歴を書き換えないので、すでに push 済み（他の人と共有済み）のコミットでも安全に取り消せます。reset は履歴そのものを巻き戻すため公開済みの履歴には危険ですが、revert は「取り消した」という記録を足すだけです。"
+                .into(),
+            on_trouble:
+                "あとの変更と同じ箇所に触れていてコンフリクト（競合）になる場合は、何も変えずに中断します。直後なら Undo で、追加した打ち消しコミットを取り消せます。"
                     .into(),
         },
         OperationKind::CreateTag => Explanation {
@@ -237,6 +253,7 @@ mod tests {
             OperationKind::StashDrop,
             OperationKind::CreateBranch,
             OperationKind::SwitchBranch,
+            OperationKind::SwitchBranchWithStash,
             OperationKind::DeleteBranch,
             OperationKind::ResetHard,
             OperationKind::Fetch,
@@ -244,6 +261,7 @@ mod tests {
             OperationKind::Push,
             OperationKind::ForcePush,
             OperationKind::CherryPick,
+            OperationKind::Revert,
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
             OperationKind::Rebase,

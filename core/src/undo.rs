@@ -269,7 +269,11 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             })?;
             // 見つかったときだけ pop する。無ければ取り出し済みとみなし何もしない（冪等）。
             if let Some(index) = found {
-                r.stash_pop(index, None)?;
+                // 退避前のステージ状態（どのファイルをステージしていたか）も含めて
+                // 元通りにするため、インデックスも復元する（reinstantiate_index）。
+                let mut opts = git2::StashApplyOptions::new();
+                opts.reinstantiate_index();
+                r.stash_pop(index, Some(&mut opts))?;
             }
         }
         UndoAction::UnstagePath { path } => {
@@ -401,6 +405,10 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
     }
     Ok(())
 }
+
+// プロパティベーステスト（proptest）。private な `apply` を検証するため子モジュールにする。
+#[cfg(test)]
+mod proptests;
 
 #[cfg(test)]
 mod tests {
