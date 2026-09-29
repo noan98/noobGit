@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use git2::{Repository, ResetType};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CoreError, Result};
+use crate::error::{describe_io_error, CoreError, Result};
 use crate::safety::OperationKind;
 
 /// 取り消し方法の種別。各書き込み操作が「どう戻すか」を記録する。
@@ -59,6 +59,11 @@ pub enum UndoAction {
     },
     /// 作成したタグを削除して取り消す。既に削除済みなら何もしない（冪等）。
     DeleteTag { name: String },
+    /// detached HEAD の救出（ブランチ作成＋そこへ乗り換え）を取り消し、元の detached HEAD
+    /// （`commit`）に戻してブランチ `branch` を削除する。ブランチが救出後に進んでいる
+    /// （先端が `commit` でない）場合は、コミットを失わせないよう何もせず中断する。
+    /// 既に取り消し済み（ブランチが無い）なら何もしない（冪等）。
+    RestoreDetachedHead { commit: String, branch: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -171,7 +176,8 @@ fn load(repo: &Repository) -> Result<Vec<UndoEntry>> {
         // 握りつぶさず返す — こちらはファイル内容ではなく I/O の失敗のため。
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(CoreError::Git(format!(
-            "取り消し履歴の読み取りに失敗しました: {e}"
+            "取り消し履歴の読み取りに失敗しました: {}",
+            describe_io_error(&e)
         ))),
     }
 }
@@ -187,10 +193,18 @@ fn save(repo: &Repository, entries: &[UndoEntry]) -> Result<()> {
     // 一時ファイルへ書いてから rename することで、書き込み途中の中断で
     // ジャーナルが壊れる（＝Undoが消える）のを防ぐ。
     let tmp = path.with_file_name("noobgit_undo.json.tmp");
-    fs::write(&tmp, bytes)
-        .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
-    fs::rename(&tmp, &path)
-        .map_err(|e| CoreError::Git(format!("取り消し履歴の保存に失敗しました: {e}")))?;
+    fs::write(&tmp, bytes).map_err(|e| {
+        CoreError::Git(format!(
+            "取り消し履歴の保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        CoreError::Git(format!(
+            "取り消し履歴の保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
     Ok(())
 }
 
@@ -394,6 +408,19 @@ pub fn validate_entry(repo: &Repository, entry: &UndoEntry) -> UndoApplicability
             } else {
                 AlreadyUndone
             }
+        }
+        UndoAction::RestoreDetachedHead { commit, branch } => {
+            // 救出で作ったブランチが既に無ければ取り消し済み（apply も何もしない）。
+            if repo.find_branch(branch, git2::BranchType::Local).is_err() {
+                return AlreadyUndone;
+            }
+            if !commit_exists(repo, commit) {
+                return missing("救出したコミット");
+            }
+            // 救出後にブランチへコミットが積まれていても、ここでは適用不能にしない。
+            // 適用不能にすると undo_last が履歴から整理してしまうが、ブランチを戻せば
+            // 再び取り消せるので、履歴は残したまま apply 側で Blocked にする（#197 の設計）。
+            Applicable
         }
         UndoAction::UnstagePath { .. } => Applicable,
         UndoAction::RestoreIndexEntry { path, blob, .. } => {
@@ -659,6 +686,24 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             // 破棄に失敗しても、根底の HEAD 復元は既に成功しているので undo 自体は
             // 成功として扱う（ベストエフォート方針）。
             let _ = crate::bisect::clear_session(repo);
+        }
+        UndoAction::RestoreDetachedHead { commit, branch } => {
+            // 既に取り消し済み（ブランチが無い）なら何もしない（冪等）。
+            if let Ok(mut b) = repo.find_branch(branch, git2::BranchType::Local) {
+                let oid = git2::Oid::from_str(commit)?;
+                // 救出後にそのブランチへコミットを積んでいたら、消すとコミットを見失うので中断。
+                if b.get().target() != Some(oid) {
+                    return Err(CoreError::Blocked(format!(
+                        "ブランチ「{branch}」にはその後のコミットがあるため、取り消せません。"
+                    )));
+                }
+                // 先に HEAD を detached に戻してからブランチを消す（HEAD 中のブランチは消せない）。
+                // 先端が同じコミットなので、作業ツリー・インデックスは触らない。
+                if b.is_head() {
+                    repo.set_head_detached(oid)?;
+                }
+                b.delete()?;
+            }
         }
         UndoAction::DeleteTag { name } => {
             // 既に削除済みなら何もしない（冪等）。

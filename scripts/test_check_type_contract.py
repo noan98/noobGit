@@ -23,7 +23,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).parent / "check_type_contract.py"
 
-# check_type_contract.py が要求する5つの enum を、デフォルトで矛盾なく
+# check_type_contract.py が要求する6つの enum を、デフォルトで矛盾なく
 # 一致させたベースの Rust / TypeScript ソース断片。
 BASE_SAFETY_RS = """
 #[serde(rename_all = "snake_case")]
@@ -63,6 +63,12 @@ pub enum NetworkErrorKind {
     SshKeyNotFound,
     AuthFailed,
 }
+
+#[serde(rename_all = "snake_case")]
+pub enum LocalErrorKind {
+    LockBusy,
+    DiskFull,
+}
 """
 
 BASE_API_TS = """
@@ -71,6 +77,7 @@ export type RiskLevel = "safe" | "caution" | "destructive";
 export type ChangeKind = "added" | "modified" | "type_change";
 export type DiffLineKind = "context" | "addition" | "deletion";
 export type NetworkErrorKind = "ssh_key_not_found" | "auth_failed";
+export type LocalErrorKind = "lock_busy" | "disk_full";
 """
 
 
@@ -158,6 +165,32 @@ class TestCheckTypeContract(unittest.TestCase):
                 msg="typo によるバリアント不一致が検出されなかった（見逃しバグの疑い）",
             )
             self.assertIn("RiskLevel", result.stdout)
+
+    def test_local_error_kind_rust_only_variant_fails(self):
+        """LocalErrorKind の Rust 側だけにあるバリアントを検出する（#204）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            error_rs_with_extra = BASE_ERROR_RS.replace(
+                "    DiskFull,\n", "    DiskFull,\n    RepoCorrupted,\n"
+            )
+            write_fixture(root, error_rs=error_rs_with_extra)
+            result = run_check(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("LocalErrorKind", result.stdout)
+            self.assertIn("repo_corrupted", result.stdout)
+
+    def test_local_error_kind_ts_only_variant_fails(self):
+        """LocalErrorKind の TypeScript 側だけにあるリテラルを検出する（#204）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            api_ts_with_extra = BASE_API_TS.replace(
+                'export type LocalErrorKind = "lock_busy" | "disk_full";',
+                'export type LocalErrorKind = "lock_busy" | "disk_full" | "bogus";',
+            )
+            write_fixture(root, api_ts=api_ts_with_extra)
+            result = run_check(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bogus", result.stdout)
 
     def test_missing_rust_file_reports_error(self):
         """対象の Rust ファイルが存在しなければエラー終了する（誤って0で通らない）。"""

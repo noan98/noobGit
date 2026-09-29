@@ -48,6 +48,7 @@ const OP_LABEL: Record<OperationKind, string> = {
   // クローンはネットワーク操作で undo journal には記録されないが、Record<OperationKind, ...>
   // を満たすためのラベルは用意しておく。
   clone: "クローン",
+  rescue_detached_head: "ブランチで安全にする",
 };
 
 // 操作ごとのアイコン。見た目の定義は Icon.tsx に集約している（絵文字は使わない）。
@@ -81,6 +82,7 @@ const OP_ICON: Record<OperationKind, IconName> = {
   bisect_start: "bisect",
   bisect_reset: "bisect",
   clone: "clone",
+  rescue_detached_head: "branch",
 };
 
 // #48 Undo タイムライン: 取り消し履歴をタイムライン形式で表示するパネル。

@@ -187,6 +187,7 @@ fn oids_of(action: &UndoAction) -> Vec<&str> {
         UndoAction::RestoreBisectHead {
             original_commit, ..
         } => vec![original_commit],
+        UndoAction::RestoreDetachedHead { commit, .. } => vec![commit],
         UndoAction::DeleteBranch { .. }
         | UndoAction::UncommitInitial { .. }
         | UndoAction::UnstagePath { .. }
