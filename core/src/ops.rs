@@ -12,6 +12,7 @@ use crate::model::{
     BulkDeleteBranchesOutcome, ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange,
     GitignorePatternCheck, GitignoreSuggestion, MergeOutcome, NetworkProgress,
     NetworkProgressStage, PullOutcome, SkippedBranch, StashInfo, StashRestoreOutcome,
+    SwitchWithStashOutcome,
 };
 use crate::repo::{current_branch, is_submodule_path, merged_branches, read_gitignore};
 use crate::safety::OperationKind;
@@ -194,6 +195,7 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Stage,
             description: format!("「{file_path}」の一部（hunk）のステージを取り消す"),
             action: UndoAction::UnstagePath {
@@ -321,6 +323,7 @@ pub fn unstage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Re
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Unstage,
             description: format!("「{file_path}」の一部（hunk）のアンステージを取り消す"),
             action: UndoAction::RestoreIndexEntry {
@@ -431,6 +434,7 @@ pub fn commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Commit,
             description: format!("コミット「{}」を取り消す", first_line(message)),
             action,
@@ -507,6 +511,7 @@ pub fn amend_commit(repo: &Repository, new_message: &str) -> Result<CommitInfo> 
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::AmendCommit,
             description: "直前のコミットの修正（amend）を取り消す".to_string(),
             action: UndoAction::SoftResetTo {
@@ -628,6 +633,7 @@ pub fn squash_commits(repo: &Repository, commit_oids: &[&str], message: &str) ->
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Rebase,
             description: format!(
                 "コミットの統合（squash）を取り消す（{} 個を1つにまとめる前へ）",
@@ -684,6 +690,7 @@ pub fn reword_commit(repo: &Repository, message: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Rebase,
             description: "コミットメッセージの書き換え（reword）を取り消す".to_string(),
             action: UndoAction::SoftResetTo {
@@ -1024,6 +1031,30 @@ pub fn suggest_gitignore_patterns(path: &str) -> Vec<GitignoreSuggestion> {
 ///
 /// 退避は変更を消さない安全操作。直後に取り出せるよう、PopStash の undo を記録する。
 pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
+    let stash_oid = stash_save_unrecorded(repo, message)?
+        .ok_or_else(|| CoreError::Blocked("退避できる変更がありません。".to_string()))?;
+
+    record_undo(
+        repo,
+        UndoEntry {
+            head_at_record: None,
+            op: OperationKind::StashSave,
+            description: "退避（stash）を取り消す（しまった変更を作業ツリーに戻す）".to_string(),
+            action: UndoAction::PopStash {
+                id: stash_oid.to_string(),
+            },
+        },
+    );
+    Ok(())
+}
+
+/// [`stash_save`] の本体（undo を記録しない版）。退避する変更が無ければ `Ok(None)`。
+///
+/// [`switch_branch_with_stash`] のように「退避 → 別の操作 → 取り出し」を 1 つの操作として
+/// 合成する呼び出し側は、途中の退避に対する PopStash undo を残したくない（取り出し済みの
+/// 退避を指す古い undo が残ってしまうため）ので、記録の有無を呼び出し側が選べるように
+/// 分けている。
+fn stash_save_unrecorded(repo: &mut Repository, message: &str) -> Result<Option<git2::Oid>> {
     let sig = repo.signature().map_err(|_| {
         CoreError::InvalidInput(
             "退避（stash）には名前とメールの設定が必要です（git config user.name / user.email）。"
@@ -1035,25 +1066,14 @@ pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
     let msg = if msg.is_empty() { None } else { Some(msg) };
     let flags = StashFlags::INCLUDE_UNTRACKED;
 
-    let stash_oid = repo.stash_save2(&sig, msg, Some(flags)).map_err(|e| {
-        if e.code() == git2::ErrorCode::NotFound {
-            CoreError::Blocked("退避できる変更がありません。".to_string())
-        } else {
-            CoreError::Git(format!("退避（stash）に失敗しました: {}", e.message()))
-        }
-    })?;
-
-    record_undo(
-        repo,
-        UndoEntry {
-            op: OperationKind::StashSave,
-            description: "退避（stash）を取り消す（しまった変更を作業ツリーに戻す）".to_string(),
-            action: UndoAction::PopStash {
-                id: stash_oid.to_string(),
-            },
-        },
-    );
-    Ok(())
+    match repo.stash_save2(&sig, msg, Some(flags)) {
+        Ok(oid) => Ok(Some(oid)),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(CoreError::Git(format!(
+            "退避（stash）に失敗しました: {}",
+            e.message()
+        ))),
+    }
 }
 
 /// 退避を作業ツリーに取り出す（一覧には残す）。
@@ -1281,6 +1301,7 @@ pub fn create_branch(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CreateBranch,
             description: format!("ブランチ「{name}」の作成を取り消す"),
             action: UndoAction::DeleteBranch {
@@ -1312,6 +1333,121 @@ pub fn switch_branch(repo: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 未コミットの変更を退避（stash）してからブランチを切り替え、切り替え後に変更を戻す
+/// （`git switch` の autostash 相当）。手順・失敗時のロールバック・undo の扱いは
+/// [`switch_with_stash_impl`] を参照。
+pub fn switch_branch_with_stash(
+    repo: &mut Repository,
+    name: &str,
+) -> Result<SwitchWithStashOutcome> {
+    switch_with_stash_impl(repo, name, switch_branch)
+}
+
+/// [`switch_branch_with_stash`] の本体。切り替え処理を差し替えられるようにしてあるのは、
+/// 「切り替えが途中で失敗しても変更が失われない」ことをテストで確かめるため
+/// （通常は [`switch_branch`] を渡す）。
+///
+/// 手順と失敗時の扱い:
+///
+/// 1. 切り替え先が存在するか先に確かめる（無ければ何も退避せず `InvalidInput`）。
+/// 2. 未コミット変更（未追跡ファイル含む）を「〈元ブランチ〉から〈先ブランチ〉への切り替え時に
+///    自動退避」という名前で退避する。退避する変更が無ければ、退避せず普通に切り替える
+///    （`stashed: false`）。
+/// 3. 切り替える。**失敗したら元のブランチのまま、退避した変更を作業ツリーへ戻し**
+///    （ロールバック）、元のエラーをそのまま返す。戻す処理自体が失敗・コンフリクトした場合も
+///    退避は一覧に残るので変更は失われない（その旨をエラーメッセージに加える）。
+/// 4. 切り替え後、退避を取り出す（[`stash_pop`] と同じ）。
+///    - 成功: 退避は一覧から取り除かれる（`conflicted: false`）。
+///    - コンフリクト: 目印を書き込んで成功を返し（`conflicted: true`）、**退避は一覧に残す**。
+///      フロントは既存のコンフリクト解消ウィザードと退避パネルへつなげられる。
+///    - 取り出し自体の失敗: 切り替えは済んでいるが、退避は一覧に残るので、その旨を
+///      エラーメッセージで伝える。
+///
+/// 退避は番号ではなく退避コミットの ID で探す（途中で別の退避が増えても取り違えない）。
+///
+/// undo: この操作は undo を記録しない。[`stash_save`] が記録する PopStash は、直後に
+/// この関数自身が取り出してしまう退避を指す古い undo になるため記録しない（内部では
+/// undo を記録しない版の退避を使う）。また [`switch_branch`] 自体も undo を記録しない
+/// ので、既存操作と一貫している。元のブランチへは、もう一度ブランチ切り替えで戻れる。
+fn switch_with_stash_impl<F>(
+    repo: &mut Repository,
+    name: &str,
+    switch: F,
+) -> Result<SwitchWithStashOutcome>
+where
+    F: FnOnce(&Repository, &str) -> Result<()>,
+{
+    let name = name.trim();
+    repo.find_branch(name, BranchType::Local)
+        .map_err(|_| CoreError::InvalidInput(format!("ブランチ「{name}」が見つかりません。")))?;
+
+    let from = match repo.head() {
+        Ok(h) if h.is_branch() => h.shorthand().unwrap_or("(不明)").to_string(),
+        Ok(h) => h
+            .target()
+            .map(|o| format!("{:.7}", o.to_string()))
+            .unwrap_or_else(|| "(不明)".to_string()),
+        Err(_) => "(コミット前)".to_string(),
+    };
+    let message = format!("{from}から{name}への切り替え時に自動退避");
+
+    let Some(stash_oid) = stash_save_unrecorded(repo, &message)? else {
+        switch(repo, name)?;
+        return Ok(SwitchWithStashOutcome {
+            stashed: false,
+            conflicted: false,
+        });
+    };
+
+    if let Err(switch_err) = switch(repo, name) {
+        // ロールバック: 切り替えが途中まで進んでいた場合に備え、作業ツリーを HEAD に揃えて
+        // から（退避済みなので失われる未コミット変更は無い）、退避を元のブランチへ戻す。
+        let _ = repo.checkout_head(Some(CheckoutBuilder::new().force()));
+        let restored = match find_stash_index(repo, stash_oid) {
+            Ok(Some(index)) => stash_pop(repo, index),
+            Ok(None) => Err(CoreError::InvalidInput(
+                "退避した変更が一覧に見つかりませんでした。".to_string(),
+            )),
+            Err(e) => Err(e),
+        };
+        return match restored {
+            Ok(o) if !o.conflicted => Err(switch_err),
+            _ => Err(CoreError::Git(format!(
+                "{switch_err} 退避した変更を元に戻す処理も完了しませんでしたが、変更は退避（stash）一覧に残っているので失われていません。退避パネルから取り出してください。"
+            ))),
+        };
+    }
+
+    let index = find_stash_index(repo, stash_oid)?.ok_or_else(|| {
+        CoreError::Git(format!(
+            "ブランチ「{name}」へ切り替えましたが、退避した変更が一覧に見つかりませんでした。"
+        ))
+    })?;
+    match stash_pop(repo, index) {
+        Ok(o) => Ok(SwitchWithStashOutcome {
+            stashed: true,
+            conflicted: o.conflicted,
+        }),
+        Err(e) => Err(CoreError::Git(format!(
+            "ブランチ「{name}」へは切り替えましたが、退避した変更を戻せませんでした（{e}）。変更は退避（stash）一覧に残っているので失われていません。退避パネルから取り出してください。"
+        ))),
+    }
+}
+
+/// 退避コミットの ID から、退避一覧での現在の番号を探す。
+fn find_stash_index(repo: &mut Repository, id: git2::Oid) -> Result<Option<usize>> {
+    let mut found = None;
+    repo.stash_foreach(|index, _message, oid| {
+        if *oid == id {
+            found = Some(index);
+            false
+        } else {
+            true
+        }
+    })?;
+    Ok(found)
+}
+
 /// ブランチを削除する。直後に Undo で復元できる。
 pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     let name = name.trim();
@@ -1335,6 +1471,7 @@ pub fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::DeleteBranch,
             description: format!("ブランチ「{name}」の削除を取り消す"),
             action: UndoAction::RecreateBranch {
@@ -1496,6 +1633,7 @@ pub fn create_tag(
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CreateTag,
             description: format!("タグ「{name}」の作成を取り消す"),
             action: UndoAction::DeleteTag {
@@ -1542,6 +1680,7 @@ pub fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::DeleteTag,
             description: format!("タグ「{name}」の削除を取り消す"),
             action: UndoAction::RecreateTag {
@@ -1983,6 +2122,7 @@ pub fn reset_hard(repo: &Repository, revspec: &str) -> Result<()> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::ResetHard,
             description: "ハードリセットを取り消す（リセット前の位置に戻す）".to_string(),
             action: UndoAction::HardResetTo {
@@ -2090,11 +2230,116 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::CherryPick,
             description: format!(
                 "コミット「{}」のコピー（cherry-pick）を取り消す",
                 first_line(message)
             ),
+            action: UndoAction::SoftResetTo {
+                previous: previous.to_string(),
+            },
+        },
+    );
+
+    let new_commit = repo.find_commit(new_oid)?;
+    Ok(commit_info(&new_commit))
+}
+
+/// 指定したコミットの変更を打ち消す新しいコミットを、いまのブランチの先頭に積む（revert）。
+///
+/// `oid` は打ち消したいコミットのハッシュ。履歴は書き換えず、逆向きの変更を持つ
+/// コミットを 1 つ**追加**するだけなので、すでに push 済みのコミットにも安全に使える
+/// （reset や amend のような履歴書き換えとの最大の違い）。メッセージは git の
+/// `git revert` と同じ形式（`Revert "元の件名"` と `This reverts commit <id>.`）にする。
+///
+/// 次の場合は**何も変えずに** [`CoreError::Blocked`] で中断する: マージコミット
+/// （親が 2 つ以上。どちらの親側へ戻すか選ぶ必要があり、v1 では非対応）、ステージ済みの
+/// 変更があるとき、コンフリクト（競合）が起きたとき、打ち消し内容が未コミットの変更と
+/// 同じファイルに触れているとき。作業ツリーへの反映は安全（safe）チェックアウトで行い、
+/// 無関係なファイルのローカル変更は保たれる（[`cherry_pick`] と同じ方針）。
+/// 成功時は、revert 直前の HEAD への soft reset を undo に記録する。
+pub fn revert_commit(repo: &Repository, oid: &str) -> Result<CommitInfo> {
+    let target = git2::Oid::from_str(oid.trim())
+        .map_err(|_| CoreError::InvalidInput(format!("コミットの指定が不正です: {oid}")))?;
+    let commit = repo.find_commit(target).map_err(|_| {
+        CoreError::InvalidInput(format!("指定したコミットが見つかりませんでした: {oid}"))
+    })?;
+
+    if commit.parent_count() > 1 {
+        return Err(CoreError::Blocked(
+            "マージコミットは、どちらの側へ戻すかを選ぶ必要があるため、まだ打ち消せません。"
+                .to_string(),
+        ));
+    }
+
+    let head_commit = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| {
+        CoreError::Blocked(
+            "まだコミットが無いため、打ち消し（revert）できません。先に最初のコミットをしてください。"
+                .to_string(),
+        )
+    })?;
+    let previous = head_commit.id();
+
+    let sig = repo.signature().map_err(|_| {
+        CoreError::InvalidInput(
+            "打ち消し（revert）には名前とメールの設定が必要です（git config user.name / user.email）。"
+                .to_string(),
+        )
+    })?;
+
+    // git と同様、ステージ済みの変更があるときは実行しない（打ち消しの結果と混ざるため）。
+    let head_tree = head_commit.tree()?;
+    let staged = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
+    if staged.deltas().len() > 0 {
+        return Err(CoreError::Blocked(
+            "ステージ済みの変更があるため、打ち消し（revert）できません。先にコミットするか退避(stash)してください。"
+                .to_string(),
+        ));
+    }
+
+    // HEAD を土台に、対象コミットの逆向きの変更を当てたインデックスをメモリ上に作る
+    // （作業ツリー・実インデックスにはまだ触れない）。
+    let mut merged = repo
+        .revert_commit(&commit, &head_commit, 0, None)
+        .map_err(|e| {
+            CoreError::Git(format!("打ち消し（revert）に失敗しました: {}", e.message()))
+        })?;
+
+    if merged.has_conflicts() {
+        return Err(CoreError::Blocked(
+            "いまの内容と打ち消したい変更が同じ箇所に触れていて、コンフリクト（競合）のため打ち消せませんでした。状態は元のままです。"
+                .to_string(),
+        ));
+    }
+
+    let tree_id = merged.write_tree_to(repo)?;
+    let tree = repo.find_tree(tree_id)?;
+
+    // 未コミットの変更を黙って消さないため、force ではなく safe チェックアウトで反映する。
+    let mut co = CheckoutBuilder::new();
+    repo.checkout_tree(tree.as_object(), Some(&mut co)).map_err(|_| {
+        CoreError::Blocked(
+            "未コミットの変更と打ち消し内容が同じファイルに触れているため、打ち消し（revert）を中断しました。先にコミットか退避(stash)をしてください。"
+                .to_string(),
+        )
+    })?;
+
+    let summary = first_line(commit.message().unwrap_or("")).to_string();
+    let message = format!(
+        "Revert \"{}\"\n\nThis reverts commit {}.\n",
+        summary,
+        commit.id()
+    );
+    let new_oid = repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &[&head_commit])?;
+
+    let _ = repo.cleanup_state();
+
+    record_undo(
+        repo,
+        UndoEntry {
+            op: OperationKind::Revert,
+            description: format!("コミット「{summary}」の打ち消し（revert）を取り消す"),
             action: UndoAction::SoftResetTo {
                 previous: previous.to_string(),
             },
@@ -2446,6 +2691,7 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
         record_undo(
             repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::Merge,
                 description: format!("ブランチ「{branch_name}」のマージ（fast-forward）を取り消す"),
                 action: UndoAction::HardResetTo {
@@ -2498,6 +2744,7 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::Merge,
             description: format!("ブランチ「{branch_name}」のマージを取り消す"),
             action: UndoAction::SoftResetTo {
@@ -2591,6 +2838,7 @@ pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &
     record_undo(
         repo,
         UndoEntry {
+            head_at_record: None,
             op: OperationKind::RestoreFile,
             description: format!("「{file_path}」のコミット時点への復元を取り消す（アンステージ）"),
             action: UndoAction::UnstagePath {
@@ -2696,6 +2944,7 @@ mod tests {
         let probe = undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::Commit,
                 description: "probe".into(),
                 action: UndoAction::SoftResetTo {
@@ -2734,6 +2983,7 @@ mod tests {
         let probe = undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateBranch,
                 description: "probe".into(),
                 action: UndoAction::DeleteBranch {
@@ -4043,6 +4293,190 @@ mod tests {
         );
     }
 
+    // ---- switch_branch_with_stash（#198） ----
+
+    /// main 相当（初期ブランチ）に a.txt / b.txt を持つコミットを作り、`other` ブランチで
+    /// a.txt だけを変更したコミットを積んだうえで、初期ブランチに戻った状態を作る。
+    /// 戻り値は初期ブランチ名。
+    fn setup_two_branches(fx: &TestRepo) -> String {
+        fx.write_file("a.txt", "base");
+        fx.write_file("b.txt", "base-b");
+        fx.stage_all();
+        fx.commit("c1");
+        let orig = current_branch(&fx.open()).unwrap();
+        create_branch(&fx.open(), "other").unwrap();
+        switch_branch(&fx.open(), "other").unwrap();
+        fx.write_file("a.txt", "other-change");
+        fx.stage_all();
+        fx.commit("c2 on other");
+        switch_branch(&fx.open(), &orig).unwrap();
+        orig
+    }
+
+    fn read(fx: &TestRepo, rel: &str) -> String {
+        std::fs::read_to_string(fx.path().join(rel)).unwrap()
+    }
+
+    // 成功パス: 退避 → 切り替え → 復元。変更（追跡・未追跡とも）が切り替え先へ持ち越され、
+    // 退避は一覧に残らない。undo は記録しない。
+    #[test]
+    fn switch_with_stash_success_carries_changes_over() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("b.txt", "wip-b");
+        fx.write_file("new.txt", "untracked");
+        let undo_before = crate::undo::list(&fx.open()).unwrap().len();
+
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert_eq!(
+            outcome,
+            SwitchWithStashOutcome {
+                stashed: true,
+                conflicted: false
+            }
+        );
+
+        let repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), "other");
+        assert_eq!(read(&fx, "a.txt"), "other-change");
+        assert_eq!(read(&fx, "b.txt"), "wip-b");
+        assert_eq!(read(&fx, "new.txt"), "untracked");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+        assert_eq!(crate::undo::list(&repo).unwrap().len(), undo_before);
+        // 元のブランチは動いていない。
+        assert!(repo.find_branch(&orig, BranchType::Local).is_ok());
+    }
+
+    // 変更が無ければ退避せず、普通に切り替える。
+    #[test]
+    fn switch_with_stash_on_clean_tree_just_switches() {
+        let fx = TestRepo::new();
+        setup_two_branches(&fx);
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert!(!outcome.stashed && !outcome.conflicted);
+        assert_eq!(read(&fx, "a.txt"), "other-change");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
+    // pop コンフリクトパス: 素の switch_branch は Blocked になる変更でも、退避して切り替えられる。
+    // 戻すときにコンフリクトするが、退避は一覧に残り変更は失われない。
+    #[test]
+    fn switch_with_stash_conflict_keeps_stash() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+
+        // 前提: 素の切り替えは Blocked。
+        assert!(matches!(
+            switch_branch(&fx.open(), "other"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+
+        let outcome = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "other").unwrap()
+        };
+        assert!(outcome.stashed && outcome.conflicted);
+
+        let mut repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), "other");
+        assert!(repo.index().unwrap().has_conflicts());
+        let stashes = stash_list(&mut repo).unwrap();
+        assert_eq!(stashes.len(), 1, "コンフリクト時は退避を残すこと");
+        // 自動命名（退避メッセージに元ブランチ名と先ブランチ名が入る）。
+        assert!(
+            stashes[0]
+                .message
+                .contains(&format!("{orig}からotherへの切り替え時に自動退避")),
+            "message = {}",
+            stashes[0].message
+        );
+        // 作業ツリーには自分の変更がコンフリクトの目印付きで残っている。
+        assert!(read(&fx, "a.txt").contains("wip-a"));
+    }
+
+    // 途中失敗のロールバック: 切り替えが失敗しても、元のブランチのまま未コミット変更
+    // （追跡・未追跡）が作業ツリーに戻り、退避も残らない。元のエラーがそのまま返る。
+    #[test]
+    fn switch_with_stash_rolls_back_when_switch_fails() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+        fx.write_file("new.txt", "untracked");
+
+        let err = {
+            let mut repo = fx.open();
+            switch_with_stash_impl(&mut repo, "other", |_r, _n| {
+                Err(CoreError::Blocked("テスト用の切り替え失敗".to_string()))
+            })
+            .unwrap_err()
+        };
+        assert!(matches!(err, CoreError::Blocked(ref m) if m == "テスト用の切り替え失敗"));
+
+        let mut repo = fx.open();
+        assert_eq!(current_branch(&repo).unwrap(), orig);
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+        assert_eq!(read(&fx, "new.txt"), "untracked");
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
+    // ロールバックで戻す処理自体がコンフリクトしても、変更は退避一覧に残って失われない。
+    #[test]
+    fn switch_with_stash_rollback_failure_keeps_changes_in_stash() {
+        let fx = TestRepo::new();
+        let orig = setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+
+        let err = {
+            let mut repo = fx.open();
+            // 「切り替え」の途中で HEAD 側のファイルが変わってしまった状況を模す
+            // （戻すときに退避と競合する）。
+            switch_with_stash_impl(&mut repo, "other", |r, _n| {
+                let mut co = CheckoutBuilder::new();
+                co.force();
+                let obj = r.revparse_single("refs/heads/other")?;
+                r.checkout_tree(&obj, Some(&mut co))?;
+                r.set_head("refs/heads/other")?;
+                r.set_head(&format!("refs/heads/{orig}"))?;
+                // 作業ツリーだけ other の内容になったまま失敗する。
+                Err(CoreError::Git("テスト用の中途半端な失敗".to_string()))
+            })
+            .unwrap_err()
+        };
+        assert!(err.to_string().contains("テスト用の中途半端な失敗"));
+
+        // 変更は作業ツリーに戻っているか、少なくとも退避に残っている（どちらかは必ず満たす）。
+        let mut repo = fx.open();
+        let stashed = !stash_list(&mut repo).unwrap().is_empty();
+        let in_tree = read(&fx, "a.txt").contains("wip-a");
+        assert!(stashed || in_tree, "変更が失われた");
+    }
+
+    // 存在しないブランチ: 何も退避せず、未コミット変更もそのまま。
+    #[test]
+    fn switch_with_stash_unknown_branch_changes_nothing() {
+        let fx = TestRepo::new();
+        setup_two_branches(&fx);
+        fx.write_file("a.txt", "wip-a");
+        let err = {
+            let mut repo = fx.open();
+            switch_branch_with_stash(&mut repo, "nope").unwrap_err()
+        };
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        assert_eq!(read(&fx, "a.txt"), "wip-a");
+        let mut repo = fx.open();
+        assert!(stash_list(&mut repo).unwrap().is_empty());
+    }
+
     // stash_pop がコンフリクトなく成功する通常時は、従来どおり退避を一覧から
     // 取り除くこと（#156 のリグレッション防止）。
     #[test]
@@ -4859,6 +5293,7 @@ mod tests {
         undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateTag,
                 description: "タグ「v1.0.0」の作成を取り消す".into(),
                 action: UndoAction::DeleteTag {
@@ -4874,6 +5309,7 @@ mod tests {
         undo::push(
             &repo,
             UndoEntry {
+                head_at_record: None,
                 op: OperationKind::CreateTag,
                 description: "タグ「v1.0.0」の作成を取り消す".into(),
                 action: UndoAction::DeleteTag {
@@ -5172,6 +5608,138 @@ mod tests {
             "main change\n"
         );
         assert!(status(&repo).unwrap().is_clean);
+    }
+
+    // revert: 打ち消しコミットが積まれ、内容が戻り、undo で取り消せること（#195）。
+    #[test]
+    fn revert_commit_adds_inverse_commit_then_undo_restores() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("b.txt", "added\n");
+        fx.stage_all();
+        let target = fx.commit("b.txt を追加");
+        fx.write_file("c.txt", "later\n");
+        fx.stage_all();
+        fx.commit("c.txt を追加");
+
+        let repo = fx.open();
+        let info = revert_commit(&repo, &target.to_string()).unwrap();
+        assert_eq!(info.summary, "Revert \"b.txt を追加\"");
+        // 履歴は書き換わらず 1 つ増える。b.txt だけ消え、c.txt は残る。
+        assert_eq!(log(&repo, 10).unwrap().len(), 4);
+        assert!(!fx.path().join("b.txt").exists());
+        assert!(fx.path().join("c.txt").exists());
+        assert!(status(&repo).unwrap().is_clean);
+
+        undo_last(&repo).unwrap();
+        let repo = fx.open();
+        assert_eq!(log(&repo, 10).unwrap().len(), 3);
+        // soft reset なので打ち消しの変更はステージ済みで残る（cherry-pick の undo と同じ挙動）。
+        assert!(status(&repo)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|f| f.path == "b.txt"));
+    }
+
+    #[test]
+    fn revert_commit_invalid_oid_is_input_error() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "x\n");
+        fx.stage_all();
+        fx.commit("c1");
+        let repo = fx.open();
+        assert!(matches!(
+            revert_commit(&repo, "not-a-valid-oid").unwrap_err(),
+            CoreError::InvalidInput(_)
+        ));
+    }
+
+    // 後続コミットが同じ箇所を変えていると競合し、Blocked で状態が保全されること（#195）。
+    #[test]
+    fn revert_commit_conflict_is_blocked_and_preserves_state() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("a.txt", "first change\n");
+        fx.stage_all();
+        let target = fx.commit("a.txt を変更");
+        fx.write_file("a.txt", "second change\n");
+        fx.stage_all();
+        fx.commit("a.txt をさらに変更");
+        let head_before = fx.head_oid();
+
+        let repo = fx.open();
+        let err = revert_commit(&repo, &target.to_string()).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+
+        let repo = fx.open();
+        assert_eq!(fx.head_oid(), head_before);
+        assert_eq!(
+            std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
+            "second change\n"
+        );
+        assert!(status(&repo).unwrap().is_clean);
+        assert!(status(&repo).unwrap().conflicted.is_empty());
+    }
+
+    // マージコミットは v1 では対象外で Blocked（#195）。
+    #[test]
+    fn revert_commit_merge_commit_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        {
+            let repo = fx.open();
+            create_branch(&repo, "feature").unwrap();
+            switch_branch(&repo, "feature").unwrap();
+        }
+        fx.write_file("f.txt", "1\n");
+        fx.stage_all();
+        fx.commit("feature");
+        {
+            let repo = fx.open();
+            switch_branch(&repo, "main").unwrap();
+        }
+        fx.write_file("m.txt", "1\n");
+        fx.stage_all();
+        fx.commit("main");
+        let repo = fx.open();
+        let merge_oid = match merge_branch(&repo, "feature").unwrap() {
+            MergeOutcome::Merged { commit } => commit.id,
+            other => panic!("Merged を期待したが {other:?} だった"),
+        };
+        let head_before = fx.head_oid();
+        let err = revert_commit(&repo, &merge_oid).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        assert_eq!(fx.head_oid(), head_before);
+    }
+
+    // ステージ済みの変更があると Blocked で、ステージは保たれること（#195）。
+    #[test]
+    fn revert_commit_with_staged_changes_is_blocked() {
+        let fx = TestRepo::new();
+        fx.write_file("a.txt", "base\n");
+        fx.stage_all();
+        fx.commit("c1");
+        fx.write_file("b.txt", "x\n");
+        fx.stage_all();
+        let target = fx.commit("b.txt を追加");
+        fx.write_file("c.txt", "staged\n");
+        fx.stage_all();
+        let repo = fx.open();
+        let err = revert_commit(&repo, &target.to_string()).unwrap_err();
+        assert!(matches!(err, CoreError::Blocked(_)));
+        assert!(fx.path().join("b.txt").exists());
+        assert!(status(&repo)
+            .unwrap()
+            .staged
+            .iter()
+            .any(|f| f.path == "c.txt"));
     }
 
     #[test]

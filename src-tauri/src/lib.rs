@@ -16,11 +16,11 @@ use noobgit_core::model::{
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, LfsCandidate, LogPage, MergeOutcome, MergedBranchInfo, NetworkProgress,
     PullOutcome, ReflogEntry, RemoteInfo, RepoStatus, SensitiveWarning, StashInfo,
-    StashRestoreOutcome, TagInfo,
+    StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
-use noobgit_core::undo::UndoEntry;
+use noobgit_core::undo::{UndoApplicability, UndoEntry};
 use noobgit_core::{bisect, identity, ops, repo, undo};
 
 mod watcher;
@@ -536,6 +536,18 @@ fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
 }
 
+/// 未コミットの変更を退避してからブランチを切り替え、切り替え後に変更を戻す。
+/// コンフリクト時は退避を残し、`SwitchWithStashOutcome.conflicted` で伝える。
+#[tauri::command(async)]
+fn switch_branch_with_stash(
+    repo_path: String,
+    name: String,
+) -> Result<SwitchWithStashOutcome, String> {
+    let _write = write_lock();
+    let mut r = open(&repo_path)?;
+    ops::switch_branch_with_stash(&mut r, &name).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn switch_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
@@ -672,6 +684,14 @@ fn merge_branch(repo_path: String, branch_name: String) -> Result<MergeOutcome, 
     ops::merge_branch(&r, &branch_name).map_err(|e| e.to_string())
 }
 
+/// 指定したコミットの変更を打ち消す新しいコミットを積む（revert）。履歴は書き換えない。
+#[tauri::command(async)]
+fn revert_commit(repo_path: String, oid: String) -> Result<CommitInfo, String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    ops::revert_commit(&r, &oid).map_err(|e| e.to_string())
+}
+
 /// 指定したコミットの変更を、いまのブランチの先頭にコピーする（cherry-pick）。
 #[tauri::command(async)]
 fn cherry_pick(repo_path: String, oid: String) -> Result<CommitInfo, String> {
@@ -762,11 +782,29 @@ fn peek_undo(repo_path: String) -> Result<Option<UndoEntry>, String> {
     Ok(undo::peek(&r).ok().flatten())
 }
 
+/// 直前の操作を取り消す。履歴が進んでいて新しい作業も巻き戻る恐れがある場合は、
+/// `confirm_risky` が true でない限り何も変えずにエラーを返す（#201）。
 #[tauri::command(async)]
-fn undo_last(repo_path: String) -> Result<String, String> {
+fn undo_last(repo_path: String, confirm_risky: Option<bool>) -> Result<String, String> {
     let _write = write_lock();
     let r = open(&repo_path)?;
-    undo::undo_last(&r).map_err(|e| e.to_string())
+    undo::undo_last_confirmed(&r, confirm_risky.unwrap_or(false)).map_err(|e| e.to_string())
+}
+
+/// 取り消し履歴の各エントリが今のリポジトリ状態で適用できるかを検証する
+/// （`get_undo_journal` と同じ古い順）。読み取り専用（#201）。
+#[tauri::command(async)]
+fn get_undo_applicability(repo_path: String) -> Result<Vec<UndoApplicability>, String> {
+    let r = open(&repo_path)?;
+    undo::validate_journal(&r).map_err(|e| e.to_string())
+}
+
+/// 適用不能になった取り消し履歴を整理し、取り除いた件数を返す（#201）。
+#[tauri::command(async)]
+fn prune_undo_journal(repo_path: String) -> Result<usize, String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    undo::prune_unresolvable(&r).map_err(|e| e.to_string())
 }
 
 /// 指定したコミット時点のファイル内容を作業ツリーに復元し、ステージする。
@@ -944,6 +982,7 @@ pub fn run() {
             set_identity,
             create_branch,
             switch_branch,
+            switch_branch_with_stash,
             delete_branch,
             get_merged_branches,
             delete_branches,
@@ -953,6 +992,7 @@ pub fn run() {
             push,
             clone_repo,
             cherry_pick,
+            revert_commit,
             merge_branch,
             list_tags,
             create_tag,
@@ -965,6 +1005,8 @@ pub fn run() {
             get_undo_journal,
             peek_undo,
             undo_last,
+            get_undo_applicability,
+            prune_undo_journal,
             check_sensitive,
             check_lfs_candidates,
             restore_file_from_commit,
