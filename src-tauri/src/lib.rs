@@ -484,8 +484,12 @@ fn squash_commits(
 #[tauri::command(async)]
 fn rebase_plan(repo_path: String, plan: Vec<RebaseStep>) -> Result<(), String> {
     let _write = write_lock();
-    let r = open(&repo_path)?;
-    ops::rebase_plan(&r, &plan).map_err(|e| e.to_string())
+    logged(
+        &repo_path,
+        OperationKind::Rebase,
+        Some(format!("{}件のコミットの並べ替え・削除", plan.len())),
+        |r| ops::rebase_plan(r, &plan),
+    )
 }
 
 /// 最新のコミット（HEAD）のメッセージだけを書き換える（reword）。
