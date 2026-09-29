@@ -29,6 +29,7 @@ import {
   type LogFilter,
   type MergedBranchInfo,
   type NetworkErrorKind,
+  type LocalErrorExplanation,
   type OperationKind,
   type RepoStatus,
   type RiskAssessment,
@@ -83,6 +84,7 @@ import { UndoTimeline } from "./components/UndoTimeline"; // #48 Undo タイム�
 import { ExplainTooltip } from "./components/ExplainTooltip"; // #104 操作説明ツールチップ
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette"; // #105 コマンドパレット
 import { NetworkErrorDialog } from "./components/NetworkErrorDialog"; // #126 ネットワーク診断
+import { LocalErrorDialog } from "./components/LocalErrorDialog"; // #204 ローカルエラー診断
 import { SensitiveWarningDialog } from "./components/SensitiveWarningDialog"; // #69 機密ファイル検出
 import { LfsGuideDialog } from "./components/LfsGuideDialog"; // #81 LFS ガイド
 import { NetworkProgressBar } from "./components/NetworkProgressBar"; // #167 進捗フィードバック
@@ -536,6 +538,34 @@ export function RepoWorkspace({
     kind: NetworkErrorKind;
     raw: string;
   } | null>(null);
+
+  // #204 ローカルエラー診断: ロック競合・権限・リポジトリ破損・ディスク満杯・その他の
+  // 解説と生メッセージ。null のときはダイアログ非表示。
+  const [localErrorInfo, setLocalErrorInfo] = useState<{
+    explanation: LocalErrorExplanation;
+    raw: string;
+  } | null>(null);
+
+  // #204 エラーバナーに出そうとした文字列が、noobGit が日本語に包んだローカルエラー
+  // なら、バナーの代わりに解決手順つきのダイアログで案内する（英語の生メッセージだけが
+  // 出る状態を避ける）。解説を取れなければ従来どおりバナーのまま。
+  useEffect(() => {
+    if (!error) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const explanation = await api.explainLocalError(error);
+        if (cancelled || !explanation) return;
+        setLocalErrorInfo({ explanation, raw: error });
+        setError(null);
+      } catch {
+        // 解説の取得に失敗してもバナーはそのまま表示される。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [error]);
 
   // #69 機密ファイル検出: 機密ファイルが見つかった場合の警告と、「それでもステージする」
   // ときに呼ぶ続行コールバックを保持する。null のときはダイアログ非表示。
@@ -1017,6 +1047,13 @@ export function RepoWorkspace({
           // #126 ネットワーク診断: ネットワーク操作の失敗はダイアログで種別ごとに案内する。
           // バナーは出さず、ダイアログだけ表示する（二重表示を避ける）。
           try {
+            // #204 ネットワーク操作でも、ローカル起因（ロック競合・権限・ディスク満杯など）の
+            // 失敗はローカル用の解決手順を優先する。
+            const local = await api.explainLocalError(msg);
+            if (local && local.kind !== "other") {
+              setLocalErrorInfo({ explanation: local, raw: msg });
+              return;
+            }
             const kind = await api.classifyNetworkError(msg);
             setNetworkErrorInfo({ kind, raw: msg });
           } catch {
@@ -2774,6 +2811,15 @@ export function RepoWorkspace({
           kind={networkErrorInfo.kind}
           raw={networkErrorInfo.raw}
           onClose={() => setNetworkErrorInfo(null)}
+        />
+      )}
+
+      {/* #204 ローカルエラー診断: ロック競合・権限・破損・ディスク満杯・その他の解決手順ダイアログ */}
+      {localErrorInfo && (
+        <LocalErrorDialog
+          explanation={localErrorInfo.explanation}
+          raw={localErrorInfo.raw}
+          onClose={() => setLocalErrorInfo(null)}
         />
       )}
 

@@ -1,6 +1,6 @@
 use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
-use crate::error::{CoreError, Result};
+use crate::error::{describe_git2_error, describe_io_error, CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
     DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo,
@@ -363,7 +363,10 @@ pub fn list_tags(repo: &Repository) -> Result<Vec<TagInfo>> {
 /// 設定されていない場合は `push_url` を `None` にして返す（UI での表示を簡潔にするため）。
 pub fn list_remotes(repo: &Repository) -> Result<Vec<RemoteInfo>> {
     let names = repo.remotes().map_err(|e| {
-        CoreError::Git(format!("リモート一覧の取得に失敗しました: {}", e.message()))
+        CoreError::Git(format!(
+            "リモート一覧の取得に失敗しました: {}",
+            describe_git2_error(&e)
+        ))
     })?;
 
     let mut out = Vec::new();
@@ -1385,7 +1388,7 @@ pub fn blame_file(repo: &Repository, path: &str) -> Result<Vec<BlameHunk>> {
     let blame = repo.blame_file(rel, None).map_err(|e| {
         CoreError::Git(format!(
             "ファイル「{path}」の変更履歴（blame）を取得できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })?;
 
@@ -1464,7 +1467,8 @@ pub fn read_gitignore(repo: &Repository) -> Result<Option<String>> {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CoreError::Git(format!(
-            ".gitignore を読み込めませんでした: {e}"
+            ".gitignore を読み込めませんでした: {}",
+            describe_io_error(&e)
         ))),
     }
 }

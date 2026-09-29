@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use git2::{BranchType, Oid, Repository};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CoreError, Result};
+use crate::error::{describe_io_error, CoreError, Result};
 use crate::model::{BisectStatus, CommitInfo};
 use crate::repo;
 use crate::safety::OperationKind;
@@ -74,7 +74,8 @@ fn load_session(repo: &Repository) -> Result<Option<BisectSession>> {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CoreError::Git(format!(
-            "Bisect セッションの読み取りに失敗しました: {e}"
+            "Bisect セッションの読み取りに失敗しました: {}",
+            describe_io_error(&e)
         ))),
     }
 }
@@ -84,10 +85,18 @@ fn save_session(repo: &Repository, session: &BisectSession) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(session)
         .map_err(|e| CoreError::Git(format!("Bisect セッションの保存に失敗しました: {e}")))?;
     let tmp = path.with_file_name("noobgit_bisect.json.tmp");
-    fs::write(&tmp, bytes)
-        .map_err(|e| CoreError::Git(format!("Bisect セッションの保存に失敗しました: {e}")))?;
-    fs::rename(&tmp, &path)
-        .map_err(|e| CoreError::Git(format!("Bisect セッションの保存に失敗しました: {e}")))?;
+    fs::write(&tmp, bytes).map_err(|e| {
+        CoreError::Git(format!(
+            "Bisect セッションの保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        CoreError::Git(format!(
+            "Bisect セッションの保存に失敗しました: {}",
+            describe_io_error(&e)
+        ))
+    })?;
     Ok(())
 }
 
@@ -99,7 +108,8 @@ pub(crate) fn clear_session(repo: &Repository) -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(CoreError::Git(format!(
-            "Bisect セッションの削除に失敗しました: {e}"
+            "Bisect セッションの削除に失敗しました: {}",
+            describe_io_error(&e)
         ))),
     }
 }

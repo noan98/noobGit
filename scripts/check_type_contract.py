@@ -14,6 +14,7 @@ check_handlers.py と同じ方針: Python 標準ライブラリのみ、正規�
   - ChangeKind     (core/src/model.rs)    <-> src/api.ts
   - DiffLineKind   (core/src/model.rs)    <-> src/api.ts
   - NetworkErrorKind (core/src/error.rs)  <-> src/api.ts
+  - LocalErrorKind   (core/src/error.rs)  <-> src/api.ts
 """
 import re
 import sys
@@ -31,6 +32,7 @@ RUST_FILES = {
     "ChangeKind":       ROOT / "core" / "src" / "model.rs",
     "DiffLineKind":     ROOT / "core" / "src" / "model.rs",
     "NetworkErrorKind": ROOT / "core" / "src" / "error.rs",
+    "LocalErrorKind":   ROOT / "core" / "src" / "error.rs",
 }
 
 TS_FILE = ROOT / "src" / "api.ts"
@@ -146,6 +148,7 @@ def main() -> None:
         "ChangeKind",
         "DiffLineKind",
         "NetworkErrorKind",
+        "LocalErrorKind",
     ]
 
     all_ok = True

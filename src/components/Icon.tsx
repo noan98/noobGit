@@ -18,6 +18,10 @@
  */
 import {
   IconAlertTriangle,
+  IconDatabaseExclamation,
+  IconDatabaseOff,
+  IconLockSquare,
+  IconShieldOff,
   IconArchive,
   IconArrowBackUp,
   IconArrowDown,
@@ -214,6 +218,12 @@ const ICONS = {
   sshKey: IconKey,
   remoteNotFound: IconWorldSearch,
   timeout: IconClock,
+
+  // --- ローカルエラー診断 (#204) ---------------------------------------
+  lockBusy: IconLockSquare,
+  permissionDenied: IconShieldOff,
+  repoCorrupted: IconDatabaseExclamation,
+  diskFull: IconDatabaseOff,
 
   // --- 表示テーマ ------------------------------------------------------
   themeLight: IconSun,

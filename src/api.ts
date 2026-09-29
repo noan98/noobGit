@@ -264,7 +264,7 @@ export type PullOutcome =
 // #167 進捗フィードバック: fetch / pull / push の通信段階（core の
 // NetworkProgressStage に対応）。この型は check_type_contract.py の自動検証
 // 対象ではない（対象は OperationKind / RiskLevel / ChangeKind / DiffLineKind /
-// NetworkErrorKind のみ）ため、core/src/model.rs の enum を変更したら
+// NetworkErrorKind / LocalErrorKind のみ）ため、core/src/model.rs の enum を変更したら
 // ここも必ず手動で同期すること。
 export type NetworkProgressStage =
   | "connecting"
@@ -315,6 +315,25 @@ export type NetworkErrorKind =
   | "non_fast_forward"
   | "timeout"
   | "other";
+
+// ローカル操作（ステージ・コミット・チェックアウトなど）のエラー種別
+// （core の LocalErrorKind に対応。#204）。snake_case のリテラルで届く。
+export type LocalErrorKind =
+  | "lock_busy"
+  | "permission_denied"
+  | "repo_corrupted"
+  | "disk_full"
+  | "other";
+
+// ローカル操作エラーの初心者向け解説（core の LocalErrorExplanation に対応。#204）。
+// steps は上から順に試す解決手順。
+export interface LocalErrorExplanation {
+  kind: LocalErrorKind;
+  title: string;
+  what: string;
+  why: string;
+  steps: string[];
+}
 
 export interface Identity {
   name: string | null;
@@ -633,6 +652,12 @@ export const api = {
   // fetch / pull / push が reject されたとき、その文字列をここに渡して種別を得る。
   classifyNetworkError: (message: string) =>
     invoke<NetworkErrorKind>("classify_network_error_cmd", { message }),
+
+  // #204 ローカルエラーの日本語化: 操作が reject されたときの文字列を渡すと、
+  // noobGit が日本語に包んだローカルエラー（ロック競合・権限・破損・ディスク満杯・
+  // その他）なら解説を返す。それ以外（ネットワーク系など）は null。
+  explainLocalError: (message: string) =>
+    invoke<LocalErrorExplanation | null>("explain_local_error_cmd", { message }),
 
   // #69 機密ファイル検出: 指定パスが機密性の高いファイルかどうかを検出する。
   // 機密ファイルが含まれる場合は SensitiveWarning の配列を返す（空なら問題なし）。

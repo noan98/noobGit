@@ -7,7 +7,9 @@ use git2::{
     RemoteCallbacks, Repository, ResetType, StashFlags,
 };
 
-use crate::error::{CoreError, Result};
+use crate::error::{
+    describe_git2_error, describe_git2_error_keep_unknown, describe_io_error, CoreError, Result,
+};
 use crate::model::{
     BulkDeleteBranchesOutcome, ChangeKind, CloneOutcome, CommitInfo, FetchOutcome, FileChange,
     GitignorePatternCheck, GitignoreSuggestion, MergeOutcome, NetworkProgress,
@@ -187,7 +189,7 @@ pub fn stage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Resu
         .map_err(|e| {
             CoreError::Git(format!(
                 "変更の塊（hunk）のステージに失敗しました: {}",
-                e.message()
+                describe_git2_error(&e)
             ))
         })?;
 
@@ -314,7 +316,7 @@ pub fn unstage_hunk(repo: &Repository, file_path: &str, hunk_header: &str) -> Re
     .map_err(|e| {
         CoreError::Git(format!(
             "変更の塊（hunk）のアンステージに失敗しました: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })?;
 
@@ -741,8 +743,12 @@ pub fn discard_path(repo: &Repository, path: &str) -> Result<()> {
         }
         let full = workdir.join(rel);
         if full.exists() {
-            std::fs::remove_file(&full)
-                .map_err(|e| CoreError::Git(format!("ファイルを削除できませんでした: {e}")))?;
+            std::fs::remove_file(&full).map_err(|e| {
+                CoreError::Git(format!(
+                    "ファイルを削除できませんでした: {}",
+                    describe_io_error(&e)
+                ))
+            })?;
         }
     }
     Ok(())
@@ -782,7 +788,8 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
             return Err(CoreError::Git(format!(
-                ".gitignore を読み込めませんでした: {e}"
+                ".gitignore を読み込めませんでした: {}",
+                describe_io_error(&e)
             )))
         }
     };
@@ -800,8 +807,12 @@ pub fn add_to_gitignore(repo: &Repository, pattern: &str) -> Result<()> {
     next.push_str(pattern);
     next.push('\n');
 
-    std::fs::write(&path, next)
-        .map_err(|e| CoreError::Git(format!(".gitignore に書き込めませんでした: {e}")))?;
+    std::fs::write(&path, next).map_err(|e| {
+        CoreError::Git(format!(
+            ".gitignore に書き込めませんでした: {}",
+            describe_io_error(&e)
+        ))
+    })?;
     Ok(())
 }
 
@@ -1039,7 +1050,10 @@ pub fn stash_save(repo: &mut Repository, message: &str) -> Result<()> {
         if e.code() == git2::ErrorCode::NotFound {
             CoreError::Blocked("退避できる変更がありません。".to_string())
         } else {
-            CoreError::Git(format!("退避（stash）に失敗しました: {}", e.message()))
+            CoreError::Git(format!(
+                "退避（stash）に失敗しました: {}",
+                describe_git2_error(&e)
+            ))
         }
     })?;
 
@@ -1126,8 +1140,12 @@ pub fn stash_drop(repo: &mut Repository, stash_id: &str) -> Result<()> {
                 .to_string(),
         )
     })?;
-    repo.stash_drop(index)
-        .map_err(|e| CoreError::Git(format!("退避の削除に失敗しました: {}", e.message())))
+    repo.stash_drop(index).map_err(|e| {
+        CoreError::Git(format!(
+            "退避の削除に失敗しました: {}",
+            describe_git2_error(&e)
+        ))
+    })
 }
 
 /// 退避の一覧を返す（0 がいちばん新しい退避）。各退避の変更ファイル数も付ける。
@@ -1252,7 +1270,7 @@ fn map_stash_restore_err(e: git2::Error) -> CoreError {
             "退避を取り出すとコンフリクト（競合）が起きるため、安全のため中断しました。先にいまの変更を整理してから取り出してください。"
                 .to_string(),
         ),
-        _ => CoreError::Git(format!("退避の取り出しに失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!("退避の取り出しに失敗しました: {}", describe_git2_error(&e))),
     }
 }
 
@@ -1575,7 +1593,7 @@ pub fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
     repo.remote(name, url).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」を追加できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })?;
     Ok(())
@@ -1595,7 +1613,7 @@ pub fn remove_remote(repo: &Repository, name: &str) -> Result<()> {
     repo.remote_delete(name).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」を削除できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })
 }
@@ -1620,7 +1638,7 @@ pub fn set_remote_url(repo: &Repository, name: &str, url: &str) -> Result<()> {
     repo.remote_set_url(name, url).map_err(|e| {
         CoreError::InvalidInput(format!(
             "リモート「{name}」の URL を変更できませんでした: {}",
-            e.message()
+            describe_git2_error(&e)
         ))
     })
 }
@@ -1732,9 +1750,12 @@ pub fn fetch_with_options(
             .map(|s| s.to_string())
             .collect();
         // refspec が空のリモートでは libgit2 が既定の refspec を補う。
-        remote
-            .fetch(&refspecs, Some(&mut fo), None)
-            .map_err(|e| CoreError::Git(format!("取得（fetch）に失敗しました: {}", e.message())))?;
+        remote.fetch(&refspecs, Some(&mut fo), None).map_err(|e| {
+            CoreError::Git(format!(
+                "取得（fetch）に失敗しました: {}",
+                describe_git2_error_keep_unknown(&e)
+            ))
+        })?;
     }
 
     // fetch 後の `refs/remotes/<remote_name>/*` との差分が、実際に整理された追跡ブランチ。
@@ -2045,7 +2066,7 @@ pub fn cherry_pick(repo: &Repository, oid: &str) -> Result<CommitInfo> {
         .map_err(|e| {
             CoreError::Git(format!(
                 "コピー（cherry-pick）に失敗しました: {}",
-                e.message()
+                describe_git2_error(&e)
             ))
         })?;
 
@@ -2209,7 +2230,7 @@ fn map_push_error(e: git2::Error) -> CoreError {
             "リモートへの送信が拒否されました（非fast-forward）。先に取り込み（pull）をしてから、もう一度送信してください。"
                 .to_string(),
         ),
-        _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!("リモートへの送信に失敗しました: {}", describe_git2_error_keep_unknown(&e))),
     }
 }
 
@@ -2293,7 +2314,12 @@ pub fn clone_with_progress(
             )));
         }
         let has_entries = std::fs::read_dir(dest_path)
-            .map_err(|e| CoreError::Git(format!("保存先フォルダを確認できませんでした: {e}")))?
+            .map_err(|e| {
+                CoreError::Git(format!(
+                    "保存先フォルダを確認できませんでした: {}",
+                    describe_io_error(&e)
+                ))
+            })?
             .next()
             .is_some();
         if has_entries {
@@ -2381,7 +2407,10 @@ fn map_clone_error(e: git2::Error) -> CoreError {
         ErrorCode::NotFound => CoreError::InvalidInput(
             "指定したリポジトリが見つかりませんでした。URL を確認してください。".to_string(),
         ),
-        _ => CoreError::Git(format!("クローンに失敗しました: {}", e.message())),
+        _ => CoreError::Git(format!(
+            "クローンに失敗しました: {}",
+            describe_git2_error_keep_unknown(&e)
+        )),
     }
 }
 
@@ -2461,8 +2490,9 @@ pub fn merge_branch(repo: &Repository, branch_name: &str) -> Result<MergeOutcome
     }
 
     // 通常マージ: インデックスと作業ツリーにマージ結果を適用する。
-    repo.merge(&[&annotated], None, None)
-        .map_err(|e| CoreError::Git(format!("マージに失敗しました: {}", e.message())))?;
+    repo.merge(&[&annotated], None, None).map_err(|e| {
+        CoreError::Git(format!("マージに失敗しました: {}", describe_git2_error(&e)))
+    })?;
 
     // コンフリクトがあれば、リポジトリをマージ中の状態のまま返す。
     // フロントエンドは status を取り直して ConflictWizard に誘導する。
@@ -2574,17 +2604,28 @@ pub fn restore_file_from_commit(repo: &Repository, commit_id: &str, file_path: &
         .ok_or_else(|| CoreError::Git("作業ツリーがありません。".to_string()))?;
     let dest = workdir.join(rel);
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CoreError::Git(format!("ディレクトリを作成できませんでした: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CoreError::Git(format!(
+                "ディレクトリを作成できませんでした: {}",
+                describe_io_error(&e)
+            ))
+        })?;
     }
-    std::fs::write(&dest, content)
-        .map_err(|e| CoreError::Git(format!("ファイルを書き込めませんでした: {e}")))?;
+    std::fs::write(&dest, content).map_err(|e| {
+        CoreError::Git(format!(
+            "ファイルを書き込めませんでした: {}",
+            describe_io_error(&e)
+        ))
+    })?;
 
     // インデックスにもステージする。
     let mut index = repo.index()?;
-    index
-        .add_path(rel)
-        .map_err(|e| CoreError::Git(format!("ステージに失敗しました: {}", e.message())))?;
+    index.add_path(rel).map_err(|e| {
+        CoreError::Git(format!(
+            "ステージに失敗しました: {}",
+            describe_git2_error(&e)
+        ))
+    })?;
     index.write()?;
 
     // undo: ステージを戻せるよう UnstagePath を記録する（ベストエフォート）。
