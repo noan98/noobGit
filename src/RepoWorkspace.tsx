@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event"; // #199 ファイルシステム監視
 import {
   api,
   isSwitchBlockedByChanges,
@@ -30,6 +31,7 @@ import {
   type IdentityScope,
   type LfsCandidate,
   type LogFilter,
+  type RefLabel,
   type MergedBranchInfo,
   type NetworkErrorKind,
   type LocalErrorExplanation,
@@ -154,6 +156,35 @@ function markSubjectHintSeen(): void {
   } catch {
     // 保存できなくても表示は続行する（次回また出るだけ）。
   }
+}
+
+// #320 履歴の「全ブランチ / 現在のブランチのみ」の選択を per-viewer で記憶する
+// localStorage キー。読み書きとも失敗しても致命的ではないので try/catch で保護する。
+const HISTORY_ALL_BRANCHES_KEY = "noobgit_history_all_branches";
+
+// 既定は全ブランチ表示（分岐の見当をつけやすくするため）。明示的に "0" を保存した
+// ときだけ現在のブランチのみにする。
+function loadAllBranchesPref(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_ALL_BRANCHES_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function saveAllBranchesPref(value: boolean): void {
+  try {
+    localStorage.setItem(HISTORY_ALL_BRANCHES_KEY, value ? "1" : "0");
+  } catch {
+    // 保存できなくても表示は続行する（次回また既定に戻るだけ）。
+  }
+}
+
+// 検索条件なし・表示範囲だけ記憶済みの選択に従う、履歴取得の初期フィルタ。
+// 全ブランチのときはリモート追跡ブランチも起点に含める。
+function defaultLogFilter(): LogFilter {
+  const all = loadAllBranchesPref();
+  return { all_branches: all, include_remotes: all };
 }
 
 // 取得・取り込みの既定リモート名。多くのリポジトリはクローン元を origin と呼ぶ。
@@ -299,6 +330,8 @@ export function RepoWorkspace({
   // #169 保護ブランチの設定一覧（git config `noobgit.protectedBranches`）。
   const [protectedBranches, setProtectedBranches] = useState<string[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
+  // #320 コミット id → ブランチ名・タグ・HEAD のラベル一覧（履歴グラフの各行に表示）。
+  const [commitRefs, setCommitRefs] = useState<Record<string, RefLabel[]>>({});
   const [hasMoreCommits, setHasMoreCommits] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [undoInfo, setUndoInfo] = useState<UndoEntry | null>(null);
@@ -352,19 +385,21 @@ export function RepoWorkspace({
   ], riskRefreshToken);
 
   // 履歴の絞り込み条件。空オブジェクトは「条件なし（全件）」を表す。
-  const [logFilter, setLogFilter] = useState<LogFilter>({});
+  const [logFilter, setLogFilter] = useState<LogFilter>(defaultLogFilter);
   // 履歴の検索（再取得）中フラグ。HistoryPanel のスピナー表示に使う。
   const [searching, setSearching] = useState(false);
 
   // refresh / loadMore のクロージャから常に最新の条件を参照するための ref。
-  const logFilterRef = useRef<LogFilter>({});
+  const logFilterRef = useRef<LogFilter>(logFilter);
   useEffect(() => {
     logFilterRef.current = logFilter;
   }, [logFilter]);
 
-  // 条件が一つでも設定されていれば true（getLog に渡す filter を絞るかの判断に使う）。
+  // getLog に filter を渡す必要があれば true。検索条件のほか、全ブランチ表示も
+  // 「HEAD 以外から辿る」指定なので渡す必要がある（#320）。
   function hasFilter(f: LogFilter): boolean {
     return (
+      f.all_branches === true ||
       (f.message != null && f.message !== "") ||
       (f.author != null && f.author !== "") ||
       f.since != null ||
@@ -744,6 +779,10 @@ export function RepoWorkspace({
         }
         if (parts.stash) tasks.push(api.getStashes(repoPath).then(setStashes));
         if (parts.tags) tasks.push(api.listTags(repoPath).then(setTags));
+        // #320 ラベルは履歴・ブランチ・タグのどれが変わっても付け替わる。
+        if (parts.log || parts.branches || parts.tags) {
+          tasks.push(api.getCommitRefs(repoPath).then(setCommitRefs));
+        }
         await Promise.all(tasks);
         setError(null);
         return true;
@@ -1246,7 +1285,7 @@ export function RepoWorkspace({
 
   // 履歴パネルからの検索。条件を保存し、ページングをリセットして先頭から取り直す。
   // 検索中は HistoryPanel にスピナーを出すため searching を立てる。
-  const runSearch = useCallback(
+  const applyLogFilter = useCallback(
     (filter: LogFilter) => {
       // 条件が変わらないなら何もしない（初回マウント時の空→空の無駄打ちも防ぐ）。
       const prev = logFilterRef.current;
@@ -1254,7 +1293,9 @@ export function RepoWorkspace({
         (prev.message ?? "") === (filter.message ?? "") &&
         (prev.author ?? "") === (filter.author ?? "") &&
         (prev.since ?? null) === (filter.since ?? null) &&
-        (prev.until ?? null) === (filter.until ?? null);
+        (prev.until ?? null) === (filter.until ?? null) &&
+        (prev.all_branches ?? false) === (filter.all_branches ?? false) &&
+        (prev.include_remotes ?? false) === (filter.include_remotes ?? false);
       if (same) return;
       // 新しい条件を即座に ref へ反映（refresh のログ取得が最新条件を見るように）。
       logFilterRef.current = filter;
@@ -1283,6 +1324,29 @@ export function RepoWorkspace({
     },
     [repoPath, releaseLogCursor],
   );
+
+  // 履歴パネルの検索ボックスからの条件変更。「全ブランチ」の選択はここでは変えず、
+  // 現在の選択を保ったまま検索条件だけ差し替える。
+  const runSearch = useCallback(
+    (filter: LogFilter) => {
+      const prev = logFilterRef.current;
+      applyLogFilter({
+        ...filter,
+        all_branches: prev.all_branches,
+        include_remotes: prev.include_remotes,
+      });
+    },
+    [applyLogFilter],
+  );
+
+  // #320 「全ブランチ / 現在のブランチのみ」の切り替え。選択は localStorage に記憶し、
+  // 検索条件はそのままに先頭ページから取り直す。
+  const toggleAllBranches = useCallback(() => {
+    const prev = logFilterRef.current;
+    const next = !(prev.all_branches ?? false);
+    saveAllBranchesPref(next);
+    applyLogFilter({ ...prev, all_branches: next, include_remotes: next });
+  }, [applyLogFilter]);
 
   // #201 undo の実行。適用可否を先に調べ、履歴が進んでいて新しい作業も巻き戻る
   // （risky）場合は確認ダイアログを挟む。適用不能なら core 側が履歴から整理してエラーを返す。
@@ -1424,6 +1488,53 @@ export function RepoWorkspace({
     onPush: doPushCurrentBranch,
     onHelp: () => setShowShortcuts(true),
   });
+
+  // #199 ファイルシステム監視: エディタや外部の Git による変更を検知したら、既存の
+  // refresh をそのまま呼んで全パネルを最新にする。監視・デバウンス・noobGit 自身の
+  // 操作による変更の抑制はバックエンド（src-tauri/src/watcher.rs）が行うので、
+  // ここでは通知を受けて再読み込みするだけ。
+  // 確認ダイアログの表示中に外部の変更があった場合は、古い状態を前提にした確認の
+  // まま実行されないよう、ダイアログを閉じて再確認を促す。
+  const guardOpenRef = useRef(false);
+  useEffect(() => {
+    guardOpenRef.current = guard !== null;
+  }, [guard]);
+  const onExternalChangeRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    onExternalChangeRef.current = () => {
+      if (guardOpenRef.current) {
+        setGuard(null);
+        const msg =
+          "リポジトリが外部で変更されました。内容を確認し直してください。";
+        setNotice(msg);
+        showToast(msg, "warning");
+      }
+      void refresh();
+    };
+  }, [refresh]);
+  useEffect(() => {
+    if (!opened || !repoPath) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    // 監視はあくまで補助機能。開始・購読に失敗しても通常の操作は続けられる。
+    void (async () => {
+      try {
+        const fn = await listen<{ repo_path: string }>("repo-changed", (ev) => {
+          if (ev.payload.repo_path === repoPath) onExternalChangeRef.current();
+        });
+        if (disposed) fn();
+        else unlisten = fn;
+        await api.watchRepo(repoPath);
+      } catch {
+        // 監視できない環境（テスト・ブラウザ単体など）では何もしない。
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void Promise.resolve(api.unwatchRepo(repoPath)).catch(() => {});
+    };
+  }, [opened, repoPath]);
 
   // #105 コマンドパレット: Ctrl+K / ⌘K でパレットを開く。
   // テキスト入力中でも開いてよい（issue 要件）ため、inText チェックは行わない。
@@ -2160,8 +2271,10 @@ export function RepoWorkspace({
               setCommits([]);
               setHasMoreCommits(false);
               // 履歴の絞り込みもリセットする。
-              setLogFilter({});
-              logFilterRef.current = {};
+              const resetFilter = defaultLogFilter();
+              setLogFilter(resetFilter);
+              logFilterRef.current = resetFilter;
+              setCommitRefs({});
               setStashes([]);
               setTags([]);
               setSelectedFile(null);
@@ -2749,6 +2862,9 @@ export function RepoWorkspace({
                 <HistoryPanel
                   commits={commits}
                   currentBranch={status?.branch ?? null}
+                  allBranches={logFilter.all_branches === true}
+                  onToggleAllBranches={toggleAllBranches}
+                  commitRefs={commitRefs}
                   hasMore={hasMoreCommits}
                   loadingMore={loadingMore}
                   onLoadMore={loadMore}

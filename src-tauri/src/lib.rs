@@ -18,13 +18,16 @@ use noobgit_core::model::{
     BisectStatus, BlameHunk, BranchGraph, BranchInfo, BulkDeleteBranchesOutcome, CloneOutcome,
     CommitInfo, ConflictFile, FetchOutcome, FileChange, FileDiff, GitignorePatternCheck,
     GitignoreSuggestion, ImpactPreview, ImpactRequest, LfsCandidate, LogPage, MergeOutcome,
-    MergedBranchInfo, NetworkProgress, PullOutcome, ReflogEntry, RemoteInfo, RepoStatus,
+    MergedBranchInfo, NetworkProgress, PullOutcome, RefLabel, ReflogEntry, RemoteInfo, RepoStatus,
     SensitiveWarning, StashInfo, StashRestoreOutcome, SwitchWithStashOutcome, TagInfo,
 };
 use noobgit_core::repo::{LogCursorStore, LogFilter};
 use noobgit_core::safety::{assess, OperationKind, RiskAssessment, SafetyContext};
 use noobgit_core::undo::{UndoApplicability, UndoEntry};
 use noobgit_core::{bisect, identity, impact, ops, repo, undo};
+
+mod watcher;
+use watcher::WatcherRegistry;
 
 /// 書き込み系コマンドを 1 つずつ順番に実行するためのロック。
 ///
@@ -39,8 +42,25 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// [`WRITE_LOCK`] を取得する。前の書き込みがパニックしてロックが汚染されて
 /// いても、以後の操作をすべて失敗させないよう、そのまま使い続ける
 /// （守っているデータは無く、順番に実行することだけが目的のため）。
-fn write_lock() -> std::sync::MutexGuard<'static, ()> {
-    WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+///
+/// 返すガードは、書き込みの開始・終了をファイルシステム監視（#199）に知らせる。
+/// これにより、noobGit 自身の操作で起きたファイル変更を外部の変更と取り違えて
+/// 二重に再読み込みしないようにしている。
+fn write_lock() -> WriteGuard {
+    let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    watcher::write_started();
+    WriteGuard { _guard: guard }
+}
+
+/// [`write_lock`] が返すガード。drop（＝ロック解放）時に書き込み完了を記録する。
+struct WriteGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        watcher::write_finished();
+    }
 }
 
 fn open(repo_path: &str) -> Result<Repository, String> {
@@ -844,6 +864,15 @@ fn list_tags(repo_path: String) -> Result<Vec<TagInfo>, String> {
     repo::list_tags(&r).map_err(|e| e.to_string())
 }
 
+/// コミット id → そのコミットを指すブランチ名・タグ・HEAD の一覧（履歴グラフのラベル用, #320）。
+#[tauri::command(async)]
+fn get_commit_refs(
+    repo_path: String,
+) -> Result<std::collections::HashMap<String, Vec<RefLabel>>, String> {
+    let r = open(&repo_path)?;
+    repo::commit_refs(&r).map_err(|e| e.to_string())
+}
+
 /// コミットに目印（タグ）を付ける。`target` 省略時は HEAD、`message` 省略時は軽量タグ。
 #[tauri::command(async)]
 fn create_tag(
@@ -1098,6 +1127,27 @@ fn bisect_status(repo_path: String) -> Result<Option<BisectStatus>, String> {
     bisect::bisect_status(&r).map_err(|e| e.to_string())
 }
 
+/// リポジトリのファイルシステム監視を開始する（#199）。外部での変更を検知すると
+/// イベント `repo-changed`（ペイロード: `{ repo_path }`）が送られる。
+#[tauri::command(async)]
+fn watch_repo(
+    app: tauri::AppHandle,
+    watchers: tauri::State<'_, WatcherRegistry>,
+    repo_path: String,
+) -> Result<(), String> {
+    watchers.watch(app, repo_path)
+}
+
+/// リポジトリのファイルシステム監視を止める（タブを閉じたとき）。
+#[tauri::command(async)]
+fn unwatch_repo(
+    watchers: tauri::State<'_, WatcherRegistry>,
+    repo_path: String,
+) -> Result<(), String> {
+    watchers.unwatch(&repo_path);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1107,6 +1157,8 @@ pub fn run() {
         // Git ロジックは `noobgit-core::repo::LogCursorStore` 側に閉じており、
         // ここでは `Mutex` に包んでプロセス内で保持するだけ。
         .manage(Mutex::new(LogCursorStore::new()))
+        // タブごとのファイルシステム監視（#199）。
+        .manage(WatcherRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_branches,
@@ -1167,6 +1219,7 @@ pub fn run() {
             revert_commit,
             merge_branch,
             list_tags,
+            get_commit_refs,
             create_tag,
             delete_tag,
             list_remotes,
@@ -1190,6 +1243,8 @@ pub fn run() {
             bisect_mark,
             bisect_reset,
             bisect_status,
+            watch_repo,
+            unwatch_repo,
         ])
         .run(tauri::generate_context!())
         .expect("noobGit の起動に失敗しました");
