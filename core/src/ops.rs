@@ -849,9 +849,9 @@ pub(crate) fn validate_rebase_plan<'r>(
 /// 範囲の最古コミットの親を土台に、各コミットの変更をメモリ上の cherry-pick で順に重ねる。
 /// 途中でコンフリクトが起きたら、リポジトリ・インデックス・作業ツリーを**一切変えずに**
 /// [`CoreError::Blocked`] で中断する（コンフリクトを解消しながら続行することは v1 では扱わない）。
-/// ステージ済みの変更があるとき、および未コミットの変更が作り直しの結果と同じファイルに
-/// 触れるときも、何も変えずに Blocked にする（[`cherry_pick`] と同じ方針で、作業ツリーへの反映は
-/// 安全チェックアウト）。author は元コミットを引き継ぎ、committer は現在の identity にする。
+/// 追跡ファイルに未コミットの変更（ステージ済み・未ステージ）があるときも、何も変えずに Blocked にする
+/// （undo が hard reset のため、元からあった変更を巻き込んで消さないように。未追跡ファイルは対象外。
+/// 作業ツリーへの反映は安全チェックアウト）。author は元コミットを引き継ぎ、committer は現在の identity にする。
 ///
 /// 成功時は、元の HEAD への hard reset を undo に記録する。
 pub fn rebase_plan(repo: &Repository, plan: &[RebaseStep]) -> Result<()> {
@@ -865,11 +865,17 @@ pub fn rebase_plan(repo: &Repository, plan: &[RebaseStep]) -> Result<()> {
     })?;
 
     let original_head = v.head.id();
+    // 追跡ファイルに未コミットの変更（ステージ済み・未ステージのどちらも）があれば何も変えずに中断する。
+    // undo は元 HEAD への hard reset なので、rebase 前から在った未コミット変更が undo で
+    // 消える事故を防ぐため。未追跡ファイルは reset --hard で消えず、作り直しでも衝突しない限り
+    // 影響しないので対象外にする（衝突するときは後段の safe チェックアウトが Blocked にする）。
     let head_tree = v.head.tree()?;
-    let staged = repo.diff_tree_to_index(Some(&head_tree), None, None)?;
-    if staged.deltas().len() > 0 {
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.include_untracked(false);
+    let dirty = repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts))?;
+    if dirty.deltas().len() > 0 {
         return Err(CoreError::Blocked(
-            "ステージ済みの変更があるため、履歴を整理できません。先にコミットするか退避(stash)してください。"
+            "並べ替え・削除の前に、未コミットの変更をコミットするか退避（stash）してください。"
                 .to_string(),
         ));
     }
@@ -7282,14 +7288,38 @@ mod tests {
         }
 
         #[test]
-        fn unstaged_change_to_unrelated_file_is_kept() {
+        fn unstaged_change_blocks_without_touching_anything() {
             let (fx, [_c1, c2, c3, c4]) = four();
             fx.write_file("a.txt", "local edit\n");
             let repo = fx.open();
-            rebase_plan(&repo, &[pick(c2), pick(c4), drop_(c3)]).unwrap();
+            let head = repo.head().unwrap().target().unwrap();
+            let r = rebase_plan(&repo, &[pick(c2), pick(c4), drop_(c3)]);
+            assert!(matches!(r, Err(CoreError::Blocked(_))), "{r:?}");
+            assert_eq!(repo.head().unwrap().target().unwrap(), head);
             assert_eq!(
                 std::fs::read_to_string(fx.path().join("a.txt")).unwrap(),
                 "local edit\n"
+            );
+            assert!(undo_last(&repo).is_err());
+        }
+
+        #[test]
+        fn undo_right_after_restores_head_index_and_worktree() {
+            let (fx, [_c1, c2, c3, c4]) = four();
+            fx.write_file("untracked.txt", "u\n");
+            let repo = fx.open();
+            let head = repo.head().unwrap().target().unwrap();
+            let index_before = repo.index().unwrap().write_tree().unwrap();
+            rebase_plan(&repo, &[pick(c2), drop_(c3), pick(c4)]).unwrap();
+            undo_last(&repo).unwrap();
+            let repo = fx.open();
+            assert_eq!(repo.head().unwrap().target().unwrap(), head);
+            assert_eq!(repo.index().unwrap().write_tree().unwrap(), index_before);
+            assert!(fx.path().join("c.txt").exists());
+            assert!(fx.path().join("untracked.txt").exists());
+            assert_eq!(
+                std::fs::read_to_string(fx.path().join("c.txt")).unwrap(),
+                "c.txt\n"
             );
         }
 
