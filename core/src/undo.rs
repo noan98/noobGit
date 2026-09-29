@@ -59,6 +59,11 @@ pub enum UndoAction {
     },
     /// 作成したタグを削除して取り消す。既に削除済みなら何もしない（冪等）。
     DeleteTag { name: String },
+    /// detached HEAD の救出（ブランチ作成＋そこへ乗り換え）を取り消し、元の detached HEAD
+    /// （`commit`）に戻してブランチ `branch` を削除する。ブランチが救出後に進んでいる
+    /// （先端が `commit` でない）場合は、コミットを失わせないよう何もせず中断する。
+    /// 既に取り消し済み（ブランチが無い）なら何もしない（冪等）。
+    RestoreDetachedHead { commit: String, branch: String },
 }
 
 /// 取り消し履歴の1エントリ。
@@ -368,6 +373,24 @@ fn apply(repo: &Repository, action: &UndoAction) -> Result<()> {
             // 破棄に失敗しても、根底の HEAD 復元は既に成功しているので undo 自体は
             // 成功として扱う（ベストエフォート方針）。
             let _ = crate::bisect::clear_session(repo);
+        }
+        UndoAction::RestoreDetachedHead { commit, branch } => {
+            // 既に取り消し済み（ブランチが無い）なら何もしない（冪等）。
+            if let Ok(mut b) = repo.find_branch(branch, git2::BranchType::Local) {
+                let oid = git2::Oid::from_str(commit)?;
+                // 救出後にそのブランチへコミットを積んでいたら、消すとコミットを見失うので中断。
+                if b.get().target() != Some(oid) {
+                    return Err(CoreError::Blocked(format!(
+                        "ブランチ「{branch}」にはその後のコミットがあるため、取り消せません。"
+                    )));
+                }
+                // 先に HEAD を detached に戻してからブランチを消す（HEAD 中のブランチは消せない）。
+                // 先端が同じコミットなので、作業ツリー・インデックスは触らない。
+                if b.is_head() {
+                    repo.set_head_detached(oid)?;
+                }
+                b.delete()?;
+            }
         }
         UndoAction::DeleteTag { name } => {
             // 既に削除済みなら何もしない（冪等）。

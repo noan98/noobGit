@@ -62,6 +62,7 @@ import { ConflictWizard } from "./components/ConflictWizard";
 import { StashPopFollowUp } from "./components/StashPopFollowUp";
 import { RebaseWizard } from "./components/RebaseWizard";
 import { BisectWizard } from "./components/BisectWizard"; // #184 Bisect
+import { DetachedHeadBanner } from "./components/DetachedHeadBanner"; // #197 detached HEAD
 import {
   DiffPanel,
   type DiffSelection,
@@ -231,6 +232,9 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   bisect_reset: FULL_REFRESH,
   // クローンはタブの外（WelcomeScreen）で完結する操作で、このタブの状態には影響しない。
   clone: {},
+  // #197 detached HEAD の救出は HEAD がブランチへ移るので status・ブランチ関係を取り直す。
+  // undo も積まれる。
+  rescue_detached_head: { status: true, branches: true, log: true, undo: true },
 };
 
 interface Guard {
@@ -1102,12 +1106,34 @@ export function RepoWorkspace({
       setShowIdentity(true);
       return;
     }
-    void exec(
+    const run = async () => {
+      await api.commit(repoPath, msg);
+      setCommitMsg("");
+    };
+    // #197 detached HEAD 中のコミットはブランチに属さず見失いやすいので、警告を挟む。
+    if (status?.head_detached) {
+      void guarded("コミット（detached HEAD）", "commit", async () => {
+        await run();
+        showToast("コミットしました。", "success");
+      });
+      return;
+    }
+    void exec(run, {
+      successMsg: "コミットしました。",
+      refresh: REFRESH_BY_OP.commit,
+    });
+  }
+
+  // #197 detached HEAD: 今の位置に新しいブランチを作って安全にする（Safe 判定なので直接実行）。
+  function doRescueDetachedHead(name: string) {
+    void guarded(
+      "ここから新しいブランチを作る",
+      "rescue_detached_head",
       async () => {
-        await api.commit(repoPath, msg);
-        setCommitMsg("");
+        await api.rescueDetachedHead(repoPath, name);
+        showToast(`ブランチ「${name}」を作って安全にしました。`, "success");
       },
-      { successMsg: "コミットしました。", refresh: REFRESH_BY_OP.commit },
+      name,
     );
   }
 
@@ -2057,6 +2083,22 @@ export function RepoWorkspace({
             閉じる
           </button>
         </div>
+      )}
+
+      {/* #197 detached HEAD: 状態の説明と復帰アクション。Bisect 中は detached が正常なので出さない */}
+      {status?.head_detached && !bisectStatus && (
+        <DetachedHeadBanner
+          info={status.detached_info}
+          onRescue={doRescueDetachedHead}
+          onReturn={(name) =>
+            void guarded(
+              `ブランチ「${name}」へ戻る`,
+              "switch_branch",
+              () => api.switchBranch(repoPath, name),
+              name,
+            )
+          }
+        />
       )}
 
       {/* #184 Bisect: セッション進行中であることをタブ上で常に分かるようにするバナー。

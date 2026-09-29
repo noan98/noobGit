@@ -3,8 +3,8 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use crate::error::{CoreError, Result};
 use crate::model::{
     BlameHunk, BranchGraph, BranchInfo, BranchRelation, ChangeKind, CommitInfo, ConflictFile,
-    DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage, MergedBranchInfo,
-    ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
+    DetachedHeadInfo, DiffLine, DiffLineKind, FileChange, FileDiff, LikelyBase, LogPage,
+    MergedBranchInfo, ReflogEntry, RemoteInfo, RepoStatus, TagInfo,
 };
 use crate::safety::is_protected;
 
@@ -132,6 +132,72 @@ pub fn is_submodule_path(repo: &Repository, path: &str) -> bool {
 }
 
 /// リポジトリの現在状態（git status 相当）を返す。
+/// HEAD が detached（ブランチを指さずコミットを直接指している）か。
+/// 未誕生ブランチなど HEAD が取れない場合は false。
+pub fn is_head_detached(repo: &Repository) -> bool {
+    repo.head_detached().unwrap_or(false)
+}
+
+/// 「どのブランチ・タグ・リモート追跡ブランチからも辿れない」HEAD 由来のコミット数を数える。
+/// detached HEAD で積んだコミットが、ブランチ切替で行方不明になる典型事故の検出に使う。
+/// 巨大な履歴で重くならないよう、数える上限は 1000 件。
+pub fn unsaved_commit_count(repo: &Repository) -> Result<usize> {
+    let mut walk = repo.revwalk()?;
+    walk.push_head()?;
+    for glob in ["refs/heads/*", "refs/remotes/*", "refs/tags/*"] {
+        walk.hide_glob(glob)?;
+    }
+    let mut n = 0;
+    for oid in walk {
+        oid?;
+        n += 1;
+        if n >= 1000 {
+            break;
+        }
+    }
+    Ok(n)
+}
+
+/// detached HEAD になる直前にいたブランチを HEAD の reflog から推定する。
+///
+/// 「ブランチ一覧から選ばせる」案もあるが、初心者は「どれが元のブランチか」を
+/// 覚えていないことが多く、reflog の `checkout: moving from <元> to <先>` は
+/// ほぼ確実に元のブランチを教えてくれるため、まず reflog から 1 つに絞る。
+/// 推定は「今も存在するローカルブランチ」に限るので、外れても危険な切替にはならない
+/// （特定できなければ None を返し、UI はブランチ一覧からの切り替えへ案内する）。
+pub fn previous_branch(repo: &Repository) -> Option<String> {
+    const PREFIX: &str = "checkout: moving from ";
+    let reflog = repo.reflog("HEAD").ok()?;
+    // index 0 が最新。detached のまま別コミットへ移った履歴（from が OID）は飛ばし、
+    // 最初に見つかった「ブランチからの離脱」を採用する。
+    for entry in reflog.iter() {
+        let Ok(Some(msg)) = entry.message() else {
+            continue;
+        };
+        let Some(rest) = msg.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let Some((from, _to)) = rest.split_once(" to ") else {
+            continue;
+        };
+        if repo.find_branch(from, BranchType::Local).is_ok() {
+            return Some(from.to_string());
+        }
+    }
+    None
+}
+
+/// detached HEAD のときだけ復帰ガイド用の補足情報を返す。
+pub fn detached_head_info(repo: &Repository) -> Option<DetachedHeadInfo> {
+    if !is_head_detached(repo) {
+        return None;
+    }
+    Some(DetachedHeadInfo {
+        previous_branch: previous_branch(repo),
+        unsaved_commits: unsaved_commit_count(repo).unwrap_or(0) as u32,
+    })
+}
+
 pub fn status(repo: &Repository) -> Result<RepoStatus> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -192,6 +258,8 @@ pub fn status(repo: &Repository) -> Result<RepoStatus> {
         conflicted,
         is_clean,
         has_submodules,
+        head_detached: is_head_detached(repo),
+        detached_info: detached_head_info(repo),
     })
 }
 

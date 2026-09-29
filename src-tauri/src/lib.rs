@@ -254,11 +254,22 @@ struct AssessState {
     protected_branches: Vec<String>,
     /// HEAD が公開（push）済みか。amend / rebase の評価が 1 件も無ければ調べない。
     head_published: bool,
+    /// HEAD が detached か。commit / ブランチ切替の危険度引き上げに使う。
+    head_detached: bool,
+    /// detached HEAD 上の、どのブランチ・タグにも属さないコミット数（detached でなければ 0）。
+    detached_unsaved_commits: usize,
 }
 
 impl AssessState {
     fn load(r: &Repository, needs_head_published: bool) -> Result<Self, String> {
+        let head_detached = repo::is_head_detached(r);
         Ok(Self {
+            head_detached,
+            detached_unsaved_commits: if head_detached {
+                repo::unsaved_commit_count(r).unwrap_or(0)
+            } else {
+                0
+            },
             working_dir_dirty: repo::is_dirty(r).map_err(|e| e.to_string())?,
             protected_branches: protected_branches_or_default(r),
             head_published: needs_head_published && repo::head_is_published(r).unwrap_or(false),
@@ -274,6 +285,8 @@ impl AssessState {
             working_dir_dirty: self.working_dir_dirty,
             protected_branches: self.protected_branches.clone(),
             head_published,
+            head_detached: self.head_detached,
+            detached_unsaved_commits: self.detached_unsaved_commits,
         };
         assess(op, &ctx)
     }
@@ -514,6 +527,14 @@ fn create_branch(repo_path: String, name: String) -> Result<(), String> {
     let _write = write_lock();
     let r = open(&repo_path)?;
     ops::create_branch(&r, &name).map_err(|e| e.to_string())
+}
+
+/// detached HEAD の今の位置に新しいブランチを作って乗り換え、コミットを安全にする。
+#[tauri::command(async)]
+fn rescue_detached_head(repo_path: String, name: String) -> Result<(), String> {
+    let _write = write_lock();
+    let r = open(&repo_path)?;
+    ops::rescue_detached_head(&r, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -901,6 +922,7 @@ pub fn run() {
             set_identity,
             create_branch,
             switch_branch,
+            rescue_detached_head,
             delete_branch,
             get_merged_branches,
             delete_branches,

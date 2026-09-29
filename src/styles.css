@@ -3064,3 +3064,23 @@ textarea {
 .alt > svg {
   margin-top: 3px;
 }
+
+/* ---- #197 detached HEAD 復帰ガイド ---- */
+.detached-banner {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.detached-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.detached-banner-actions,
+.detached-banner-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

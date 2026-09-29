@@ -59,6 +59,8 @@ function makeStatus(overrides: Partial<RepoStatus> = {}): RepoStatus {
     conflicted: [],
     is_clean: true,
     has_submodules: false,
+    head_detached: false,
+    detached_info: null,
     ...overrides,
   };
 }

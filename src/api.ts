@@ -29,6 +29,17 @@ export interface RepoStatus {
   // #203 サブモジュール検出: リポジトリが .gitmodules を含むか。
   // true のとき noobGit は中身を操作できないことを説明するバナーを表示する。
   has_submodules: boolean;
+  // #197 detached HEAD: HEAD がブランチを指さずコミットを直接指しているか。
+  head_detached: boolean;
+  // detached のときだけ非 null。復帰ガイド（バナー）用の補足情報。
+  detached_info: DetachedHeadInfo | null;
+}
+
+export interface DetachedHeadInfo {
+  // 直前までいたブランチ名（reflog からの推定）。特定できなければ null。
+  previous_branch: string | null;
+  // どのブランチ・タグ・リモート追跡ブランチにも属していないコミット数。
+  unsaved_commits: number;
 }
 
 export interface BranchInfo {
@@ -183,7 +194,8 @@ export type OperationKind =
   | "restore_file"
   | "bisect_start"
   | "bisect_reset"
-  | "clone";
+  | "clone"
+  | "rescue_detached_head";
 
 export type RiskLevel = "safe" | "caution" | "destructive";
 
@@ -530,6 +542,9 @@ export const api = {
 
   createBranch: (repoPath: string, name: string) =>
     invoke<void>("create_branch", { repoPath, name }),
+  // #197 detached HEAD: 今の位置に新しいブランチを作って乗り換え、コミットを安全にする。
+  rescueDetachedHead: (repoPath: string, name: string) =>
+    invoke<void>("rescue_detached_head", { repoPath, name }),
   switchBranch: (repoPath: string, name: string) =>
     invoke<void>("switch_branch", { repoPath, name }),
   deleteBranch: (repoPath: string, name: string) =>
