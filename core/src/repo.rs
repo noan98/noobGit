@@ -3241,7 +3241,7 @@ mod tests {
 
         // skip 版: ページ境界をまたいで連結しても一括取得と一致する。
         let mut by_skip = Vec::new();
-        for skip in (0..baseline.len()).step_by(1) {
+        for skip in 0..baseline.len() {
             let page = log_filtered(&repo, skip, 1, &LogFilter::default()).unwrap();
             by_skip.extend(page.into_iter().map(|c| c.id));
         }
