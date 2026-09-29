@@ -152,6 +152,16 @@ pub fn explain(op: OperationKind) -> Explanation {
                 "コンフリクトが起きた場合は、取り込みを中止して作業ツリーを元の状態に戻します。直後なら Undo で、コピーしたコミットを取り消せます。"
                     .into(),
         },
+        OperationKind::Revert => Explanation {
+            title: "コミットを打ち消す（revert）".into(),
+            what: "選んだコミットの変更を「逆向きに適用した新しいコミット」を追加して、その変更を取り消します。元のコミットは履歴に残ったままです。"
+                .into(),
+            why: "履歴を書き換えないので、すでに push 済み（他の人と共有済み）のコミットでも安全に取り消せます。reset は履歴そのものを巻き戻すため公開済みの履歴には危険ですが、revert は「取り消した」という記録を足すだけです。"
+                .into(),
+            on_trouble:
+                "あとの変更と同じ箇所に触れていてコンフリクト（競合）になる場合は、何も変えずに中断します。直後なら Undo で、追加した打ち消しコミットを取り消せます。"
+                    .into(),
+        },
         OperationKind::CreateTag => Explanation {
             title: "タグを付ける".into(),
             what: "特定のコミットに、覚えやすい名前の「目印（タグ）」を付けます。リリースの地点（例: v1.0.0）を示すのによく使います。"
@@ -238,6 +248,7 @@ mod tests {
             OperationKind::Push,
             OperationKind::ForcePush,
             OperationKind::CherryPick,
+            OperationKind::Revert,
             OperationKind::CreateTag,
             OperationKind::DeleteTag,
             OperationKind::Rebase,

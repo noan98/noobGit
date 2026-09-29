@@ -28,6 +28,7 @@ const BORDER_COLOR: Partial<Record<OperationKind, string>> = {
   // 注意（caution）
   pull: "var(--caution)",
   cherry_pick: "var(--caution)",
+  revert: "var(--caution)",
   delete_tag: "var(--caution)",
   merge: "var(--caution)",
   push: "var(--caution)",

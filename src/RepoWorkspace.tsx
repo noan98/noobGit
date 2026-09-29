@@ -211,6 +211,8 @@ const REFRESH_BY_OP: Record<OperationKind, RefreshParts> = {
   force_push: { branches: true },
   // cherry-pick は HEAD に新しいコミットを積む。status・log・ブランチ関係が変わり、undo も積まれる。
   cherry_pick: { status: true, branches: true, log: true, undo: true },
+  // revert も HEAD に新しいコミット（打ち消しコミット）を積む。cherry-pick と同じ再取得が要る。
+  revert: { status: true, branches: true, log: true, undo: true },
   // タグ作成・削除はタグ一覧だけを取り直す。削除は undo も積まれる。
   create_tag: { tags: true, undo: true },
   delete_tag: { tags: true, undo: true },
@@ -312,6 +314,7 @@ export function RepoWorkspace({
     { op: "discard" },
     { op: "reset_hard" },
     { op: "cherry_pick" },
+    { op: "revert" },
     { op: "merge" },
     { op: "switch_branch" },
     { op: "force_push" },
@@ -1412,6 +1415,18 @@ export function RepoWorkspace({
     );
   }
 
+  // コミットの打ち消し（revert）。履歴は書き換えず、逆向きの変更を新しいコミットとして積む。
+  function doRevert(commit: CommitInfo) {
+    void guarded(
+      `「${commit.short_id}」を打ち消す（revert）`,
+      "revert",
+      async () => {
+        await api.revertCommit(repoPath, commit.id);
+        showToast(`コミット ${commit.short_id} を打ち消しました`, "success");
+      },
+    );
+  }
+
   // #184 Bisect: 開始。detached HEAD になり作業ツリーが入れ替わるので guarded を通す。
   // 成功したら返ってきた状態をそのまま保持し、ウィザードは「進行中」画面に自動で切り替わる。
   function doBisectStart(bad: string, good: string) {
@@ -2451,6 +2466,7 @@ export function RepoWorkspace({
                   onCompareSelect={onCompareSelect}
                   compareBaseId={compareBase?.id ?? null}
                   onCherryPick={doCherryPick}
+                  onRevert={doRevert}
                   selectedIds={selectedCommitIds}
                   onToggleSelect={toggleCommitSelect}
                   onStartRebase={() => setShowRebase(true)}
@@ -2466,6 +2482,7 @@ export function RepoWorkspace({
                   // #274 危険度カラー
                   resetRiskClass={riskTriggerClassFor(riskLevels, "reset_hard")}
                   cherryPickRiskClass={riskTriggerClassFor(riskLevels, "cherry_pick")}
+                  revertRiskClass={riskTriggerClassFor(riskLevels, "revert")}
                 />
               </motion.div>
             )}
