@@ -320,7 +320,7 @@ jobs:
           fi
 
       - name: テスト結果レポートを公開
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v1
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v1
         if: always()
         with:
           name: Rust テスト結果
